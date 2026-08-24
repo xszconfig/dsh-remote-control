@@ -1,0 +1,15 @@
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+captures/
+
+# 本地环境（SDK 路径等）
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# 系统文件
+.DS_Store
