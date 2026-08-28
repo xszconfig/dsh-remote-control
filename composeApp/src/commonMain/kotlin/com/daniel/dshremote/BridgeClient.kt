@@ -61,6 +61,9 @@ fun deviceKey(host: String, port: Int): String = "$host:$port"
 /** 侧边栏「未分组」桶的虚拟 id。 */
 const val UNGROUPED_KEY = "__ungrouped__"
 
+/** lastSeenAt 落盘节流间隔：探测循环 12s 一次，但只有超过该间隔才真正写文件。 */
+const val LAST_SEEN_PERSIST_INTERVAL_MS: Long = 10 * 60_000
+
 /**
  * 与桌面端 bridge 的 WebSocket 客户端。手机是控制面：只收状态、发指令、做审批。
  * 所有状态经 [state] 单向流暴露给 UI。
@@ -238,17 +241,17 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     // ---- 设备管理 ----
 
     fun forgetDevice(device: StoredDevice) {
-        val removed = _state.value.devices.filterNot { deviceKey(it) == deviceKey(device) }
+        val key = deviceKey(device)
         _state.update {
             it.copy(
-                devices = removed,
-                deviceStatuses = it.deviceStatuses - deviceKey(device),
+                devices = it.devices.filterNot { deviceKey(it) == key },
+                deviceStatuses = it.deviceStatuses - key,
             )
         }
         scope.launch {
-            store.save(removed)
+            store.update { f -> f.copy(devices = f.devices.filterNot { deviceKey(it) == key }) }
             val connected = _state.value.connectedDevice
-            if (connected != null && deviceKey(connected) == deviceKey(device)) {
+            if (connected != null && deviceKey(connected) == key) {
                 send(ClientCommand.RevokeDevice(device.deviceId))
             }
         }
@@ -263,36 +266,37 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                     devices.associate { deviceKey(it) to DeviceStatus.Checking },
             )
         }
-        val results = coroutineScope {
-            devices.map { device ->
-                async {
-                    val (status, serverId, hostname) = ping(device)
-                    PingOutcome(deviceKey(device), status, serverId, hostname)
-                }
-            }.awaitAll()
+        val outcomes = coroutineScope {
+            devices.map { device -> async { ping(device) } }.awaitAll()
         }
-        val statuses = mutableMapOf<String, DeviceStatus>()
-        var devicesToSave = _state.value.devices
-        for (o in results) {
-            statuses[o.key] = o.status
-            if (o.status == DeviceStatus.Online || o.status == DeviceStatus.Changed) {
-                devicesToSave = devicesToSave.map {
-                    if (deviceKey(it) == o.key) {
-                        it.copy(
-                            lastSeenAt = nowMillis(),
-                            serverId = it.serverId ?: o.serverId,
-                            hostname = it.hostname ?: o.hostname,
-                        )
-                    } else {
-                        it
-                    }
-                }
+        val statuses = outcomes.associate { it.key to it.status }
+        val outcomeByKey = outcomes.associateBy { it.key }
+
+        // 落盘节流：只有 serverId/hostname 补齐、或 lastSeenAt 超过节流间隔才改设备记录，
+        // 数据没有实际变化时整轮不写文件（此前每 12s 必写一次）。
+        val now = nowMillis()
+        val updated = devices.map { d ->
+            val o = outcomeByKey[deviceKey(d)] ?: return@map d
+            if (o.status != DeviceStatus.Online && o.status != DeviceStatus.Changed) return@map d
+            val bumpSeen = d.lastSeenAt < now - LAST_SEEN_PERSIST_INTERVAL_MS
+            val fillServerId = d.serverId == null && o.serverId != null
+            val fillHostname = d.hostname == null && o.hostname != null
+            if (bumpSeen || fillServerId || fillHostname) {
+                d.copy(
+                    lastSeenAt = if (bumpSeen) now else d.lastSeenAt,
+                    serverId = d.serverId ?: o.serverId,
+                    hostname = d.hostname ?: o.hostname,
+                )
+            } else {
+                d
             }
         }
         _state.update {
-            it.copy(deviceStatuses = it.deviceStatuses + statuses, devices = devicesToSave)
+            it.copy(deviceStatuses = it.deviceStatuses + statuses, devices = updated)
         }
-        store.save(devicesToSave)
+        if (updated != devices) {
+            store.update { f -> f.copy(devices = updated) }
+        }
     }
 
     private data class PingOutcome(
@@ -302,20 +306,18 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
         val hostname: String?,
     )
 
-    private suspend fun ping(device: StoredDevice): Triple<DeviceStatus, String?, String?> {
-        return try {
-            val resp = pingClient.get("http://${device.host}:${device.port}/remote/ping")
-            val info = BridgeJson.decodeFromString(PingInfo.serializer(), resp.bodyAsText())
-            if (info.ok) {
-                val changed = device.serverId != null && info.serverId != null &&
-                    device.serverId != info.serverId
-                Triple(if (changed) DeviceStatus.Changed else DeviceStatus.Online, info.serverId, info.hostname)
-            } else {
-                Triple(DeviceStatus.Offline, null, null)
-            }
-        } catch (_: Exception) {
-            Triple(DeviceStatus.Offline, null, null)
+    private suspend fun ping(device: StoredDevice): PingOutcome = try {
+        val resp = pingClient.get("http://${device.host}:${device.port}/remote/ping")
+        val info = BridgeJson.decodeFromString(PingInfo.serializer(), resp.bodyAsText())
+        if (info.ok) {
+            val changed = device.serverId != null && info.serverId != null &&
+                device.serverId != info.serverId
+            PingOutcome(deviceKey(device), if (changed) DeviceStatus.Changed else DeviceStatus.Online, info.serverId, info.hostname)
+        } else {
+            PingOutcome(deviceKey(device), DeviceStatus.Offline, null, null)
         }
+    } catch (_: Exception) {
+        PingOutcome(deviceKey(device), DeviceStatus.Offline, null, null)
     }
 
     // ---- 内部 ----
@@ -380,14 +382,22 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                     createdAt = existing?.createdAt ?: now,
                     lastSeenAt = now,
                 )
-                val devices = _state.value.devices.filterNot { deviceKey(it) == deviceKey(host, port) } + device
-                _state.update { it.copy(devices = devices, connectedDevice = device) }
-                scope.launch { store.save(devices) }
+                val key = deviceKey(host, port)
+                _state.update { s ->
+                    s.copy(
+                        devices = s.devices.filterNot { deviceKey(it) == key } + device,
+                        connectedDevice = device,
+                    )
+                }
+                scope.launch {
+                    store.update { f -> f.copy(devices = f.devices.filterNot { deviceKey(it) == key } + device) }
+                }
             }
             is ServerEvent.DeviceRevoked -> {
-                val devices = _state.value.devices.filterNot { it.deviceId == ev.deviceId }
-                _state.update { it.copy(devices = devices) }
-                scope.launch { store.save(devices) }
+                _state.update { it.copy(devices = it.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
+                scope.launch {
+                    store.update { f -> f.copy(devices = f.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
+                }
             }
             is ServerEvent.Error -> _state.update {
                 it.copy(errors = it.errors + "${ev.code}: ${ev.message}")
