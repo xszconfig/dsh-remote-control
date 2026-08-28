@@ -3,56 +3,20 @@ package com.daniel.dshremote
 import com.daniel.dshremote.protocol.AgentSummary
 import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
-import com.daniel.dshremote.protocol.BridgeJson
 import com.daniel.dshremote.protocol.ClientCommand
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
-import com.daniel.dshremote.protocol.PingInfo
 import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.WorkspaceSummary
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsText
-import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
-import io.ktor.client.plugins.websocket.webSocket
-import io.ktor.websocket.Frame
-import io.ktor.websocket.close
-import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
-
-enum class ConnectionState { Disconnected, Connecting, Connected, Error }
-
-data class BridgeUiState(
-    val connection: ConnectionState = ConnectionState.Disconnected,
-    val connectionDetail: String = "",
-    val scanning: Boolean = false,
-    val devices: List<StoredDevice> = emptyList(),
-    val deviceStatuses: Map<String, DeviceStatus> = emptyMap(),
-    val connectedDevice: StoredDevice? = null,
-    val sessions: List<SessionSummary> = emptyList(),
-    val agents: List<AgentSummary> = emptyList(),
-    val workspaces: List<WorkspaceSummary> = emptyList(),
-    /** null = 全部；UNGROUPED_KEY = 未分组。 */
-    val selectedWorkspaceId: String? = null,
-    val currentSessionId: String? = null,
-    val events: List<EventProjection> = emptyList(),
-    val approvals: List<ApprovalRequestWire> = emptyList(),
-    val errors: List<String> = emptyList(),
-)
 
 /** 设备列表条目 key（host:port 唯一标识一台桌面）。 */
 fun deviceKey(device: StoredDevice): String = "${device.host}:${device.port}"
@@ -68,11 +32,28 @@ const val LAST_SEEN_PERSIST_INTERVAL_MS: Long = 10 * 60_000
 const val MAX_ERRORS = 20
 
 /**
+ * 会话面状态：连接着哪台设备、桌面端来的会话/工作区/事件/审批。
+ * （设备列表与连接生命周期分别在 DevicesUiState / ConnectionInfo。）
+ */
+data class SessionUiState(
+    val connectedDevice: StoredDevice? = null,
+    val sessions: List<SessionSummary> = emptyList(),
+    val agents: List<AgentSummary> = emptyList(),
+    val workspaces: List<WorkspaceSummary> = emptyList(),
+    /** null = 全部；UNGROUPED_KEY = 未分组。 */
+    val selectedWorkspaceId: String? = null,
+    val currentSessionId: String? = null,
+    val events: List<EventProjection> = emptyList(),
+    val approvals: List<ApprovalRequestWire> = emptyList(),
+    val errors: List<String> = emptyList(),
+)
+
+/**
  * 断开连接时的状态清理：清掉服务端来的易变数据，但保留用户偏好
  * （selectedWorkspaceId——重连后 Hello 会重新校验其有效性），
  * 断开/重连不再是「一切归零」。
  */
-internal fun BridgeUiState.clearedForDisconnect(): BridgeUiState = copy(
+internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     connectedDevice = null,
     sessions = emptyList(),
     agents = emptyList(),
@@ -83,32 +64,42 @@ internal fun BridgeUiState.clearedForDisconnect(): BridgeUiState = copy(
 )
 
 /**
- * 与桌面端 bridge 的 WebSocket 客户端。手机是控制面：只收状态、发指令、做审批。
- * 所有状态经 [state] 单向流暴露给 UI。
+ * 手机端的总编排：连接策略（候选回退）、协议事件归约到 [SessionUiState]、
+ * 把指令派发给 [ConnectionManager]、把设备变更派发给 [DeviceRepository]。
+ * 单条连接的收发在 ConnectionManager，设备资产在 DeviceRepository。
  */
-class BridgeClient(private val scope: CoroutineScope, private val store: DeviceStore) {
+class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
 
-    private val wsClient = createWsHttp()
-    private val pingClient = createPingHttp()
-    private var ws: DefaultClientWebSocketSession? = null
+    val connection = ConnectionManager(scope)
+    val devices = DeviceRepository(scope, store)
 
-    private val _state = MutableStateFlow(BridgeUiState())
-    val state: StateFlow<BridgeUiState> = _state.asStateFlow()
+    private val _session = MutableStateFlow(SessionUiState())
+    val session: StateFlow<SessionUiState> = _session.asStateFlow()
 
-    private var phoneId: String = ""
-    private var registeredThisConnection = false
-    private var currentUrl: String? = null
+    private val _scanning = MutableStateFlow(false)
+    val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
+
     private var connectJob: Job? = null
+    private var registeredThisConnection = false
 
     init {
         scope.launch {
-            val file = store.load()
-            phoneId = file.phoneId
-            _state.update { it.copy(devices = file.devices) }
-            refreshStatuses()
-            while (isActive) {
-                delay(12_000)
-                if (_state.value.connection == ConnectionState.Disconnected) refreshStatuses()
+            connection.events.collect { ev -> handle(ev) }
+        }
+        // 连接建立/断开 → 同步会话状态与设备探测开关
+        scope.launch {
+            var wasConnected = false
+            connection.info.collect { info ->
+                val connected = info.state == ConnectionState.Connected
+                if (connected && !wasConnected) {
+                    registeredThisConnection = false
+                    devices.setPollingEnabled(false)
+                }
+                if (!connected && wasConnected) {
+                    _session.update { it.clearedForDisconnect() }
+                    devices.setPollingEnabled(true)
+                }
+                wasConnected = connected
             }
         }
     }
@@ -116,16 +107,16 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     // ---- 连接 ----
 
     fun startScan() {
-        _state.update { it.copy(scanning = true) }
+        _scanning.value = true
     }
 
     fun stopScan() {
-        _state.update { it.copy(scanning = false) }
+        _scanning.value = false
     }
 
     /** 扫码结果：支持 bridge 的 JSON payload 或裸 ws:// 地址。 */
     fun onQrScanned(text: String) {
-        _state.update { it.copy(scanning = false) }
+        _scanning.value = false
         connectJob?.cancel()
         connectJob = scope.launch { connectFromQr(text) }
     }
@@ -141,103 +132,43 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     fun disconnect() {
         scope.launch {
             connectJob?.cancel()
-            ws?.close()
+            connection.close()
         }
     }
 
     private fun connect(host: String, port: Int, token: String?, hint: StoredDevice?) {
         connectJob?.cancel()
         connectJob = scope.launch {
-            attemptConnect(Pairing.buildUrl(host, port), hint, token)
+            // 先挂上 hint 设备名：Hello 到达时 registerIfNeeded 才能取到存储的名称
+            if (hint != null) _session.update { it.copy(connectedDevice = hint) }
+            connection.open(Pairing.buildUrl(host, port), token)
         }
     }
 
     private suspend fun connectFromQr(text: String) {
         val urls = Pairing.parseQr(text)
         if (urls.isEmpty()) {
-            _state.update {
-                it.copy(
-                    connection = ConnectionState.Error,
-                    connectionDetail = "无法识别的二维码内容",
-                )
-            }
+            connection.fail("无法识别的二维码内容")
             return
         }
         for (url in urls) {
-            _state.update {
-                it.copy(connection = ConnectionState.Connecting, connectionDetail = url.removePrefix("ws://"))
-            }
-            if (attemptConnect(url, null)) return
+            if (connection.open(url, null)) return
         }
-        _state.update {
-            it.copy(connection = ConnectionState.Error, connectionDetail = "所有候选地址均连接失败")
-        }
-    }
-
-    /**
-     * 建立一条 WS 连接并处理事件循环，连接断开后返回。
-     * @param token 长期设备 token，经 Authorization 头传递（不进 URL）。
-     * @return true 表示握手成功过（连接建立后又被关闭）；false 表示握手失败。
-     */
-    private suspend fun attemptConnect(url: String, hint: StoredDevice?, token: String? = null): Boolean {
-        registeredThisConnection = false
-        currentUrl = url
-        var established = false
-        try {
-            wsClient.webSocket(
-                urlString = url,
-                request = {
-                    Pairing.authHeader(token)?.let { headers.append("Authorization", it) }
-                },
-            ) {
-                established = true
-                ws = this
-                _state.update {
-                    it.copy(connection = ConnectionState.Connected, connectionDetail = "", errors = emptyList())
-                }
-                send(ClientCommand.List)
-                for (frame in incoming) {
-                    if (frame is Frame.Text) {
-                        val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
-                        handle(ev, hint)
-                    }
-                }
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (!established) {
-                _state.update {
-                    it.copy(connection = ConnectionState.Error, connectionDetail = e.message ?: "connection failed")
-                }
-            }
-        } finally {
-            ws = null
-            currentUrl = null
-            if (established) {
-                _state.update {
-                    it.clearedForDisconnect().copy(
-                        connection = ConnectionState.Disconnected,
-                        connectionDetail = "",
-                    )
-                }
-            }
-        }
-        return established
+        connection.fail("所有候选地址均连接失败")
     }
 
     // ---- 会话操作 ----
 
     /** 侧边栏切换工作区视图；null = 全部会话。 */
     fun selectWorkspace(workspaceId: String?) {
-        _state.update { it.copy(selectedWorkspaceId = workspaceId) }
+        _session.update { it.copy(selectedWorkspaceId = workspaceId) }
     }
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return
-        _state.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
+        _session.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
         scope.launch {
-            if (!send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
+            if (!connection.send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
         }
     }
 
@@ -247,139 +178,83 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
      * 在 handle() 里按 sessionId 过滤丢弃，无需通知服务端。
      */
     fun closeSession() {
-        _state.update { it.copy(currentSessionId = null, events = emptyList()) }
+        _session.update { it.copy(currentSessionId = null, events = emptyList()) }
     }
 
     fun sendMessage(text: String) {
-        val sid = _state.value.currentSessionId ?: return
+        val sid = _session.value.currentSessionId ?: return
         scope.launch {
-            if (!send(ClientCommand.SendMessage(sid, text))) pushError("「${text.take(20)}」未发送：连接已断开")
+            if (!connection.send(ClientCommand.SendMessage(sid, text))) {
+                pushError("「${text.take(20)}」未发送：连接已断开")
+            }
         }
     }
 
     fun interrupt(sessionId: String) {
         scope.launch {
-            if (!send(ClientCommand.Interrupt(sessionId))) pushError("中断指令发送失败（连接已断开）")
+            if (!connection.send(ClientCommand.Interrupt(sessionId))) pushError("中断指令发送失败（连接已断开）")
         }
     }
 
     fun approve(approvalId: String, decision: ApprovalDecision) {
         scope.launch {
-            if (!send(ClientCommand.Approve(approvalId, decision))) pushError("审批决策发送失败（连接已断开）")
+            if (!connection.send(ClientCommand.Approve(approvalId, decision))) pushError("审批决策发送失败（连接已断开）")
         }
     }
 
     /** 清空错误提示。 */
     fun dismissErrors() {
-        _state.update { it.copy(errors = emptyList()) }
+        _session.update { it.copy(errors = emptyList()) }
     }
 
     // ---- 设备管理 ----
 
     fun forgetDevice(device: StoredDevice) {
         val key = deviceKey(device)
-        _state.update {
-            it.copy(
-                devices = it.devices.filterNot { deviceKey(it) == key },
-                deviceStatuses = it.deviceStatuses - key,
-            )
-        }
         scope.launch {
-            store.update { f -> f.copy(devices = f.devices.filterNot { deviceKey(it) == key }) }
-            val connected = _state.value.connectedDevice
+            devices.remove(key)
+            val connected = _session.value.connectedDevice
             if (connected != null && deviceKey(connected) == key) {
-                if (!send(ClientCommand.RevokeDevice(device.deviceId))) {
+                if (!connection.send(ClientCommand.RevokeDevice(device.deviceId))) {
                     pushError("撤销桌面端凭据失败（连接已断开）")
                 }
             }
         }
     }
 
-    suspend fun refreshStatuses() {
-        val devices = _state.value.devices
-        if (devices.isEmpty()) return
-        _state.update { s ->
-            s.copy(
-                deviceStatuses = s.deviceStatuses +
-                    devices.associate { deviceKey(it) to DeviceStatus.Checking },
-            )
-        }
-        val outcomes = coroutineScope {
-            devices.map { device -> async { ping(device) } }.awaitAll()
-        }
-        val statuses = outcomes.associate { it.key to it.status }
-        val outcomeByKey = outcomes.associateBy { it.key }
-
-        // 落盘节流：只有 serverId/hostname 补齐、或 lastSeenAt 超过节流间隔才改设备记录，
-        // 数据没有实际变化时整轮不写文件（此前每 12s 必写一次）。
-        val now = nowMillis()
-        val updated = devices.map { d ->
-            val o = outcomeByKey[deviceKey(d)] ?: return@map d
-            if (o.status != DeviceStatus.Online && o.status != DeviceStatus.Changed) return@map d
-            val bumpSeen = d.lastSeenAt < now - LAST_SEEN_PERSIST_INTERVAL_MS
-            val fillServerId = d.serverId == null && o.serverId != null
-            val fillHostname = d.hostname == null && o.hostname != null
-            if (bumpSeen || fillServerId || fillHostname) {
-                d.copy(
-                    lastSeenAt = if (bumpSeen) now else d.lastSeenAt,
-                    serverId = d.serverId ?: o.serverId,
-                    hostname = d.hostname ?: o.hostname,
-                )
-            } else {
-                d
-            }
-        }
-        _state.update {
-            it.copy(deviceStatuses = it.deviceStatuses + statuses, devices = updated)
-        }
-        if (updated != devices) {
-            store.update { f -> f.copy(devices = updated) }
-        }
-    }
-
-    private data class PingOutcome(
-        val key: String,
-        val status: DeviceStatus,
-        val serverId: String?,
-        val hostname: String?,
-    )
-
-    private suspend fun ping(device: StoredDevice): PingOutcome = try {
-        val resp = pingClient.get("http://${device.host}:${device.port}/remote/ping")
-        val info = BridgeJson.decodeFromString(PingInfo.serializer(), resp.bodyAsText())
-        if (info.ok) {
-            val changed = device.serverId != null && info.serverId != null &&
-                device.serverId != info.serverId
-            PingOutcome(deviceKey(device), if (changed) DeviceStatus.Changed else DeviceStatus.Online, info.serverId, info.hostname)
-        } else {
-            PingOutcome(deviceKey(device), DeviceStatus.Offline, null, null)
-        }
-    } catch (_: Exception) {
-        PingOutcome(deviceKey(device), DeviceStatus.Offline, null, null)
-    }
-
     // ---- 内部 ----
 
-    private suspend fun send(cmd: ClientCommand): Boolean {
-        val session = ws ?: return false
-        return try {
-            session.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), cmd)))
-            true
-        } catch (_: Exception) {
-            // 通道已关闭等发送异常：上报给调用方，不再静默丢弃
-            false
+    private fun pushError(message: String) {
+        _session.update { it.copy(errors = (it.errors + message).takeLast(MAX_ERRORS)) }
+    }
+
+    private fun registerIfNeeded(serverId: String, hostname: String?) {
+        if (registeredThisConnection) return
+        registeredThisConnection = true
+        val phoneId = devices.ensurePhoneId()
+        val host = connection.currentUrl?.let { Pairing.endpointOf(it).host } ?: return
+        val hint = _session.value.connectedDevice
+        val name = hint?.name?.takeIf { it.isNotBlank() }
+            ?: hostname?.takeIf { it.isNotBlank() }
+            ?: host
+        scope.launch {
+            if (!connection.send(
+                    ClientCommand.RegisterDevice(
+                        deviceId = phoneId,
+                        name = name,
+                        model = platformDeviceModel(),
+                    ),
+                )
+            ) {
+                pushError("设备注册失败（连接已断开）")
+            }
         }
     }
 
-    /** 追加一条用户可见错误（封顶 MAX_ERRORS，只留最近）。 */
-    private fun pushError(message: String) {
-        _state.update { it.copy(errors = (it.errors + message).takeLast(MAX_ERRORS)) }
-    }
-
-    private fun handle(ev: ServerEvent, hint: StoredDevice?) {
+    private fun handle(ev: ServerEvent) {
         when (ev) {
             is ServerEvent.Hello -> {
-                _state.update {
+                _session.update {
                     it.copy(
                         sessions = ev.sessions,
                         agents = ev.agents,
@@ -388,83 +263,54 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                             ?.takeIf { sel -> sel == UNGROUPED_KEY || ev.workspaces.any { w -> w.id == sel } },
                     )
                 }
-                if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname, hint)
+                if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
             }
-            is ServerEvent.History -> _state.update {
-                it.copy(events = ev.events)
-            }
-            is ServerEvent.Event -> _state.update { s ->
+            is ServerEvent.History -> _session.update { it.copy(events = ev.events) }
+            is ServerEvent.Event -> _session.update { s ->
                 if (ev.sessionId == s.currentSessionId) s.copy(events = s.events + ev.event) else s
             }
-            is ServerEvent.AgentStatus -> _state.update { s ->
+            is ServerEvent.AgentStatus -> _session.update { s ->
                 s.copy(
                     sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
                     agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
                 )
             }
-            is ServerEvent.SessionTitle -> _state.update { s ->
+            is ServerEvent.SessionTitle -> _session.update { s ->
                 s.copy(
                     sessions = s.sessions.map {
                         if (it.id == ev.sessionId) it.copy(name = ev.title) else it
                     },
                 )
             }
-            is ServerEvent.ApprovalRequest -> _state.update {
+            is ServerEvent.ApprovalRequest -> _session.update {
                 it.copy(approvals = it.approvals + ev.approval)
             }
-            is ServerEvent.ApprovalSettled -> _state.update {
+            is ServerEvent.ApprovalSettled -> _session.update {
                 it.copy(approvals = it.approvals.filterNot { a -> a.approvalId == ev.approvalId })
             }
             is ServerEvent.DeviceRegistered -> {
-                val ep = Pairing.endpointOf(currentUrl ?: return)
-                val host = ep.host
-                val port = ep.port
+                val url = connection.currentUrl ?: return
+                val ep = Pairing.endpointOf(url)
                 val now = nowMillis()
-                val existing = _state.value.devices.firstOrNull { deviceKey(it) == deviceKey(host, port) }
+                val existing = _session.value.connectedDevice
                 val device = StoredDevice(
                     deviceId = ev.deviceId,
-                    name = existing?.name ?: ev.hostname.ifBlank { host },
-                    host = host,
-                    port = port,
+                    name = existing?.name?.takeIf { it.isNotBlank() } ?: ev.hostname.ifBlank { ep.host },
+                    host = ep.host,
+                    port = ep.port,
                     token = ev.deviceToken,
                     serverId = ev.serverId,
                     hostname = ev.hostname,
                     createdAt = existing?.createdAt ?: now,
                     lastSeenAt = now,
                 )
-                val key = deviceKey(host, port)
-                _state.update { s ->
-                    s.copy(
-                        devices = s.devices.filterNot { deviceKey(it) == key } + device,
-                        connectedDevice = device,
-                    )
-                }
-                scope.launch {
-                    store.update { f -> f.copy(devices = f.devices.filterNot { deviceKey(it) == key } + device) }
-                }
+                _session.update { it.copy(connectedDevice = device) }
+                scope.launch { devices.upsert(device) }
             }
             is ServerEvent.DeviceRevoked -> {
-                _state.update { it.copy(devices = it.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
-                scope.launch {
-                    store.update { f -> f.copy(devices = f.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
-                }
+                scope.launch { devices.removeByDeviceId(ev.deviceId) }
             }
-            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")        }
-    }
-
-    @OptIn(ExperimentalUuidApi::class)
-    private fun registerIfNeeded(serverId: String, hostname: String?, hint: StoredDevice?) {
-        if (registeredThisConnection) return
-        registeredThisConnection = true
-        if (phoneId.isBlank()) phoneId = Uuid.random().toString()
-        val host = Pairing.endpointOf(currentUrl ?: return).host
-        val name = hint?.name?.takeIf { it.isNotBlank() }
-            ?: hostname?.takeIf { it.isNotBlank() }
-            ?: host
-        scope.launch {
-            if (!send(ClientCommand.RegisterDevice(deviceId = phoneId, name = name, model = platformDeviceModel()))) {
-                pushError("设备注册失败（连接已断开）")
-            }
+            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")
         }
     }
 }

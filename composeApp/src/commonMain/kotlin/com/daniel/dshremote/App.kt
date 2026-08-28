@@ -66,16 +66,19 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun App(client: BridgeClient) {
-    val state by client.state.collectAsState()
+    val scanning by client.scanning.collectAsState()
+    val conn by client.connection.info.collectAsState()
+    val devices by client.devices.state.collectAsState()
+    val session by client.session.collectAsState()
     DshTheme {
         when {
-            state.scanning -> QrScanner(
+            scanning -> QrScanner(
                 onScanned = { client.onQrScanned(it) },
                 onCancel = { client.stopScan() },
             )
-            state.connection == ConnectionState.Connecting -> ConnectingScreen(client, state)
-            state.connection == ConnectionState.Connected -> MainScreen(client, state)
-            else -> LandingScreen(client, state)
+            conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
+            conn.state == ConnectionState.Connected -> MainScreen(client, session)
+            else -> LandingScreen(client, conn, devices)
         }
     }
 }
@@ -83,9 +86,9 @@ fun App(client: BridgeClient) {
 // ================= 首页（未连接） =================
 
 @Composable
-private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
+private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesState: DevicesUiState) {
     var showManual by remember { mutableStateOf(false) }
-    var host by remember { mutableStateOf("192.168.3.76") }
+    var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("3080") }
     var token by remember { mutableStateOf("") }
     var forgetTarget by remember { mutableStateOf<StoredDevice?>(null) }
@@ -115,14 +118,14 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
         }
 
         // 连接错误提示
-        if (state.connection == ConnectionState.Error) {
+        if (conn.state == ConnectionState.Error) {
             Spacer(Modifier.height(14.dp))
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Text(
-                    "连接失败：${state.connectionDetail}",
+                    "连接失败：${conn.detail}",
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
@@ -135,7 +138,7 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
             Text("设备", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
             Text(
-                "${state.devices.size} 台 · 已连接过的会自动记录",
+                "${devicesState.devices.size} 台 · 已连接过的会自动记录",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -143,7 +146,7 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
         Spacer(Modifier.height(8.dp))
 
         // 设备列表
-        if (state.devices.isEmpty()) {
+        if (devicesState.devices.isEmpty()) {
             Card(
                 Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -161,17 +164,17 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
                 }
             }
         } else {
+            val sorted = remember(devicesState.devices, devicesState.deviceStatuses) {
+                devicesState.devices.sortedWith(
+                    compareByDescending<StoredDevice> { statusOf(devicesState, it) == DeviceStatus.Online }
+                        .thenByDescending { it.lastSeenAt },
+                )
+            }
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(
-                    state.devices.sortedWith(
-                        compareByDescending<StoredDevice> { statusOf(state, it) == DeviceStatus.Online }
-                            .thenByDescending { it.lastSeenAt },
-                    ),
-                    key = { deviceKey(it) },
-                ) { d ->
+                items(sorted, key = { deviceKey(it) }) { d ->
                     DeviceCard(
                         device = d,
-                        status = statusOf(state, d),
+                        status = statusOf(devicesState, d),
                         onClick = { client.connectDevice(d) },
                         onForget = { forgetTarget = d },
                     )
@@ -207,7 +210,7 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
                 }
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = { client.connectManual(host, port.toIntOrNull() ?: 3080, token.ifBlank { null }) },
+                    onClick = { client.connectManual(host.trim(), port.toIntOrNull() ?: 3080, token.trim().ifBlank { null }) },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
@@ -248,7 +251,7 @@ private fun LandingScreen(client: BridgeClient, state: BridgeUiState) {
     }
 }
 
-private fun statusOf(state: BridgeUiState, device: StoredDevice): DeviceStatus =
+private fun statusOf(state: DevicesUiState, device: StoredDevice): DeviceStatus =
     state.deviceStatuses[deviceKey(device)] ?: DeviceStatus.Checking
 
 @Composable
@@ -323,7 +326,7 @@ private fun statusLabel(status: DeviceStatus): String = when (status) {
 // ================= 连接中 =================
 
 @Composable
-private fun ConnectingScreen(client: BridgeClient, state: BridgeUiState) {
+private fun ConnectingScreen(client: BridgeClient, conn: ConnectionInfo) {
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -340,7 +343,7 @@ private fun ConnectingScreen(client: BridgeClient, state: BridgeUiState) {
         Text("正在连接…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
-            state.connectionDetail,
+            conn.detail,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -354,7 +357,7 @@ private fun ConnectingScreen(client: BridgeClient, state: BridgeUiState) {
 // ================= 主界面（已连接） =================
 
 @Composable
-private fun MainScreen(client: BridgeClient, state: BridgeUiState) {
+private fun MainScreen(client: BridgeClient, state: SessionUiState) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     ModalNavigationDrawer(
@@ -392,7 +395,8 @@ private fun MainScreen(client: BridgeClient, state: BridgeUiState) {
     val approval = state.approvals.firstOrNull()
     if (approval != null) {
         ApprovalDialog(approval, onDecide = { d -> client.approve(approval.approvalId, d) })
-    }}
+    }
+}
 
 // ---- 错误横幅 ----
 
@@ -423,7 +427,7 @@ private fun ErrorBanner(message: String, more: Int, onDismiss: () -> Unit) {
 @Composable
 private fun WorkspaceDrawer(
     client: BridgeClient,
-    state: BridgeUiState,
+    state: SessionUiState,
     onSelect: (String?) -> Unit,
 ) {
     val ungrouped = state.sessions.count { it.workspaceId == null }
@@ -503,7 +507,7 @@ private fun DrawerEntry(
 // ---- 顶栏 ----
 
 @Composable
-private fun TopBar(client: BridgeClient, state: BridgeUiState, onMenu: () -> Unit) {
+private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit) {
     val session = state.currentSessionId?.let { sid ->
         state.sessions.firstOrNull { it.id == sid }
     }
@@ -561,7 +565,7 @@ private fun TopBar(client: BridgeClient, state: BridgeUiState, onMenu: () -> Uni
 // ---- 会话列表（按所选工作区过滤） ----
 
 @Composable
-private fun SessionList(client: BridgeClient, state: BridgeUiState) {
+private fun SessionList(client: BridgeClient, state: SessionUiState) {
     val selected = state.selectedWorkspaceId
     val visible = state.sessions.filter { s ->
         when (selected) {
@@ -690,7 +694,7 @@ private fun basenameOf(path: String): String =
 // ================= 会话详情 =================
 
 @Composable
-private fun Conversation(client: BridgeClient, state: BridgeUiState, sessionId: String) {
+private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
         if (state.events.isEmpty()) {
@@ -944,4 +948,3 @@ private fun ApprovalDialog(approval: ApprovalRequestWire, onDecide: (ApprovalDec
 
 // ================= 工具 =================
 // 时间格式化（formatClock / relativeTime）与 nowMillis 见 TimeFormat.kt
-
