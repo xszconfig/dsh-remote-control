@@ -7,7 +7,6 @@ import com.daniel.dshremote.protocol.BridgeJson
 import com.daniel.dshremote.protocol.ClientCommand
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
-import com.daniel.dshremote.protocol.PairQrPayload
 import com.daniel.dshremote.protocol.PingInfo
 import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.SessionSummary
@@ -133,7 +132,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     }
 
     private suspend fun connectFromQr(text: String) {
-        val urls = parseQr(text)
+        val urls = Pairing.parseQr(text)
         if (urls.isEmpty()) {
             _state.update {
                 it.copy(
@@ -208,28 +207,8 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
         return established
     }
 
-    private fun parseQr(text: String): List<String> {
-        val t = text.trim()
-        if (t.startsWith("{")) {
-            return try {
-                val p = BridgeJson.decodeFromString(PairQrPayload.serializer(), t)
-                if (p.t == "dsh-remote") p.urls else emptyList()
-            } catch (_: Exception) {
-                emptyList()
-            }
-        }
-        return when {
-            t.startsWith("ws://") || t.startsWith("wss://") -> listOf(t)
-            t.startsWith("http://") || t.startsWith("https://") ->
-                listOf(t.replaceFirst("http", "ws"))
-            else -> emptyList()
-        }
-    }
-
-    private fun buildUrl(host: String, port: Int, token: String?): String {
-        val query = if (token.isNullOrBlank()) "" else "?token=$token"
-        return "ws://$host:$port/remote/ws$query"
-    }
+    private fun buildUrl(host: String, port: Int, token: String?): String =
+        Pairing.buildUrl(host, port, token)
 
     // ---- 会话操作 ----
 
@@ -385,7 +364,9 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                 it.copy(approvals = it.approvals.filterNot { a -> a.approvalId == ev.approvalId })
             }
             is ServerEvent.DeviceRegistered -> {
-                val (host, port, _) = endpointOf(currentUrl ?: return)
+                val ep = Pairing.endpointOf(currentUrl ?: return)
+                val host = ep.host
+                val port = ep.port
                 val now = nowMillis()
                 val existing = _state.value.devices.firstOrNull { deviceKey(it) == deviceKey(host, port) }
                 val device = StoredDevice(
@@ -419,25 +400,12 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
         if (registeredThisConnection) return
         registeredThisConnection = true
         if (phoneId.isBlank()) phoneId = Uuid.random().toString()
-        val (host, _, _) = endpointOf(currentUrl ?: return)
+        val host = Pairing.endpointOf(currentUrl ?: return).host
         val name = hint?.name?.takeIf { it.isNotBlank() }
             ?: hostname?.takeIf { it.isNotBlank() }
             ?: host
         scope.launch {
             send(ClientCommand.RegisterDevice(deviceId = phoneId, name = name, model = platformDeviceModel()))
         }
-    }
-
-    /** 解析 ws://host:port/... 端点（host, port, token）。 */
-    private fun endpointOf(url: String): Triple<String, Int, String?> {
-        val bare = url.removePrefix("ws://").removePrefix("wss://")
-        val hostPort = bare.substringBefore('/')
-        val query = bare.substringAfter('?', missingDelimiterValue = "")
-        val host = hostPort.substringBefore(':')
-        val port = hostPort.substringAfter(':', missingDelimiterValue = "").toIntOrNull() ?: 3080
-        val token = query.split('&')
-            .firstOrNull { it.startsWith("pair=") || it.startsWith("token=") }
-            ?.substringAfter('=')
-        return Triple(host, port, token)
     }
 }
