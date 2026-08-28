@@ -376,6 +376,13 @@ private fun MainScreen(client: BridgeClient, state: BridgeUiState) {
                 state = state,
                 onMenu = { scope.launch { drawerState.open() } },
             )
+            state.errors.lastOrNull()?.let { lastError ->
+                ErrorBanner(
+                    message = lastError,
+                    more = state.errors.size - 1,
+                    onDismiss = { client.dismissErrors() },
+                )
+            }
             when (val sid = state.currentSessionId) {
                 null -> SessionList(client, state)
                 else -> Conversation(client, state, sid)
@@ -386,6 +393,30 @@ private fun MainScreen(client: BridgeClient, state: BridgeUiState) {
     if (approval != null) {
         ApprovalDialog(approval, onDecide = { d -> client.approve(approval.approvalId, d) })
     }}
+
+// ---- 错误横幅 ----
+
+@Composable
+private fun ErrorBanner(message: String, more: Int, onDismiss: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("⚠️", fontSize = 13.sp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (more > 0) "$message（还有 $more 条）" else message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = onDismiss) { Text("✕", color = MaterialTheme.colorScheme.onErrorContainer) }
+        }
+    }
+}
 
 // ---- 侧边栏：工作区菜单 ----
 

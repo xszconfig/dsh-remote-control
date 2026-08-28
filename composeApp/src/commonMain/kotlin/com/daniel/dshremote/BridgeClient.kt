@@ -64,6 +64,9 @@ const val UNGROUPED_KEY = "__ungrouped__"
 /** lastSeenAt 落盘节流间隔：探测循环 12s 一次，但只有超过该间隔才真正写文件。 */
 const val LAST_SEEN_PERSIST_INTERVAL_MS: Long = 10 * 60_000
 
+/** 错误提示保留上限（只保留最近 N 条，防止无界增长）。 */
+const val MAX_ERRORS = 20
+
 /**
  * 与桌面端 bridge 的 WebSocket 客户端。手机是控制面：只收状态、发指令、做审批。
  * 所有状态经 [state] 单向流暴露给 UI。
@@ -222,20 +225,33 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
 
     fun openSession(sessionId: String) {
         _state.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
-        scope.launch { send(ClientCommand.Subscribe(sessionId)) }
+        scope.launch {
+            if (!send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
+        }
     }
 
     fun sendMessage(text: String) {
         val sid = _state.value.currentSessionId ?: return
-        scope.launch { send(ClientCommand.SendMessage(sid, text)) }
+        scope.launch {
+            if (!send(ClientCommand.SendMessage(sid, text))) pushError("「${text.take(20)}」未发送：连接已断开")
+        }
     }
 
     fun interrupt(sessionId: String) {
-        scope.launch { send(ClientCommand.Interrupt(sessionId)) }
+        scope.launch {
+            if (!send(ClientCommand.Interrupt(sessionId))) pushError("中断指令发送失败（连接已断开）")
+        }
     }
 
     fun approve(approvalId: String, decision: ApprovalDecision) {
-        scope.launch { send(ClientCommand.Approve(approvalId, decision)) }
+        scope.launch {
+            if (!send(ClientCommand.Approve(approvalId, decision))) pushError("审批决策发送失败（连接已断开）")
+        }
+    }
+
+    /** 清空错误提示。 */
+    fun dismissErrors() {
+        _state.update { it.copy(errors = emptyList()) }
     }
 
     // ---- 设备管理 ----
@@ -252,7 +268,9 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
             store.update { f -> f.copy(devices = f.devices.filterNot { deviceKey(it) == key }) }
             val connected = _state.value.connectedDevice
             if (connected != null && deviceKey(connected) == key) {
-                send(ClientCommand.RevokeDevice(device.deviceId))
+                if (!send(ClientCommand.RevokeDevice(device.deviceId))) {
+                    pushError("撤销桌面端凭据失败（连接已断开）")
+                }
             }
         }
     }
@@ -322,8 +340,20 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
 
     // ---- 内部 ----
 
-    private suspend fun send(cmd: ClientCommand) {
-        ws?.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), cmd)))
+    private suspend fun send(cmd: ClientCommand): Boolean {
+        val session = ws ?: return false
+        return try {
+            session.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), cmd)))
+            true
+        } catch (_: Exception) {
+            // 通道已关闭等发送异常：上报给调用方，不再静默丢弃
+            false
+        }
+    }
+
+    /** 追加一条用户可见错误（封顶 MAX_ERRORS，只留最近）。 */
+    private fun pushError(message: String) {
+        _state.update { it.copy(errors = (it.errors + message).takeLast(MAX_ERRORS)) }
     }
 
     private fun handle(ev: ServerEvent, hint: StoredDevice?) {
@@ -399,9 +429,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                     store.update { f -> f.copy(devices = f.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
                 }
             }
-            is ServerEvent.Error -> _state.update {
-                it.copy(errors = it.errors + "${ev.code}: ${ev.message}")
-            }
+            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")
         }
     }
 
@@ -415,7 +443,9 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
             ?: hostname?.takeIf { it.isNotBlank() }
             ?: host
         scope.launch {
-            send(ClientCommand.RegisterDevice(deviceId = phoneId, name = name, model = platformDeviceModel()))
+            if (!send(ClientCommand.RegisterDevice(deviceId = phoneId, name = name, model = platformDeviceModel()))) {
+                pushError("设备注册失败（连接已断开）")
+            }
         }
     }
 }
