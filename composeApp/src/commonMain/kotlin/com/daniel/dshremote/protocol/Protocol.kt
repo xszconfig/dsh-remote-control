@@ -1,7 +1,14 @@
 package com.daniel.dshremote.protocol
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 
 // ---- 数据模型（对应 bridge 的 protocol.ts）----
@@ -55,6 +62,30 @@ data class ApprovalRequestWire(
     val toolName: String,
     val reason: String? = null,
 )
+
+/** 审批决策。wire 值与 bridge 协议一致："allowed-once" / "rejected"。 */
+@Serializable(with = ApprovalDecision.Serializer::class)
+enum class ApprovalDecision(val wire: String) {
+    AllowedOnce("allowed-once"),
+    Rejected("rejected"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): ApprovalDecision? = entries.firstOrNull { it.wire == value }
+    }
+
+    object Serializer : KSerializer<ApprovalDecision> {
+        override val descriptor: SerialDescriptor =
+            PrimitiveSerialDescriptor("ApprovalDecision", PrimitiveKind.STRING)
+
+        override fun serialize(encoder: Encoder, value: ApprovalDecision) = encoder.encodeString(value.wire)
+
+        override fun deserialize(decoder: Decoder): ApprovalDecision {
+            val value = decoder.decodeString()
+            return fromWire(value) ?: throw SerializationException("未知审批决策: $value")
+        }
+    }
+}
 
 // ---- 设备 / 配对 ----
 
@@ -183,7 +214,7 @@ sealed interface ClientCommand {
 
     @Serializable
     @SerialName("approve")
-    data class Approve(val approvalId: String, val decision: String) : ClientCommand
+    data class Approve(val approvalId: String, val decision: ApprovalDecision) : ClientCommand
 
     @Serializable
     @SerialName("register_device")

@@ -1,6 +1,7 @@
 package com.daniel.dshremote
 
 import com.daniel.dshremote.protocol.AgentSummary
+import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.BridgeJson
 import com.daniel.dshremote.protocol.ClientCommand
@@ -251,7 +252,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
         scope.launch { send(ClientCommand.Interrupt(sessionId)) }
     }
 
-    fun approve(approvalId: String, decision: String) {
+    fun approve(approvalId: String, decision: ApprovalDecision) {
         scope.launch { send(ClientCommand.Approve(approvalId, decision)) }
     }
 

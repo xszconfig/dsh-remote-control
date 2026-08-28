@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
@@ -384,8 +385,7 @@ private fun MainScreen(client: BridgeClient, state: BridgeUiState) {
     val approval = state.approvals.firstOrNull()
     if (approval != null) {
         ApprovalDialog(approval, onDecide = { d -> client.approve(approval.approvalId, d) })
-    }
-}
+    }}
 
 // ---- 侧边栏：工作区菜单 ----
 
@@ -864,9 +864,9 @@ private fun ToolResultCard(e: EventProjection) {
 }
 
 @Composable
-private fun ApprovalDialog(approval: ApprovalRequestWire, onDecide: (String) -> Unit) {
+private fun ApprovalDialog(approval: ApprovalRequestWire, onDecide: (ApprovalDecision) -> Unit) {
     AlertDialog(
-        onDismissRequest = { onDecide("rejected") },
+        onDismissRequest = { onDecide(ApprovalDecision.Rejected) },
         containerColor = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(20.dp),
         title = {
@@ -899,12 +899,12 @@ private fun ApprovalDialog(approval: ApprovalRequestWire, onDecide: (String) -> 
             }
         },
         confirmButton = {
-            Button(onClick = { onDecide("allowed-once") }, shape = RoundedCornerShape(12.dp)) {
+            Button(onClick = { onDecide(ApprovalDecision.AllowedOnce) }, shape = RoundedCornerShape(12.dp)) {
                 Text("允许一次")
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = { onDecide("rejected") }, shape = RoundedCornerShape(12.dp)) {
+            OutlinedButton(onClick = { onDecide(ApprovalDecision.Rejected) }, shape = RoundedCornerShape(12.dp)) {
                 Text("拒绝")
             }
         },
