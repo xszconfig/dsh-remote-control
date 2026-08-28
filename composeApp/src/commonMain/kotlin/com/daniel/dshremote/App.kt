@@ -513,7 +513,7 @@ private fun TopBar(client: BridgeClient, state: BridgeUiState, onMenu: () -> Uni
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (session != null) {
-                TextButton(onClick = { client.openSession("") }) { Text("←", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+                TextButton(onClick = { client.closeSession() }) { Text("←", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
             } else {
                 TextButton(onClick = onMenu) { Text("☰", fontSize = 18.sp) }
             }

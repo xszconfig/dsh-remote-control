@@ -224,10 +224,20 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     }
 
     fun openSession(sessionId: String) {
+        if (sessionId.isBlank()) return
         _state.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
         scope.launch {
             if (!send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
         }
+    }
+
+    /**
+     * 关闭当前会话视图，返回会话列表。纯本地导航：协议没有「取消订阅」命令
+     * （bridge 对 Subscribe(null) 会回 not_found 错误），未订阅会话的事件
+     * 在 handle() 里按 sessionId 过滤丢弃，无需通知服务端。
+     */
+    fun closeSession() {
+        _state.update { it.copy(currentSessionId = null, events = emptyList()) }
     }
 
     fun sendMessage(text: String) {

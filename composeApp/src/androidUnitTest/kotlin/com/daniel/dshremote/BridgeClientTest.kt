@@ -45,4 +45,27 @@ class BridgeClientTest {
         client.dismissErrors()
         assertEquals(emptyList(), client.state.value.errors)
     }
+
+    @Test
+    fun closeSession_isLocalNavigation_noProtocolTraffic() = runTest {
+        // 回归：旧版返回按钮调 openSession("") 会向 bridge 发 subscribe:"",
+        // bridge 回 error not_found；现在必须纯本地切换且不产生任何错误
+        val client = newClient(backgroundScope)
+        client.openSession("s1")
+        client.closeSession()
+        runCurrent()
+        assertEquals(null, client.state.value.currentSessionId)
+        assertEquals(emptyList(), client.state.value.events)
+        assertEquals(1, client.state.value.errors.size) // 只有订阅失败那条，无 not_found
+    }
+
+    @Test
+    fun openSession_blankId_ignored() = runTest {
+        val client = newClient(backgroundScope)
+        client.openSession("")
+        client.openSession("  ")
+        runCurrent()
+        assertEquals(null, client.state.value.currentSessionId)
+        assertEquals(0, client.state.value.errors.size)
+    }
 }
