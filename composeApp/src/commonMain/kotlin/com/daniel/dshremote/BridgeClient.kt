@@ -299,7 +299,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                 devicesToSave = devicesToSave.map {
                     if (deviceKey(it) == o.key) {
                         it.copy(
-                            lastSeenAt = currentTimeMillis(),
+                            lastSeenAt = nowMillis(),
                             serverId = it.serverId ?: o.serverId,
                             hostname = it.hostname ?: o.hostname,
                         )
@@ -385,7 +385,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
             }
             is ServerEvent.DeviceRegistered -> {
                 val (host, port, _) = endpointOf(currentUrl ?: return)
-                val now = currentTimeMillis()
+                val now = nowMillis()
                 val existing = _state.value.devices.firstOrNull { deviceKey(it) == deviceKey(host, port) }
                 val device = StoredDevice(
                     deviceId = ev.deviceId,

@@ -49,11 +49,6 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
 
-actual fun currentTimeMillis(): Long = System.currentTimeMillis()
-
-actual fun localOffsetMinutes(): Int =
-    java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
-
 actual fun platformDeviceModel(): String? = Build.MODEL
 
 actual fun createWsHttp(): HttpClient = HttpClient(OkHttp) {

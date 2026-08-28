@@ -912,25 +912,5 @@ private fun ApprovalDialog(approval: ApprovalRequestWire, onDecide: (String) -> 
 }
 
 // ================= 工具 =================
+// 时间格式化（formatClock / relativeTime）与 nowMillis 见 TimeFormat.kt
 
-private fun formatClock(ts: Long): String {
-    val totalSec = ts / 1000 + localOffsetMinutes() * 60
-    val h = ((totalSec / 3600) % 24 + 24) % 24
-    val m = (totalSec / 60) % 60
-    val s = totalSec % 60
-    return "%02d:%02d:%02d".format(h, m, s)
-}
-
-private fun relativeTime(ts: Long): String {
-    if (ts <= 0) return "从未"
-    val diff = currentTimeMillis() - ts
-    if (diff < 0) return "刚刚"
-    val minutes = diff / 60_000
-    if (minutes < 1) return "刚刚"
-    if (minutes < 60) return "${minutes} 分钟前"
-    val hours = minutes / 60
-    if (hours < 24) return "${hours} 小时前"
-    val days = hours / 24
-    if (days < 7) return "${days} 天前"
-    return formatClock(ts)
-}
