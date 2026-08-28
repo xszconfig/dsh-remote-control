@@ -148,7 +148,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
     private fun connect(host: String, port: Int, token: String?, hint: StoredDevice?) {
         connectJob?.cancel()
         connectJob = scope.launch {
-            attemptConnect(buildUrl(host, port, token), hint)
+            attemptConnect(Pairing.buildUrl(host, port), hint, token)
         }
     }
 
@@ -176,14 +176,20 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
 
     /**
      * 建立一条 WS 连接并处理事件循环，连接断开后返回。
+     * @param token 长期设备 token，经 Authorization 头传递（不进 URL）。
      * @return true 表示握手成功过（连接建立后又被关闭）；false 表示握手失败。
      */
-    private suspend fun attemptConnect(url: String, hint: StoredDevice?): Boolean {
+    private suspend fun attemptConnect(url: String, hint: StoredDevice?, token: String? = null): Boolean {
         registeredThisConnection = false
         currentUrl = url
         var established = false
         try {
-            wsClient.webSocket(urlString = url) {
+            wsClient.webSocket(
+                urlString = url,
+                request = {
+                    Pairing.authHeader(token)?.let { headers.append("Authorization", it) }
+                },
+            ) {
                 established = true
                 ws = this
                 _state.update {
@@ -219,9 +225,6 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
         }
         return established
     }
-
-    private fun buildUrl(host: String, port: Int, token: String?): String =
-        Pairing.buildUrl(host, port, token)
 
     // ---- 会话操作 ----
 

@@ -48,13 +48,20 @@ class PairingTest {
         assertEquals(emptyList(), Pairing.parseQr("  \n "))
     }
 
-    // ---- buildUrl ----
+    // ---- buildUrl / authHeader ----
 
     @Test
-    fun buildUrl_withAndWithoutToken() {
-        assertEquals("ws://192.168.1.5:3080/remote/ws?token=t1", Pairing.buildUrl("192.168.1.5", 3080, "t1"))
-        assertEquals("ws://192.168.1.5:3080/remote/ws", Pairing.buildUrl("192.168.1.5", 3080, null))
-        assertEquals("ws://192.168.1.5:3080/remote/ws", Pairing.buildUrl("192.168.1.5", 3080, ""))
+    fun buildUrl_neverContainsCredentials() {
+        // 安全回归：长期 token 不允许出现在 URL（避免明文进日志/代理/二维码）
+        assertEquals("ws://192.168.1.5:3080/remote/ws", Pairing.buildUrl("192.168.1.5", 3080))
+    }
+
+    @Test
+    fun authHeader_bearerForm() {
+        assertEquals("Bearer t1", Pairing.authHeader("t1"))
+        assertEquals(null, Pairing.authHeader(null))
+        assertEquals(null, Pairing.authHeader(""))
+        assertEquals(null, Pairing.authHeader("   "))
     }
 
     // ---- endpointOf ----
@@ -91,11 +98,11 @@ class PairingTest {
     }
 
     @Test
-    fun endpointOf_buildUrl_roundTrip() {
-        val url = Pairing.buildUrl("192.168.1.5", 3080, "secret")
-        val ep = Pairing.endpointOf(url)
+    fun endpointOf_extractsPairTokenFromQrUrl() {
+        // 扫码路径的 pair token 仍在 URL 里（由桌面二维码生成，短期一次性）
+        val ep = Pairing.endpointOf(Pairing.buildUrl("192.168.1.5", 3080) + "?pair=abc")
         assertEquals("192.168.1.5", ep.host)
         assertEquals(3080, ep.port)
-        assertEquals("secret", ep.token)
+        assertEquals("abc", ep.token)
     }
 }

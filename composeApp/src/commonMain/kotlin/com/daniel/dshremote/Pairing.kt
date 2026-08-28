@@ -26,11 +26,12 @@ object Pairing {
         }
     }
 
-    /** 用存储的设备凭据构造 WS 地址（token 走查询参数）。 */
-    fun buildUrl(host: String, port: Int, token: String?): String {
-        val query = if (token.isNullOrBlank()) "" else "?token=$token"
-        return "ws://$host:$port/remote/ws$query"
-    }
+    /** 用存储的设备地址构造 WS 地址。凭证不进 URL（避免明文出现在日志/代理里），改走 Authorization 头。 */
+    fun buildUrl(host: String, port: Int): String = "ws://$host:$port/remote/ws"
+
+    /** 长期 token → Authorization 请求头的值；token 为空返回 null。 */
+    fun authHeader(token: String?): String? =
+        token?.takeIf { it.isNotBlank() }?.let { "Bearer $it" }
 
     /** 解析 ws(s)://host:port/path?query 端点；端口缺省 3080，token 取 pair/token 参数。 */
     fun endpointOf(url: String): Endpoint {
