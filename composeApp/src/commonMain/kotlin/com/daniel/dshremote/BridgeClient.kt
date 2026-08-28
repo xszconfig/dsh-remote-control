@@ -31,6 +31,13 @@ const val LAST_SEEN_PERSIST_INTERVAL_MS: Long = 10 * 60_000
 /** 错误提示保留上限（只保留最近 N 条，防止无界增长）。 */
 const val MAX_ERRORS = 20
 
+/** 单个会话在内存中保留的事件上限（长会话防 OOM；只保留最新）。 */
+const val MAX_EVENTS = 500
+
+/** 历史事件裁剪到上限（保留最新）。 */
+internal fun List<EventProjection>.bounded(): List<EventProjection> =
+    if (size <= MAX_EVENTS) this else takeLast(MAX_EVENTS)
+
 /**
  * 会话面状态：连接着哪台设备、桌面端来的会话/工作区/事件/审批。
  * （设备列表与连接生命周期分别在 DevicesUiState / ConnectionInfo。）
@@ -265,9 +272,9 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                 }
                 if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
             }
-            is ServerEvent.History -> _session.update { it.copy(events = ev.events) }
+            is ServerEvent.History -> _session.update { it.copy(events = ev.events.bounded()) }
             is ServerEvent.Event -> _session.update { s ->
-                if (ev.sessionId == s.currentSessionId) s.copy(events = s.events + ev.event) else s
+                if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
             }
             is ServerEvent.AgentStatus -> _session.update { s ->
                 s.copy(

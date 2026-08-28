@@ -108,6 +108,36 @@ class SessionUiStateTest {
             listOf(PingResult(deviceKey(d), DeviceStatus.Online, "srv", "mac")),
             nowMillis(),
         )
-        assertTrue(out === listOf(d) || out == listOf(d)) // 相等即调用方跳过落盘
+        assertEquals(listOf(d), out) // 相等即调用方跳过落盘
+    }
+
+    // ---- events 截断 ----
+
+    @Test
+    fun boundedHistory_keepsNewestTail() {
+        val history = (1..800).map { EventProjection(it.toLong(), "user_message", text = "m$it", timestamp = it.toLong()) }
+        val bounded = history.bounded()
+        assertEquals(MAX_EVENTS, bounded.size)
+        // 保留最新 500 条：seq 301..800
+        assertEquals(301L, bounded.first().seq)
+        assertEquals(800L, bounded.last().seq)
+    }
+
+    @Test
+    fun boundedHistory_shortListUntouched() {
+        val events = (1..10).map { EventProjection(it.toLong(), "user_message", timestamp = it.toLong()) }
+        assertEquals(events, events.bounded())
+    }
+
+    @Test
+    fun appendedEvents_cappedAtMax() {
+        // 逐条追加超过上限后，最早的事件被丢弃（模拟长会话持续接收 event）
+        var events: List<EventProjection> = emptyList()
+        for (seq in 1..(MAX_EVENTS + 50)) {
+            events = (events + EventProjection(seq.toLong(), "event", timestamp = seq.toLong())).bounded()
+        }
+        assertEquals(MAX_EVENTS, events.size)
+        assertEquals(51L, events.first().seq)
+        assertEquals((MAX_EVENTS + 50).toLong(), events.last().seq)
     }
 }
