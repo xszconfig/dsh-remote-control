@@ -68,6 +68,21 @@ const val LAST_SEEN_PERSIST_INTERVAL_MS: Long = 10 * 60_000
 const val MAX_ERRORS = 20
 
 /**
+ * 断开连接时的状态清理：清掉服务端来的易变数据，但保留用户偏好
+ * （selectedWorkspaceId——重连后 Hello 会重新校验其有效性），
+ * 断开/重连不再是「一切归零」。
+ */
+internal fun BridgeUiState.clearedForDisconnect(): BridgeUiState = copy(
+    connectedDevice = null,
+    sessions = emptyList(),
+    agents = emptyList(),
+    workspaces = emptyList(),
+    currentSessionId = null,
+    events = emptyList(),
+    approvals = emptyList(),
+)
+
+/**
  * 与桌面端 bridge 的 WebSocket 客户端。手机是控制面：只收状态、发指令、做审批。
  * 所有状态经 [state] 单向流暴露给 UI。
  */
@@ -195,17 +210,9 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
             currentUrl = null
             if (established) {
                 _state.update {
-                    it.copy(
+                    it.clearedForDisconnect().copy(
                         connection = ConnectionState.Disconnected,
                         connectionDetail = "",
-                        connectedDevice = null,
-                        sessions = emptyList(),
-                        agents = emptyList(),
-                        workspaces = emptyList(),
-                        selectedWorkspaceId = null,
-                        currentSessionId = null,
-                        events = emptyList(),
-                        approvals = emptyList(),
                     )
                 }
             }
@@ -439,8 +446,7 @@ class BridgeClient(private val scope: CoroutineScope, private val store: DeviceS
                     store.update { f -> f.copy(devices = f.devices.filterNot { d -> d.deviceId == ev.deviceId }) }
                 }
             }
-            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")
-        }
+            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")        }
     }
 
     @OptIn(ExperimentalUuidApi::class)
