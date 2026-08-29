@@ -70,14 +70,18 @@ fun App(client: BridgeClient) {
     val conn by client.connection.info.collectAsState()
     val devices by client.devices.state.collectAsState()
     val session by client.session.collectAsState()
+    val reconnecting by client.reconnecting.collectAsState()
+    val reconnectStatus by client.reconnectStatus.collectAsState()
     DshTheme {
         when {
             scanning -> QrScanner(
                 onScanned = { client.onQrScanned(it) },
                 onCancel = { client.stopScan() },
             )
+            // 重连等待/重试期间保留会话界面，只加横幅提示
+            conn.state == ConnectionState.Connected || reconnecting ->
+                MainScreen(client, session, reconnecting, reconnectStatus)
             conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
-            conn.state == ConnectionState.Connected -> MainScreen(client, session)
             else -> LandingScreen(client, conn, devices)
         }
     }
@@ -357,7 +361,12 @@ private fun ConnectingScreen(client: BridgeClient, conn: ConnectionInfo) {
 // ================= 主界面（已连接） =================
 
 @Composable
-private fun MainScreen(client: BridgeClient, state: SessionUiState) {
+private fun MainScreen(
+    client: BridgeClient,
+    state: SessionUiState,
+    reconnecting: Boolean,
+    reconnectStatus: String,
+) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     ModalNavigationDrawer(
@@ -379,6 +388,9 @@ private fun MainScreen(client: BridgeClient, state: SessionUiState) {
                 state = state,
                 onMenu = { scope.launch { drawerState.open() } },
             )
+            if (reconnecting) {
+                ReconnectBanner(status = reconnectStatus, onCancel = { client.disconnect() })
+            }
             state.errors.lastOrNull()?.let { lastError ->
                 ErrorBanner(
                     message = lastError,
@@ -395,6 +407,32 @@ private fun MainScreen(client: BridgeClient, state: SessionUiState) {
     val approval = state.approvals.firstOrNull()
     if (approval != null) {
         ApprovalDialog(approval, onDecide = { d -> client.approve(approval.approvalId, d) })
+    }
+}
+
+// ---- 重连横幅 ----
+
+@Composable
+private fun ReconnectBanner(status: String, onCancel: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "连接已断开，正在自动重连（$status）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = onCancel) {
+                Text("取消", color = MaterialTheme.colorScheme.onTertiaryContainer)
+            }
+        }
     }
 }
 

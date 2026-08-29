@@ -12,6 +12,8 @@ import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.WorkspaceSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +35,9 @@ const val MAX_ERRORS = 20
 
 /** 单个会话在内存中保留的事件上限（长会话防 OOM；只保留最新）。 */
 const val MAX_EVENTS = 500
+
+/** 视为「凭据失效」的服务端错误码：停止自动重连。 */
+val AUTH_FATAL_CODES = setOf("auth", "unauthorized", "forbidden", "token", "device_revoked")
 
 /** 历史事件裁剪到上限（保留最新）。 */
 internal fun List<EventProjection>.bounded(): List<EventProjection> =
@@ -86,27 +91,104 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
+    /** 正在自动重连（UI 保留会话数据 + 显示横幅）。 */
+    private val _reconnecting = MutableStateFlow(false)
+    val reconnecting: StateFlow<Boolean> = _reconnecting.asStateFlow()
+
+    /** 重连进度文案（"第 2 次 · 4s 后重试"）。 */
+    private val _reconnectStatus = MutableStateFlow("")
+    val reconnectStatus: StateFlow<String> = _reconnectStatus.asStateFlow()
+
     private var connectJob: Job? = null
+    private var reconnectJob: Job? = null
     private var registeredThisConnection = false
+    private var sawHelloThisConnection = false
+
+    /**
+     * 重连计划提供器：返回 (url, token) 或 null（无有效凭据，放弃重连）。
+     * 每次重试时现取——设备 token 可能在上一段连接里被 bridge 轮换过。
+     */
+    private var reconnectProvider: (() -> Pair<String, String?>?)? = null
+    private var userDisconnect = false
 
     init {
         scope.launch {
             connection.events.collect { ev -> handle(ev) }
         }
-        // 连接建立/断开 → 同步会话状态与设备探测开关
+        // 连接建立/断开 → 同步会话状态、设备探测开关与自动重连
         scope.launch {
             var wasConnected = false
             connection.info.collect { info ->
                 val connected = info.state == ConnectionState.Connected
                 if (connected && !wasConnected) {
                     registeredThisConnection = false
+                    sawHelloThisConnection = false
                     devices.setPollingEnabled(false)
                 }
                 if (!connected && wasConnected) {
-                    _session.update { it.clearedForDisconnect() }
-                    devices.setPollingEnabled(true)
+                    onConnectionLost()
                 }
                 wasConnected = connected
+            }
+        }
+    }
+
+    /** 连接断开后的策略：用户主动断开→清理；有凭据→自动重连；否则→清理。 */
+    private fun onConnectionLost() {
+        if (userDisconnect) {
+            finishSession("已断开")
+            return
+        }
+        if (reconnectProvider != null) {
+            startReconnect()
+        } else {
+            finishSession(null)
+        }
+    }
+
+    /** 结束会话状态：清理易变数据、恢复设备探测。detail 非空时给出错误态。 */
+    private fun finishSession(detail: String?) {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        _reconnecting.value = false
+        _reconnectStatus.value = ""
+        _session.update { it.clearedForDisconnect() }
+        devices.setPollingEnabled(true)
+        if (detail != null) connection.fail(detail) else connection.markDisconnected()
+    }
+
+    /** 指数退避自动重连；凭据失效（provider 返回 null）或鉴权错误时放弃。 */
+    private fun startReconnect() {
+        // 幂等：断开边沿可能多次触发，已有活跃循环时不得重启——
+        // 否则新旧循环会在 ConnectionManager 里并发 open()，互相踩 ws/currentUrl 状态
+        if (reconnectJob?.isActive == true) return
+        _reconnecting.value = true
+        reconnectJob = scope.launch {
+            try {
+                var attempt = 1
+                while (isActive) {
+                    val plan = reconnectProvider?.invoke() ?: break
+                    val wait = reconnectDelayMs(attempt)
+                    _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试"
+                    connection.markReconnecting(_reconnectStatus.value)
+                    delay(wait)
+                    if (!isActive) return@launch
+                    val (url, token) = reconnectProvider?.invoke() ?: break
+                    val established = connection.open(url, token)
+                    // 成功建立过连接且期间收到过 Hello → 重置退避
+                    if (established && sawHelloThisConnection) {
+                        attempt = 1
+                        sawHelloThisConnection = false
+                    } else {
+                        attempt++
+                    }
+                }
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // 用户断开或放弃：finishSession 已另行处理状态
+            }
+            // 放弃重连：凭据已失效（取消场景由 finishSession 处理）
+            if (reconnectProvider == null) {
+                finishSession("自动重连已停止：配对凭据已失效，请重新扫码或手动连接")
             }
         }
     }
@@ -124,21 +206,38 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     /** 扫码结果：支持 bridge 的 JSON payload 或裸 ws:// 地址。 */
     fun onQrScanned(text: String) {
         _scanning.value = false
+        // 配对 URL 里是一次性 pair token，断开后不能重放；DeviceRegistered
+        // 事件到达后会换成可重连的设备凭据提供器
+        reconnectProvider = null
+        userDisconnect = false
         connectJob?.cancel()
+        reconnectJob?.cancel()
+        _reconnecting.value = false
         connectJob = scope.launch { connectFromQr(text) }
     }
 
     fun connectDevice(device: StoredDevice) {
+        val key = deviceKey(device)
+        reconnectProvider = {
+            // 每次重试取最新存储的设备记录（token 可能已被轮换）
+            devices.state.value.devices.firstOrNull { deviceKey(it) == key }
+                ?.let { Pairing.buildUrl(it.host, it.port) to it.token }
+        }
+        userDisconnect = false
         connect(device.host, device.port, device.token, device)
     }
 
     fun connectManual(host: String, port: Int, token: String?) {
+        reconnectProvider = { Pairing.buildUrl(host, port) to token }
+        userDisconnect = false
         connect(host, port, token, null)
     }
 
     fun disconnect() {
+        userDisconnect = true
         scope.launch {
             connectJob?.cancel()
+            finishSession(null)
             connection.close()
         }
     }
@@ -261,6 +360,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     private fun handle(ev: ServerEvent) {
         when (ev) {
             is ServerEvent.Hello -> {
+                sawHelloThisConnection = true
                 _session.update {
                     it.copy(
                         sessions = ev.sessions,
@@ -312,12 +412,24 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     lastSeenAt = now,
                 )
                 _session.update { it.copy(connectedDevice = device) }
+                val key = deviceKey(device)
+                // 注册成功拿到长期 token：此后断线都可自动重连（含扫码配对路径）
+                reconnectProvider = {
+                    devices.state.value.devices.firstOrNull { deviceKey(it) == key }
+                        ?.let { Pairing.buildUrl(it.host, it.port) to it.token }
+                }
                 scope.launch { devices.upsert(device) }
             }
             is ServerEvent.DeviceRevoked -> {
                 scope.launch { devices.removeByDeviceId(ev.deviceId) }
             }
-            is ServerEvent.Error -> pushError("${ev.code}: ${ev.message}")
+            is ServerEvent.Error -> {
+                pushError("${ev.code}: ${ev.message}")
+                // 鉴权类错误重连无意义（token 失效/被撤销），熔断重连循环
+                if (ev.code.lowercase() in AUTH_FATAL_CODES) {
+                    reconnectProvider = null
+                }
+            }
         }
     }
 }

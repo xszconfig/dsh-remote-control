@@ -140,4 +140,25 @@ class SessionUiStateTest {
         assertEquals(51L, events.first().seq)
         assertEquals((MAX_EVENTS + 50).toLong(), events.last().seq)
     }
+
+    // ---- 自动重连退避 ----
+
+    @Test
+    fun reconnectBackoff_exponentialWithCap() {
+        // 1s → 2s → 4s → 8s → 16s → 32s 封顶 30s，之后恒为 30s
+        val expected = listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L, 30_000L)
+        assertEquals(expected, (1..8).map { reconnectDelayMs(it) })
+        assertEquals(30_000L, reconnectDelayMs(100))
+        assertEquals(1_000L, reconnectDelayMs(1))
+    }
+
+    @Test
+    fun authFatalCodes_coverBridgeAuthErrors() {
+        assertTrue("unauthorized" in AUTH_FATAL_CODES)
+        assertTrue("token" in AUTH_FATAL_CODES)
+        assertTrue("forbidden" in AUTH_FATAL_CODES)
+        // 普通错误不应熔断重连
+        assertTrue("not_found" !in AUTH_FATAL_CODES)
+        assertTrue("bad_command" !in AUTH_FATAL_CODES)
+    }
 }

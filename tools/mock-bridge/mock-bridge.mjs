@@ -17,6 +17,7 @@
 import { WebSocketServer } from 'ws'
 import http from 'node:http'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 
 const PORT = Number(process.env.PORT || 3080)
 const ENV_TOKEN = process.env.DSH_MOCK_TOKEN || 'mock-env-token-123'
@@ -33,6 +34,21 @@ const workspaces = [
   { id: 'ws-tool', title: 'tools', path: '/Users/dev/code/tools', sessionCount: 0 },
 ]
 const devices = new Map() // token -> {deviceId, name, model, lastSeenAt}
+// 与真实 bridge 一致：设备凭据持久化（重启不失效）
+const DEVICES_FILE = new URL('./.mock-devices.json', import.meta.url)
+function loadDevices() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(DEVICES_FILE, 'utf8'))
+    for (const [t, d] of arr) devices.set(t, d)
+    console.error(`loaded ${devices.size} persisted device(s)`)
+  } catch { /* 首次运行无文件 */ }
+}
+function persistDevices() {
+  try {
+    fs.writeFileSync(DEVICES_FILE, JSON.stringify([...devices]))
+  } catch (e) { console.error('persist devices failed:', e.message) }
+}
+loadDevices()
 const sessionEvents = {
   'sess-alpha': [
     { seq: 1, type: 'user_message', text: '把退款逻辑补上单测', timestamp: Date.now() - 300_000 },
@@ -143,12 +159,14 @@ server.on('upgrade', (req, socket, head) => {
         case 'register_device': {
           const token = crypto.randomBytes(16).toString('hex')
           devices.set(token, { deviceId: cmd.deviceId, name: cmd.name, model: cmd.model, lastSeenAt: Date.now() })
+          persistDevices()
           console.error(`REGISTERED device=${cmd.deviceId} name=${cmd.name} tokenIssued=${token.slice(0, 8)}…`)
           send(ws, { type: 'device_registered', deviceId: cmd.deviceId, deviceToken: token, serverId: SERVER_ID, hostname: HOSTNAME })
           break
         }
         case 'revoke_device': {
           for (const [t, d] of devices) if (d.deviceId === cmd.deviceId) devices.delete(t)
+          persistDevices()
           send(ws, { type: 'device_revoked', deviceId: cmd.deviceId })
           break
         }
