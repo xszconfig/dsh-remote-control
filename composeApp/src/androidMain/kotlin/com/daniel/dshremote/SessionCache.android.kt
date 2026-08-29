@@ -17,7 +17,7 @@ class AndroidSessionCache(private val dir: File) : SessionCache {
     private val mutex = Mutex()
 
     private fun fileOf(key: String): File =
-        File(dir, "sessions-" + key.map { if (it.isLetterOrDigit() || it == '-' || it == '.') it else '_' } + ".json")
+        File(dir, "sessions-" + key.map { if (it.isLetterOrDigit() || it == '-' || it == '.') it else '_' }.joinToString("") + ".json")
 
     override suspend fun load(key: String): CachedSessionSnapshot? = mutex.withLock {
         withContext(Dispatchers.IO) {

@@ -17,7 +17,7 @@ class AndroidEventCache(private val dir: File) : EventCache {
     private val mutex = Mutex()
 
     private fun fileOf(key: String): File =
-        File(dir, "events-" + key.map { if (it.isLetterOrDigit() || it == '-' || it == '.') it else '_' } + ".json")
+        File(dir, "events-" + key.map { if (it.isLetterOrDigit() || it == '-' || it == '.') it else '_' }.joinToString("") + ".json")
 
     override suspend fun load(key: String): List<EventProjection> = mutex.withLock {
         withContext(Dispatchers.IO) {
