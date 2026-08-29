@@ -122,7 +122,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
  * 把指令派发给 [ConnectionManager]、把设备变更派发给 [DeviceRepository]。
  * 单条连接的收发在 ConnectionManager，设备资产在 DeviceRepository。
  */
-class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
+class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, private val eventCache: EventCache) {
 
     val connection = ConnectionManager(scope)
     val devices = DeviceRepository(scope, store)
@@ -388,7 +388,40 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         if (sessionId.isBlank()) return
         _session.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
         scope.launch {
+            // 先渲染本地缓存（秒开），订阅返回后以服务端历史为准
+            val key = eventCacheKey(sessionId)
+            val cached = eventCache.load(key)
+            if (cached.isNotEmpty()) {
+                _session.update { s ->
+                    if (s.currentSessionId == sessionId) s.copy(events = cached.bounded()) else s
+                }
+                ConnLog.info("CACHE", "会话 $sessionId 载入本地缓存 ${cached.size} 条")
+            }
             if (!connection.send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
+        }
+    }
+
+    /** 会话事件缓存 key：设备端点 + 会话 id（不同桌面互不串扰）。 */
+    private fun eventCacheKey(sessionId: String): String {
+        val device = _session.value.connectedDevice
+        val prefix = device?.let { "${it.host}_${it.port}" } ?: "unknown"
+        return "$prefix-$sessionId"
+    }
+
+    private var cacheSaveJob: Job? = null
+    private var lastCacheSaveAt = 0L
+
+    /** 事件到达后节流落盘（2s 节流，避免每条事件都写文件）。 */
+    private fun scheduleCacheSave() {
+        val sid = _session.value.currentSessionId ?: return
+        val now = nowMillis()
+        if (now - lastCacheSaveAt < 2_000) return
+        lastCacheSaveAt = now
+        cacheSaveJob?.cancel()
+        cacheSaveJob = scope.launch {
+            val events = _session.value.events
+            if (events.isEmpty()) return@launch
+            eventCache.save(eventCacheKey(sid), events)
         }
     }
 
@@ -563,9 +596,17 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     }
                 }
             }
-            is ServerEvent.History -> _session.update { it.copy(events = ev.events.bounded()) }
-            is ServerEvent.Event -> _session.update { s ->
-                if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
+            is ServerEvent.History -> {
+                _session.update { it.copy(events = ev.events.bounded()) }
+                lastCacheSaveAt = 0
+                scope.launch { eventCache.save(eventCacheKey(ev.sessionId), ev.events.bounded()) }
+                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史 ${ev.events.size} 条已落盘")
+            }
+            is ServerEvent.Event -> {
+                _session.update { s ->
+                    if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
+                }
+                if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
             }
             is ServerEvent.AgentStatus -> _session.update { s ->
                 s.copy(

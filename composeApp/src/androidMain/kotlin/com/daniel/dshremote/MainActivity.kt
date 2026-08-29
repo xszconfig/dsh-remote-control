@@ -1,6 +1,7 @@
 package com.daniel.dshremote
 
 import android.os.Bundle
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,11 +16,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AppContext.context = applicationContext
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
+        val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
         setContent {
             val client = remember {
                 BridgeClient(
                     scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
                     store = deviceStore,
+                    eventCache = eventCache,
                 )
             }
             App(client)
