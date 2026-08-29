@@ -133,6 +133,8 @@ private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesSta
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

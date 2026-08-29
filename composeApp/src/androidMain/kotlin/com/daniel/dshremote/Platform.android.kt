@@ -48,11 +48,22 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
+import java.util.concurrent.TimeUnit
 
 actual fun platformDeviceModel(): String? = Build.MODEL
 
 actual fun createWsHttp(): HttpClient = HttpClient(OkHttp) {
     install(WebSockets)
+    engine {
+        config {
+            // 只限制建连阶段：二维码含多个候选地址（127.0.0.1 + LAN/隧道 IP），
+            // 不可达候选必须快速失败回退到下一个。Ktor 的 HttpTimeout 插件
+            // 不会把 connectTimeout 传给 OkHttp（默认 10s），必须在 engine 配置。
+            // 不设 readTimeout——WS 长连接由 pingInterval 保活。
+            connectTimeout(4, TimeUnit.SECONDS)
+            pingInterval(30, TimeUnit.SECONDS)
+        }
+    }
 }
 
 actual fun createPingHttp(): HttpClient = HttpClient(OkHttp) {

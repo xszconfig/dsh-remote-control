@@ -39,6 +39,22 @@ const val MAX_EVENTS = 500
 /** 视为「凭据失效」的服务端错误码：停止自动重连。 */
 val AUTH_FATAL_CODES = setOf("auth", "unauthorized", "forbidden", "token", "device_revoked")
 
+/**
+ * 汇总多候选连接失败的可读诊断：逐候选列出原因；候选里含 127.0.0.1
+ * （bridge 仅监听本机、依赖 USB adb reverse 的场景）时追加操作指引。
+ */
+internal fun buildConnectFailureDetail(failures: List<Pair<String, String>>): String {
+    val sb = StringBuilder("所有候选地址均连接失败")
+    failures.take(3).forEach { (host, reason) ->
+        sb.append("\n· ").append(host).append("：").append(reason.ifBlank { "连接失败" })
+    }
+    if (failures.size > 3) sb.append("\n· …等 ").append(failures.size).append(" 个候选")
+    if (failures.any { it.first == "127.0.0.1" }) {
+        sb.append("\n提示：桌面端仅监听 127.0.0.1；USB 连接请先在电脑上执行 adb reverse tcp:3080 tcp:3080")
+    }
+    return sb.toString()
+}
+
 /** 历史事件裁剪到上限（保留最新）。 */
 internal fun List<EventProjection>.bounded(): List<EventProjection> =
     if (size <= MAX_EVENTS) this else takeLast(MAX_EVENTS)
@@ -247,7 +263,14 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         connectJob = scope.launch {
             // 先挂上 hint 设备名：Hello 到达时 registerIfNeeded 才能取到存储的名称
             if (hint != null) _session.update { it.copy(connectedDevice = hint) }
-            connection.open(Pairing.buildUrl(host, port), token)
+            val ok = connection.open(Pairing.buildUrl(host, port), token)
+            if (!ok && host == "127.0.0.1") {
+                // bridge 仅监听本机：USB 场景下 127.0.0.1 不通几乎一定是没设 reverse
+                connection.fail(
+                    connection.info.value.detail.ifBlank { "连接失败" } +
+                        "\n提示：USB 连接请先在电脑上执行 adb reverse tcp:$port tcp:$port",
+                )
+            }
         }
     }
 
@@ -257,10 +280,13 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             connection.fail("无法识别的二维码内容")
             return
         }
+        // 逐候选尝试并记录各自失败原因（refused/timeout/401…），全部失败时给出完整诊断
+        val failures = mutableListOf<Pair<String, String>>()
         for (url in urls) {
             if (connection.open(url, null)) return
+            failures.add(Pairing.endpointOf(url).host to connection.info.value.detail)
         }
-        connection.fail("所有候选地址均连接失败")
+        connection.fail(buildConnectFailureDetail(failures))
     }
 
     // ---- 会话操作 ----
