@@ -212,12 +212,19 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         reconnectJob = scope.launch {
             try {
                 var attempt = 1
+                var consecutiveFailures = 0
                 while (isActive) {
                     val plan = reconnectProvider?.invoke() ?: break
                     val wait = reconnectDelayMs(attempt)
-                    _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试"
+                    // 连续失败 3 次以上且候选含 127.0.0.1：给出 USB 隧道断开指引
+                    val hint = if (consecutiveFailures >= 3 && plan.any { it.first.contains("127.0.0.1") }) {
+                        "（USB 隧道可能已断开：请插好数据线并执行 adb reverse tcp:3080 tcp:3080）"
+                    } else {
+                        ""
+                    }
+                    _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试$hint"
                     connection.markReconnecting(_reconnectStatus.value)
-                    ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行")
+                    ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行$hint")
                     delay(wait)
                     if (!isActive) return@launch
                     val candidates = reconnectProvider?.invoke() ?: break
@@ -231,6 +238,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                         }
                         ConnLog.warn("RECONNECT", "候选失败 $url: ${connection.info.value.detail}")
                     }
+                    if (established) consecutiveFailures = 0 else consecutiveFailures++
                     // 成功建立过连接且期间收到过 Hello → 重置退避并清除重连横幅
                     if (established && sawHelloThisConnection) {
                         attempt = 1
