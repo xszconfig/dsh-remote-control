@@ -47,6 +47,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -87,8 +88,24 @@ fun App(client: BridgeClient) {
     val reconnecting by client.reconnecting.collectAsState()
     val reconnectStatus by client.reconnectStatus.collectAsState()
     var showLogs by remember { mutableStateOf(false) }
+    var showDevices by remember { mutableStateOf(false) }
+    // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
+    LaunchedEffect(devices.devices, devices.deviceStatuses) {
+        client.autoConnectOnce()
+    }
     DshTheme {
-        if (showLogs) {
+        if (showDevices) {
+            // 设备页（连接态从侧边栏进入）：查看/切换设备、扫码/手动连接
+            LandingScreen(
+                client = client,
+                conn = conn,
+                devicesState = devices,
+                onOpenLogs = { showLogs = true },
+                onBack = { showDevices = false },
+                currentDeviceKey = session.connectedDevice?.let { deviceKey(it) },
+            )
+            PlatformBackHandler(enabled = true) { showDevices = false }
+        } else if (showLogs) {
             LogScreen(client, onClose = { showLogs = false })
         } else {
             when {
@@ -98,7 +115,14 @@ fun App(client: BridgeClient) {
                 )
                 // 重连等待/重试期间保留会话界面，只加横幅提示
                 conn.state == ConnectionState.Connected || reconnecting ->
-                    MainScreen(client, session, reconnecting, reconnectStatus, onOpenLogs = { showLogs = true })
+                    MainScreen(
+                        client = client,
+                        state = session,
+                        reconnecting = reconnecting,
+                        reconnectStatus = reconnectStatus,
+                        onOpenLogs = { showLogs = true },
+                        onOpenDevices = { showDevices = true },
+                    )
                 conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
                 else -> LandingScreen(client, conn, devices, onOpenLogs = { showLogs = true })
             }
@@ -132,36 +156,58 @@ fun App(client: BridgeClient) {
 // ================= 首页（未连接） =================
 
 @Composable
-private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesState: DevicesUiState, onOpenLogs: () -> Unit) {
+private fun LandingScreen(
+    client: BridgeClient,
+    conn: ConnectionInfo,
+    devicesState: DevicesUiState,
+    onOpenLogs: () -> Unit,
+    /** 非空 = 连接态从侧边栏进入的设备页（带返回头）；null = 未连接落地页。 */
+    onBack: (() -> Unit)? = null,
+    /** 当前已连接设备的 key（设备页里标记「当前」）。 */
+    currentDeviceKey: String? = null,
+) {
     var showManual by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("3080") }
     var token by remember { mutableStateOf("") }
     var forgetTarget by remember { mutableStateOf<StoredDevice?>(null) }
 
+    // 进入页面刷新一次在线状态（连接态下探测轮询是停的，切设备前需要准确状态）
+    LaunchedEffect(Unit) { client.devices.refreshStatuses() }
+
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(20.dp))
-        // 品牌头部
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("dsh", fontWeight = FontWeight.Black, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
+        if (onBack != null) {
+            // 设备页头部（连接态从侧边栏进入）
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("← 返回", fontWeight = FontWeight.SemiBold) }
+                Text("设备", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onOpenLogs) { Text("📋 日志") }
             }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("dsh Remote Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(
-                    "手机遥控桌面端 DeepSeek Harness",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        } else {
+            // 品牌头部
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("dsh", fontWeight = FontWeight.Black, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("dsh Remote Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "手机遥控桌面端 DeepSeek Harness",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onOpenLogs) { Text("📋 日志") }
             }
-            TextButton(onClick = onOpenLogs) { Text("📋 日志") }
         }
 
         // 连接错误提示
@@ -224,6 +270,7 @@ private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesSta
                     DeviceCard(
                         device = d,
                         status = statusOf(devicesState, d),
+                        isCurrent = currentDeviceKey != null && deviceKey(d) == currentDeviceKey,
                         onClick = { client.connectDevice(d) },
                         onForget = { forgetTarget = d },
                     )
@@ -309,6 +356,7 @@ private fun DeviceCard(
     status: DeviceStatus,
     onClick: () -> Unit,
     onForget: () -> Unit,
+    isCurrent: Boolean = false,
 ) {
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick),
@@ -336,18 +384,26 @@ private fun DeviceCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    statusLabel(status),
+                    if (isCurrent) "已连接 · 当前设备" else statusLabel(status),
                     style = MaterialTheme.typography.labelSmall,
-                    color = when (status) {
-                        DeviceStatus.Online -> StatusGreen
-                        DeviceStatus.Changed -> StatusOrange
-                        DeviceStatus.Checking -> StatusAmber
-                        DeviceStatus.Offline -> StatusGray
+                    color = when {
+                        isCurrent -> StatusGreen
+                        status == DeviceStatus.Online -> StatusGreen
+                        status == DeviceStatus.Changed -> StatusOrange
+                        status == DeviceStatus.Checking -> StatusAmber
+                        else -> StatusGray
                     },
                 )
             }
             Spacer(Modifier.width(8.dp))
-            if (status == DeviceStatus.Checking) {
+            if (isCurrent) {
+                Text(
+                    "✓",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = StatusGreen,
+                )
+            } else if (status == DeviceStatus.Checking) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
             } else {
                 Text(
@@ -412,6 +468,7 @@ private fun MainScreen(
     reconnecting: Boolean,
     reconnectStatus: String,
     onOpenLogs: () -> Unit,
+    onOpenDevices: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -424,6 +481,10 @@ private fun MainScreen(
                 onSelect = { id ->
                     client.selectWorkspace(id)
                     scope.launch { drawerState.close() }
+                },
+                onOpenDevices = {
+                    scope.launch { drawerState.close() }
+                    onOpenDevices()
                 },
             )
         },
@@ -517,6 +578,7 @@ private fun WorkspaceDrawer(
     client: BridgeClient,
     state: SessionUiState,
     onSelect: (String?) -> Unit,
+    onOpenDevices: () -> Unit,
 ) {
     val ungrouped = state.sessions.count { it.workspaceId == null }
     ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surface) {
@@ -567,6 +629,15 @@ private fun WorkspaceDrawer(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // 设备页入口：多设备切换的落点
+            DrawerEntry(
+                label = "设备",
+                badge = null,
+                icon = "🖥",
+                selected = false,
+                onClick = onOpenDevices,
+            )
+            Spacer(Modifier.height(8.dp))
         }
     }
 }
@@ -574,7 +645,7 @@ private fun WorkspaceDrawer(
 @Composable
 private fun DrawerEntry(
     label: String,
-    badge: Int,
+    badge: Int?,
     icon: String,
     selected: Boolean,
     onClick: () -> Unit,
@@ -582,7 +653,7 @@ private fun DrawerEntry(
     NavigationDrawerItem(
         label = { Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) },
         icon = { Text(icon, fontSize = 16.sp) },
-        badge = { Text("$badge", style = MaterialTheme.typography.labelSmall) },
+        badge = badge?.let { b -> { Text("$b", style = MaterialTheme.typography.labelSmall) } },
         selected = selected,
         onClick = onClick,
         colors = NavigationDrawerItemDefaults.colors(
