@@ -630,9 +630,22 @@ class BridgeClient(
 
     fun sendMessage(text: String) {
         val sid = _session.value.currentSessionId ?: return
+        // 乐观入队：会话运行中时新消息必然进服务端队列——立即在面板显示，
+        // 不等 spliced 回环广播（服务端 session_queue 到达后自然替换）。
+        val running = _session.value.sessions.any { it.id == sid && it.status == "running" }
+        if (running) {
+            val opt = QueueItemWire(id = "local-${nowMillis()}", placement = "queued", text = text)
+            _session.update { s ->
+                if (s.currentSessionId == sid) s.copy(queueItems = s.queueItems + opt) else s
+            }
+        }
         scope.launch {
             if (!connection.send(ClientCommand.SendMessage(sid, text))) {
                 pushError("「${text.take(20)}」未发送：连接已断开")
+                // 发送失败：回滚乐观项
+                _session.update { s ->
+                    s.copy(queueItems = s.queueItems.filterNot { it.text == text && it.id.startsWith("local-") })
+                }
             }
         }
     }

@@ -637,8 +637,8 @@ private fun WorkspaceDrawer(
     val mainSessions = state.sessions.count { it.parentSessionId == null }
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surface,
-        // 侧边栏占屏幕 70% 宽，不全屏遮挡（用户要求）
-        modifier = Modifier.fillMaxHeight().fillMaxWidth(0.7f),
+        // 侧边栏占屏幕 85% 宽（用户要求：70% 太窄）
+        modifier = Modifier.fillMaxHeight().fillMaxWidth(0.85f),
     ) {
         Column(Modifier.padding(vertical = 8.dp)) {
             Text(
