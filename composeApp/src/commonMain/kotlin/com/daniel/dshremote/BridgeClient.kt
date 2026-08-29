@@ -101,6 +101,8 @@ data class SessionUiState(
     val loadingOlder: Boolean = false,
     /** 当前会话排队的消息（inbox 投影；空 = 无排队）。 */
     val queueItems: List<QueueItemWire> = emptyList(),
+    /** 当前会话模型请求开始时间（null = 未在等待模型）。 */
+    val modelWaitingSince: Long? = null,
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -129,6 +131,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     historyTotal = 0,
     loadingOlder = false,
     queueItems = emptyList(),
+    modelWaitingSince = null,
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -888,6 +891,16 @@ class BridgeClient(
             }
             is ServerEvent.SessionQueue -> _session.update { s ->
                 if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
+            }
+            is ServerEvent.ModelWaiting -> _session.update { st ->
+                if (ev.sessionId == st.currentSessionId) st.copy(modelWaitingSince = ev.startedAt) else st
+            }
+            is ServerEvent.ModelWaitingDone -> _session.update { st ->
+                if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
+                    st.copy(modelWaitingSince = null)
+                } else {
+                    st
+                }
             }
             is ServerEvent.LogsRequest -> {
                 // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）

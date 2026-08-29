@@ -300,6 +300,16 @@ sealed interface ServerEvent {
     @SerialName("logs_request")
     data class LogsRequest(val requestId: String) : ServerEvent
 
+    /** 该会话的模型请求开始（Deep Diving 指示）。 */
+    @Serializable
+    @SerialName("model_waiting")
+    data class ModelWaiting(val sessionId: String, val startedAt: Long) : ServerEvent
+
+    /** 该会话的模型请求完成。 */
+    @Serializable
+    @SerialName("model_waiting_done")
+    data class ModelWaitingDone(val sessionId: String, val startedAt: Long, val elapsedMs: Long) : ServerEvent
+
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
     @SerialName("session_upsert")

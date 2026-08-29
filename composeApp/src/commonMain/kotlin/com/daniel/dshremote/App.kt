@@ -82,6 +82,7 @@ import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -992,6 +993,16 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             .debounce(600)
             .collect { text -> client.saveDraft(sessionId, text) }
     }
+    // Deep Diving 指示：等待模型回复时显示 + 每秒跳动的等待时长
+    var divingTick by remember { mutableStateOf(0L) }
+    LaunchedEffect(state.modelWaitingSince) {
+        if (state.modelWaitingSince != null) {
+            while (true) {
+                delay(1000)
+                divingTick++
+            }
+        }
+    }
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()
@@ -1003,6 +1014,37 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
         if (state.events.isNotEmpty()) listState.scrollToItem(0)
     }
     Column(Modifier.fillMaxSize()) {
+        state.modelWaitingSince?.let { since ->
+            Surface(color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🤿", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Deep Diving",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "·",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "等待 ${(nowMillis() - since) / 1000}s",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            divingTick // 每秒重算时长
+        }
         if (state.events.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
