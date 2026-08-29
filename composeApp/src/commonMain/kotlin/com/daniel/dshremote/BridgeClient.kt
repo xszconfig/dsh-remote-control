@@ -14,6 +14,7 @@ import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.ServerLogsResponse
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
+import com.daniel.dshremote.protocol.StoredEndpoint
 import com.daniel.dshremote.protocol.WorkspaceSummary
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -31,6 +32,13 @@ import kotlinx.coroutines.launch
 /** 设备列表条目 key（host:port 唯一标识一台桌面）。 */
 fun deviceKey(device: StoredDevice): String = "${device.host}:${device.port}"
 fun deviceKey(host: String, port: Int): String = "$host:$port"
+
+/** 合并候选端点：当前连接端点置顶，去重（主端点优先保证快速重连）。 */
+internal fun mergeEndpoints(primary: Endpoint, server: List<StoredEndpoint>): List<StoredEndpoint> {
+    val list = mutableListOf(StoredEndpoint(primary.host, primary.port))
+    for (e in server) if (e.host != primary.host || e.port != primary.port) list.add(e)
+    return list.distinctBy { "${it.host}:${it.port}" }
+}
 
 /** 侧边栏「未分组」桶的虚拟 id。 */
 const val UNGROUPED_KEY = "__ungrouped__"
@@ -142,7 +150,8 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
      * 重连计划提供器：返回 (url, token) 或 null（无有效凭据，放弃重连）。
      * 每次重试时现取——设备 token 可能在上一段连接里被 bridge 轮换过。
      */
-    private var reconnectProvider: (() -> Pair<String, String?>?)? = null
+    /** 重连候选列表（主端点在前）；null = 无凭据。 */
+    private var reconnectProvider: (() -> List<Pair<String, String?>>?)? = null
     private var userDisconnect = false
 
     init {
@@ -211,9 +220,17 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行")
                     delay(wait)
                     if (!isActive) return@launch
-                    val (url, token) = reconnectProvider?.invoke() ?: break
-                    ConnLog.info("RECONNECT", "第 $attempt 次重连尝试: $url")
-                    val established = connection.open(url, token)
+                    val candidates = reconnectProvider?.invoke() ?: break
+                    var established = false
+                    for ((index, candidate) in candidates.withIndex()) {
+                        val (url, token) = candidate
+                        ConnLog.info("RECONNECT", "第 $attempt 次重连 · 候选 ${index + 1}/${candidates.size}: $url")
+                        if (connection.open(url, token)) {
+                            established = true
+                            break
+                        }
+                        ConnLog.warn("RECONNECT", "候选失败 $url: ${connection.info.value.detail}")
+                    }
                     // 成功建立过连接且期间收到过 Hello → 重置退避
                     if (established && sawHelloThisConnection) {
                         attempt = 1
@@ -258,16 +275,21 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     fun connectDevice(device: StoredDevice) {
         val key = deviceKey(device)
         reconnectProvider = {
-            // 每次重试取最新存储的设备记录（token 可能已被轮换）
-            devices.state.value.devices.firstOrNull { deviceKey(it) == key }
-                ?.let { Pairing.buildUrl(it.host, it.port) to it.token }
+            // 每次重试取最新存储的设备记录（token 可能已被轮换）；
+            // 候选列表按存储顺序逐个快试（主端点在前，多路由回退）
+            val stored = devices.state.value.devices.firstOrNull { deviceKey(it) == key }
+            if (stored == null) null
+            else {
+                val eps = stored.endpoints.ifEmpty { listOf(StoredEndpoint(stored.host, stored.port)) }
+                eps.map { Pairing.buildUrl(it.host, it.port) to stored.token }
+            }
         }
         userDisconnect = false
         connect(device.host, device.port, device.token, device)
     }
 
     fun connectManual(host: String, port: Int, token: String?) {
-        reconnectProvider = { Pairing.buildUrl(host, port) to token }
+        reconnectProvider = { listOf(Pairing.buildUrl(host, port) to token) }
         userDisconnect = false
         connect(host, port, token, null)
     }
@@ -566,13 +588,18 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     hostname = ev.hostname,
                     createdAt = existing?.createdAt ?: now,
                     lastSeenAt = now,
+                    endpoints = mergeEndpoints(ep, ev.endpoints),
                 )
                 _session.update { it.copy(connectedDevice = device) }
                 val key = deviceKey(device)
                 // 注册成功拿到长期 token：此后断线都可自动重连（含扫码配对路径）
                 reconnectProvider = {
-                    devices.state.value.devices.firstOrNull { deviceKey(it) == key }
-                        ?.let { Pairing.buildUrl(it.host, it.port) to it.token }
+                    val stored = devices.state.value.devices.firstOrNull { deviceKey(it) == key }
+                    if (stored == null) null
+                    else {
+                        val eps = stored.endpoints.ifEmpty { listOf(StoredEndpoint(stored.host, stored.port)) }
+                        eps.map { Pairing.buildUrl(it.host, it.port) to stored.token }
+                    }
                 }
                 scope.launch { devices.upsert(device) }
             }

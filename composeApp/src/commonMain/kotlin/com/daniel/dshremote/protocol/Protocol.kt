@@ -133,6 +133,13 @@ enum class ApprovalDecision(val wire: String) {
 
 // ---- 设备 / 配对 ----
 
+/** 手机可达的候选端点（多路由重连用）。 */
+@Serializable
+data class StoredEndpoint(
+    val host: String,
+    val port: Int,
+)
+
 /** 手机本地持久化的一台已连接桌面设备（含指纹 serverId）。 */
 @Serializable
 data class StoredDevice(
@@ -147,6 +154,8 @@ data class StoredDevice(
     val hostname: String? = null,
     val createdAt: Long,
     val lastSeenAt: Long,
+    /** 候选端点列表（主端点在前）；旧数据缺省时回退 host/port 单端点。 */
+    val endpoints: List<StoredEndpoint> = emptyList(),
 )
 
 @Serializable
@@ -264,6 +273,8 @@ sealed interface ServerEvent {
         val deviceToken: String,
         val serverId: String,
         val hostname: String,
+        /** 桌面端下发的候选端点（127.0.0.1 + 局域网/Tailscale IP）。 */
+        val endpoints: List<StoredEndpoint> = emptyList(),
     ) : ServerEvent
 
     @Serializable
