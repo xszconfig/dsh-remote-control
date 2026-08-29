@@ -8,6 +8,7 @@ import com.daniel.dshremote.protocol.CachedSessionSnapshot
 import com.daniel.dshremote.protocol.ClientCommand
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.LogEntryWire
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import com.daniel.dshremote.protocol.QueueItemWire
@@ -802,6 +803,18 @@ class BridgeClient(
             }
             is ServerEvent.SessionQueue -> _session.update { s ->
                 if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
+            }
+            is ServerEvent.LogsRequest -> {
+                // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）
+                val entries = ConnLog.snapshot().takeLast(500).map {
+                    LogEntryWire(ts = it.ts, level = it.level.label, tag = it.tag, message = it.message)
+                }
+                ConnLog.info("LOG", "桌面端请求手机日志 → 回传 ${entries.size} 条 (request=${ev.requestId.take(8)})")
+                scope.launch {
+                    if (!connection.send(ClientCommand.UploadLogs(ev.requestId, entries))) {
+                        ConnLog.warn("LOG", "手机日志回传失败（连接已断开）")
+                    }
+                }
             }
             is ServerEvent.AgentStatus -> {
                 _session.update { s ->

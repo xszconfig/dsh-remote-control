@@ -228,6 +228,15 @@ data class QueueItemWire(
     val text: String,
 )
 
+/** 手机回传本地结构化连接日志（桌面端 /remote/phone-logs 拉取）。 */
+@Serializable
+data class LogEntryWire(
+    val ts: Long,
+    val level: String,
+    val tag: String,
+    val message: String,
+)
+
 // ---- 服务端事件（sealed 多态，type 字段判别）----
 
 @Serializable
@@ -273,6 +282,11 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("session_queue")
     data class SessionQueue(val sessionId: String, val items: List<QueueItemWire>) : ServerEvent
+
+    /** 桌面端请求手机回传本地日志（/remote/phone-logs 触发）。 */
+    @Serializable
+    @SerialName("logs_request")
+    data class LogsRequest(val requestId: String) : ServerEvent
 
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
@@ -348,6 +362,10 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("queue_action")
     data class QueueAction(val sessionId: String, val itemId: String, val action: String) : ClientCommand
+
+    @Serializable
+    @SerialName("upload_logs")
+    data class UploadLogs(val requestId: String, val entries: kotlin.collections.List<LogEntryWire>) : ClientCommand
 
     @Serializable
     @SerialName("approve")
