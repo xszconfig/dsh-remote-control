@@ -57,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +80,8 @@ import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 // ================= 根 =================
@@ -939,6 +942,15 @@ private fun basenameOf(path: String): String =
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
+    // 草稿：进入会话时从磁盘载入未发送文本；输入变化防抖落盘。
+    // 断线/重连、切会话、App 重启都不丢用户打字。
+    LaunchedEffect(sessionId) {
+        client.loadDraft(sessionId)?.takeIf { it.isNotEmpty() }?.let { input = it }
+        snapshotFlow { input }
+            .drop(1) // 跳过载入草稿触发的那次
+            .debounce(600)
+            .collect { text -> client.saveDraft(sessionId, text) }
+    }
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()

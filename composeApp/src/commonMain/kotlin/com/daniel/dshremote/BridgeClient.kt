@@ -135,6 +135,7 @@ class BridgeClient(
     store: DeviceStore,
     private val eventCache: EventCache,
     private val sessionCache: SessionCache,
+    private val draftCache: DraftCache,
 ) {
 
     val connection = ConnectionManager(scope)
@@ -478,6 +479,22 @@ class BridgeClient(
         val device = _session.value.connectedDevice
         val prefix = device?.let { "${it.host}_${it.port}" } ?: "unknown"
         return "$prefix-$sessionId"
+    }
+
+    // ---- 输入框草稿（断线/重连/重启不丢打字）----
+
+    private fun draftKey(sessionId: String): String {
+        val device = _session.value.connectedDevice
+        val prefix = device?.let { it.serverId ?: "${it.host}_${it.port}" } ?: "unknown"
+        return "$prefix-$sessionId"
+    }
+
+    /** 载入某会话的待发送草稿。 */
+    suspend fun loadDraft(sessionId: String): String? = draftCache.load(draftKey(sessionId))
+
+    /** 保存草稿（空白 = 清除）；节流由 UI 层防抖负责。 */
+    fun saveDraft(sessionId: String, text: String) {
+        scope.launch { draftCache.save(draftKey(sessionId), text) }
     }
 
     private var cacheSaveJob: Job? = null
