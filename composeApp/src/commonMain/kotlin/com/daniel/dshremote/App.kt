@@ -90,10 +90,16 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+
+/** Markdown 代码块固定配色（两种气泡底色上都清晰可读）。 */
+private val MarkdownCodeBg = Color(0xFF14181F)
+private val MarkdownCodeFg = Color(0xFFDCE4EF)
 
 // ================= 根 =================
 
@@ -1251,6 +1257,7 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
             container = MaterialTheme.colorScheme.surfaceVariant,
             content = MaterialTheme.colorScheme.onSurface,
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            markdown = true, // Agent 正文走 Markdown 渲染（代码块/表格/加粗等）
         )
         "tool_call" -> ToolCallCard(e, isError = callFailed)
         "tool_result" -> ToolResultCard(e)
@@ -1276,6 +1283,7 @@ private fun Bubble(
     container: Color,
     content: Color,
     labelColor: Color,
+    markdown: Boolean = false,
 ) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -1311,12 +1319,31 @@ private fun Bubble(
                 bottomEnd = if (alignEnd) 4.dp else 16.dp,
             ),
         ) {
-            Text(
-                text.ifBlank { "…" },
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = content,
-            )
+            if (markdown) {
+                // 开源 CommonMark 渲染（mikepenz/multiplatform-markdown-renderer，基于 JetBrains
+                // CommonMark/GFM 解析）：代码块、表格、标题、加粗/斜体/行内代码、列表、引用等。
+                Markdown(
+                    content = text,
+                    colors = markdownColor(
+                        text = content,
+                        codeText = MarkdownCodeFg,
+                        codeBackground = MarkdownCodeBg,
+                        inlineCodeText = content,
+                        inlineCodeBackground = content.copy(alpha = 0.14f),
+                        linkText = AccentBlue,
+                        tableText = content,
+                        dividerColor = content.copy(alpha = 0.35f),
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            } else {
+                Text(
+                    text.ifBlank { "…" },
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = content,
+                )
+            }
         }
     }
 }
