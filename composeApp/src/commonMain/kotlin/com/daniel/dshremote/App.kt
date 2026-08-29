@@ -1116,7 +1116,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 value = input,
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("发指令给 Agent…") },
+                placeholder = { Text("发指令给DeepSeek Harness") },
                 shape = RoundedCornerShape(22.dp),
                 maxLines = 4,
             )
