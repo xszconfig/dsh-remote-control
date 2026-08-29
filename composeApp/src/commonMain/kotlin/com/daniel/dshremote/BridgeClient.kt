@@ -296,7 +296,28 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             }
         }
         userDisconnect = false
-        connect(device.host, device.port, device.token, device)
+        // 首次直连同样走多候选（主端点优先、4s 快速失败逐路回退）：
+        // USB 隧道失效时自动落到局域网/Tailscale 端点，无需等重连循环
+        connectJob?.cancel()
+        connectJob = scope.launch {
+            if (hintName(device)) _session.update { it.copy(connectedDevice = device) }
+            val eps = device.endpoints.ifEmpty { listOf(StoredEndpoint(device.host, device.port)) }
+            var ok = false
+            for ((index, e) in eps.withIndex()) {
+                ConnLog.info("CONNECT", "直连候选 ${index + 1}/${eps.size}: ${e.host}:${e.port}")
+                if (connection.open(Pairing.buildUrl(e.host, e.port), device.token)) {
+                    ok = true
+                    break
+                }
+                ConnLog.warn("CONNECT", "直连候选失败 ${e.host}:${e.port}: ${connection.info.value.detail}")
+            }
+            if (!ok && eps.any { it.host == "127.0.0.1" }) {
+                connection.fail(
+                    connection.info.value.detail.ifBlank { "连接失败" } +
+                        "\n提示：USB 连接请先在电脑上执行 adb reverse tcp:3080 tcp:3080",
+                )
+            }
+        }
     }
 
     fun connectManual(host: String, port: Int, token: String?) {
@@ -312,6 +333,12 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             finishSession(null)
             connection.close()
         }
+    }
+
+    /** 直连时是否已把 hint 设备名挂上会话状态（Hello 注册时取名称用）。 */
+    private fun hintName(device: StoredDevice): Boolean {
+        _session.update { it.copy(connectedDevice = device) }
+        return true
     }
 
     private fun connect(host: String, port: Int, token: String?, hint: StoredDevice?) {
