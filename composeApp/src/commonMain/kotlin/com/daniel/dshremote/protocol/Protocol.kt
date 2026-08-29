@@ -35,6 +35,18 @@ data class WorkspaceSummary(
     val sessionCount: Int,
 )
 
+/**
+ * 会话/工作区元数据本地缓存快照：打开 App 先渲染，Hello 到达后做增量对账
+ * （新增/更新/删除），不实时重拉。selectedWorkspaceId 一并持久化保留用户位置。
+ */
+@Serializable
+data class CachedSessionSnapshot(
+    val sessions: List<SessionSummary> = emptyList(),
+    val workspaces: List<WorkspaceSummary> = emptyList(),
+    val selectedWorkspaceId: String? = null,
+    val savedAt: Long = 0L,
+)
+
 @Serializable
 data class AgentSummary(
     val sessionId: String,
@@ -240,6 +252,11 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("session_title")
     data class SessionTitle(val sessionId: String, val title: String) : ServerEvent
+
+    /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
+    @Serializable
+    @SerialName("session_upsert")
+    data class SessionUpsert(val session: SessionSummary) : ServerEvent
 
     @Serializable
     @SerialName("approval_request")

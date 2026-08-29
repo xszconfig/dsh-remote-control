@@ -537,7 +537,9 @@ private fun WorkspaceDrawer(
             state.workspaces.forEach { w ->
                 DrawerEntry(
                     label = w.title,
-                    badge = w.sessionCount,
+                    // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
+                    // 与列表不一致会出现「外面 N 个、点进去没有」）
+                    badge = state.sessions.count { it.workspaceId == w.id },
                     icon = "📁",
                     selected = state.selectedWorkspaceId == w.id,
                     onClick = { onSelect(w.id) },

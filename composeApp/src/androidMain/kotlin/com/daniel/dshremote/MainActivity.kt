@@ -18,12 +18,14 @@ class MainActivity : ComponentActivity() {
         AppContext.activity = this
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
         val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
+        val sessionCache = AndroidSessionCache(File(applicationContext.filesDir, "session-cache"))
         setContent {
             val client = remember {
                 BridgeClient(
                     scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
                     store = deviceStore,
                     eventCache = eventCache,
+                    sessionCache = sessionCache,
                 )
             }
             App(client)

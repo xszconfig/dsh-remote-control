@@ -4,6 +4,7 @@ import com.daniel.dshremote.protocol.AgentSummary
 import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.BridgeJson
+import com.daniel.dshremote.protocol.CachedSessionSnapshot
 import com.daniel.dshremote.protocol.ClientCommand
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
@@ -122,7 +123,12 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
  * 把指令派发给 [ConnectionManager]、把设备变更派发给 [DeviceRepository]。
  * 单条连接的收发在 ConnectionManager，设备资产在 DeviceRepository。
  */
-class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, private val eventCache: EventCache) {
+class BridgeClient(
+    private val scope: CoroutineScope,
+    store: DeviceStore,
+    private val eventCache: EventCache,
+    private val sessionCache: SessionCache,
+) {
 
     val connection = ConnectionManager(scope)
     val devices = DeviceRepository(scope, store)
@@ -284,6 +290,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
     }
 
     fun connectDevice(device: StoredDevice) {
+        hydrateFromSessionCache(device)
         val key = deviceKey(device)
         reconnectProvider = {
             // 每次重试取最新存储的设备记录（token 可能已被轮换）；
@@ -422,6 +429,59 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
             val events = _session.value.events
             if (events.isEmpty()) return@launch
             eventCache.save(eventCacheKey(sid), events)
+        }
+    }
+
+    // ---- 会话/工作区元数据缓存（列表秒开 + 增量对账）----
+
+    /** 会话元数据缓存 key：桌面指纹 serverId 优先（网络切换不变），退化为端点。 */
+    private fun sessionCacheKeyOf(device: StoredDevice): String =
+        device.serverId ?: "${device.host}_${device.port}"
+
+    /**
+     * 连接开始时用本地缓存水合会话/工作区列表（打开 App 秒开，不实时拉）；
+     * Hello 快照到达后做增量对账覆盖。仅在状态为空时水合，不打断在线数据。
+     */
+    private fun hydrateFromSessionCache(device: StoredDevice) {
+        val cur = _session.value
+        if (cur.sessions.isNotEmpty() || cur.workspaces.isNotEmpty()) return
+        val key = sessionCacheKeyOf(device)
+        scope.launch {
+            val snap = sessionCache.load(key) ?: return@launch
+            ConnLog.info("CACHE", "会话列表缓存命中：${snap.sessions.size} 会话 / ${snap.workspaces.size} 工作区")
+            _session.update { s ->
+                if (s.sessions.isNotEmpty() || s.workspaces.isNotEmpty()) s
+                else s.copy(
+                    sessions = snap.sessions,
+                    workspaces = snap.workspaces,
+                    selectedWorkspaceId = snap.selectedWorkspaceId ?: s.selectedWorkspaceId,
+                )
+            }
+        }
+    }
+
+    private var sessionCacheSaveJob: Job? = null
+    private var lastSessionCacheSaveAt = 0L
+
+    /** 元数据变更后节流回写（2s），与事件缓存同节奏。 */
+    private fun scheduleSessionCacheSave() {
+        val device = _session.value.connectedDevice ?: return
+        val now = nowMillis()
+        if (now - lastSessionCacheSaveAt < 2_000) return
+        lastSessionCacheSaveAt = now
+        sessionCacheSaveJob?.cancel()
+        val key = sessionCacheKeyOf(device)
+        sessionCacheSaveJob = scope.launch {
+            val s = _session.value
+            sessionCache.save(
+                key,
+                CachedSessionSnapshot(
+                    sessions = s.sessions,
+                    workspaces = s.workspaces,
+                    selectedWorkspaceId = s.selectedWorkspaceId,
+                    savedAt = nowMillis(),
+                ),
+            )
         }
     }
 
@@ -564,6 +624,14 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
                 sawHelloThisConnection = true
                 val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
                     .distinctBy { it.approvalId }
+                // 增量对账：服务端快照是唯一事实源，与当前列表 diff 出增/改/删
+                val prev = _session.value
+                val added = ev.sessions.count { n -> prev.sessions.none { it.id == n.id } }
+                val updated = ev.sessions.count { n -> prev.sessions.any { it.id == n.id && it != n } }
+                val removed = prev.sessions.count { o -> ev.sessions.none { it.id == o.id } }
+                if (added + updated + removed > 0) {
+                    ConnLog.info("SYNC", "会话对账 新增=$added 更新=$updated 删除=$removed（共 ${ev.sessions.size} 条）")
+                }
                 ConnLog.info(
                     "EVENT",
                     "收到 hello: sessions=${ev.sessions.size} workspaces=${ev.workspaces.size} " +
@@ -585,9 +653,16 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
                             .let { still -> if (still) it.decidingQuestionRpcId else null },
                         selectedWorkspaceId = it.selectedWorkspaceId
                             ?.takeIf { sel -> sel == UNGROUPED_KEY || ev.workspaces.any { w -> w.id == sel } },
+                        // 打开中的会话已被删除 → 关闭视图，避免停留幽灵会话
+                        currentSessionId = it.currentSessionId
+                            ?.takeIf { cid -> ev.sessions.any { s -> s.id == cid } },
+                        events = it.currentSessionId
+                            ?.takeIf { cid -> ev.sessions.none { s -> s.id == cid } }
+                            ?.let { emptyList() } ?: it.events,
                     )
                 }
                 if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
+                scheduleSessionCacheSave()
                 // 重连/新连接后若停留在会话页：重新订阅以服务端历史为准（补齐断线期间事件）
                 val sid = _session.value.currentSessionId
                 if (sid != null) {
@@ -610,18 +685,33 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
                 }
                 if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
             }
-            is ServerEvent.AgentStatus -> _session.update { s ->
-                s.copy(
-                    sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
-                    agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
-                )
+            is ServerEvent.AgentStatus -> {
+                _session.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
+                        agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
+                    )
+                }
+                scheduleSessionCacheSave()
             }
-            is ServerEvent.SessionTitle -> _session.update { s ->
-                s.copy(
-                    sessions = s.sessions.map {
-                        if (it.id == ev.sessionId) it.copy(name = ev.title) else it
-                    },
-                )
+            is ServerEvent.SessionTitle -> {
+                _session.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map {
+                            if (it.id == ev.sessionId) it.copy(name = ev.title) else it
+                        },
+                    )
+                }
+                scheduleSessionCacheSave()
+            }
+            is ServerEvent.SessionUpsert -> {
+                // 列表增量：同 id 替换行，再按 updatedAt 倒序归位
+                _session.update { s ->
+                    val rows = (s.sessions.filterNot { it.id == ev.session.id } + ev.session)
+                        .sortedByDescending { it.updatedAt }
+                    s.copy(sessions = rows)
+                }
+                scheduleSessionCacheSave()
             }
             is ServerEvent.ApprovalRequest -> _session.update { s ->
                 val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
