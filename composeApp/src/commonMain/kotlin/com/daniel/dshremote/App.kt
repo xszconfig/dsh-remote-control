@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -940,6 +941,14 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     var input by remember { mutableStateOf("") }
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
+    val listState = rememberLazyListState()
+    val latestSeq = state.events.lastOrNull()?.seq
+    // 新消息到达（含刚发出的消息回显）→ 滚到列表底部，始终展示最新内容。
+    // reverseLayout 下 index 0 = 底部最新；以最后事件 seq 为键，
+    // 列表达 MAX_EVENTS 上限后 size 不再增长也能继续触发。
+    LaunchedEffect(latestSeq, sessionId) {
+        if (state.events.isNotEmpty()) listState.scrollToItem(0)
+    }
     Column(Modifier.fillMaxSize()) {
         if (state.events.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -951,7 +960,8 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
         } else {
             LazyColumn(
-                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
                 reverseLayout = true,
             ) {
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
