@@ -69,6 +69,12 @@ data class EventProjection(
     val timestamp: Long,
     /** 工具调用/结果关联 id：客户端据此把失败的命令标红。 */
     val callId: String? = null,
+    /** 工具调用卡片形态（桌面端 presentCall 同源）：terminal=命令卡，generic/diff=通用卡。 */
+    val toolCard: String? = null,
+    /** 工具调用的一行描述（桌面端 ToolCallView.title；Bash 即命令文本）。 */
+    val toolDesc: String? = null,
+    /** 工具类别（read/edit/delete/move/search/execute/fetch/other），客户端选图标。 */
+    val toolKind: String? = null,
 )
 
 @Serializable

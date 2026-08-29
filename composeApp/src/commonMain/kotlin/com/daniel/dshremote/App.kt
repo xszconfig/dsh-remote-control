@@ -1186,6 +1186,7 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
         )
         "tool_call" -> ToolCallCard(e, isError = callFailed)
         "tool_result" -> ToolResultCard(e)
+        "think" -> ThinkCard(e)
         else -> Bubble(
             text = e.text ?: e.type,
             label = e.type,
@@ -1245,6 +1246,19 @@ private fun Bubble(
 @Composable
 private fun ToolCallCard(e: EventProjection, isError: Boolean) {
     var expanded by remember { mutableStateOf(false) }
+    // 与 dsh web 对齐的一行形态：[图标] 工具名 · 描述（Bash 的描述即命令文本）
+    val icon = when {
+        e.toolCard == "terminal" -> ">_"
+        e.toolKind == "read" -> "📖"
+        e.toolKind == "edit" -> "✏️"
+        e.toolKind == "delete" -> "🗑"
+        e.toolKind == "move" -> "📁"
+        e.toolKind == "search" -> "🔍"
+        e.toolKind == "execute" -> "⚡"
+        e.toolKind == "fetch" -> "🌐"
+        else -> "🛠"
+    }
+    val desc = e.toolDesc ?: ""
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded },
         shape = RoundedCornerShape(14.dp),
@@ -1254,9 +1268,15 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
             else MaterialTheme.colorScheme.secondaryContainer,
         ),
     ) {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (isError) "⚠️" else "🛠", fontSize = 13.sp)
+                Text(
+                    icon,
+                    fontSize = 13.sp,
+                    fontFamily = if (e.toolCard == "terminal") FontFamily.Monospace else null,
+                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSecondaryContainer,
+                )
                 Spacer(Modifier.width(6.dp))
                 Text(
                     e.toolName ?: "tool",
@@ -1265,6 +1285,26 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                     color = if (isError) MaterialTheme.colorScheme.onErrorContainer
                     else MaterialTheme.colorScheme.onSecondaryContainer,
                 )
+                if (desc.isNotBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "·",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = (if (isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSecondaryContainer).copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        desc,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = if (e.toolCard == "terminal") FontFamily.Monospace else null,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 Text(
                     formatClock(e.timestamp),
@@ -1285,6 +1325,53 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                     else MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
+        }
+    }
+}
+
+/** Think（思考）步骤：一行浓缩展示（与 dsh web 对齐）。 */
+@Composable
+private fun ThinkCard(e: EventProjection) {
+    Card(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("💭", fontSize = 13.sp)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "思考",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "·",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                e.text ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                formatClock(e.timestamp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
         }
     }
 }
