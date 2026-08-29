@@ -67,6 +67,8 @@ data class EventProjection(
     val toolResult: String? = null,
     val toolError: Boolean? = null,
     val timestamp: Long,
+    /** 工具调用/结果关联 id：客户端据此把失败的命令标红。 */
+    val callId: String? = null,
 )
 
 @Serializable

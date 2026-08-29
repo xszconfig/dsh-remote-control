@@ -977,7 +977,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 reverseLayout = true,
             ) {
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
-                    EventBubble(e)
+                    EventBubble(e, state.events)
                 }
             }
         }
@@ -1097,7 +1097,10 @@ private fun SendIcon(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun EventBubble(e: EventProjection) {
+private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
+    // 工具调用失败：同 callId 的结果带 toolError → 命令标红（与桌面端一致）
+    val callFailed = e.type == "tool_call" && e.callId != null &&
+        allEvents.any { it.type == "tool_result" && it.callId == e.callId && it.toolError == true }
     when (e.type) {
         "user_message" -> Bubble(
             text = e.text ?: "",
@@ -1117,7 +1120,7 @@ private fun EventBubble(e: EventProjection) {
             content = MaterialTheme.colorScheme.onSurface,
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        "tool_call" -> ToolCallCard(e)
+        "tool_call" -> ToolCallCard(e, isError = callFailed)
         "tool_result" -> ToolResultCard(e)
         else -> Bubble(
             text = e.text ?: e.type,
@@ -1176,26 +1179,37 @@ private fun Bubble(
 }
 
 @Composable
-private fun ToolCallCard(e: EventProjection) {
+private fun ToolCallCard(e: EventProjection, isError: Boolean) {
     var expanded by remember { mutableStateOf(false) }
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded },
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        colors = CardDefaults.cardColors(
+            // 失败的命令标红（与桌面端一致），正常命令保持青绿容器
+            containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.secondaryContainer,
+        ),
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("🛠", fontSize = 13.sp)
+                Text(if (isError) "⚠️" else "🛠", fontSize = 13.sp)
                 Spacer(Modifier.width(6.dp))
-                Text(e.toolName ?: "tool", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    e.toolName ?: "tool",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSecondaryContainer,
+                )
                 Spacer(Modifier.weight(1f))
                 Text(
                     formatClock(e.timestamp),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    color = (if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSecondaryContainer).copy(alpha = 0.7f),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (expanded) "▲" else "▼", fontSize = 10.sp)
+                Text(if (expanded) "▲" else "▼", fontSize = 10.sp, color = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer)
             }
             AnimatedVisibility(visible = expanded) {
                 Text(
@@ -1203,7 +1217,8 @@ private fun ToolCallCard(e: EventProjection) {
                     modifier = Modifier.padding(top = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
         }
