@@ -51,6 +51,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -1006,6 +1007,19 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 }
             }
         } else {
+            // 上滑到最早一条附近时自动加载更早的历史页（reverseLayout 下最高 index = 最早）
+            val shouldLoadOlder by remember {
+                derivedStateOf {
+                    val info = listState.layoutInfo
+                    val topIndex = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                    topIndex >= info.totalItemsCount - 3
+                }
+            }
+            LaunchedEffect(shouldLoadOlder, state.hasMore, state.loadingOlder) {
+                if (shouldLoadOlder && state.hasMore && !state.loadingOlder) {
+                    client.loadOlderPage(sessionId)
+                }
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
@@ -1013,6 +1027,16 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             ) {
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
                     EventBubble(e, state.events)
+                }
+                if (state.loadingOlder) {
+                    item(key = "loading-older") {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        }
+                    }
                 }
             }
         }

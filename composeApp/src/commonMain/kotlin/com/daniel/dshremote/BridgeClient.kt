@@ -93,6 +93,12 @@ data class SessionUiState(
     /** 查看子代理会话时记录的返回目标（主会话 id）；返回键/← 回到主会话。 */
     val subagentReturnTo: String? = null,
     val events: List<EventProjection> = emptyList(),
+    /** 是否还有更早历史可翻页。 */
+    val hasMore: Boolean = false,
+    /** 会话事件总数。 */
+    val historyTotal: Int = 0,
+    /** 正在加载更早历史页。 */
+    val loadingOlder: Boolean = false,
     /** 当前会话排队的消息（inbox 投影；空 = 无排队）。 */
     val queueItems: List<QueueItemWire> = emptyList(),
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
@@ -119,6 +125,9 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     currentSessionId = null,
     subagentReturnTo = null,
     events = emptyList(),
+    hasMore = false,
+    historyTotal = 0,
+    loadingOlder = false,
     queueItems = emptyList(),
     approvals = emptyList(),
     decidingApprovalId = null,
@@ -635,6 +644,20 @@ class BridgeClient(
     }
 
     /** 排队消息操作：steer = 插队（注入当前轮）；remove = 移除排队消息。 */
+    /** 加载更早的一页历史（seq < 当前窗口最小 seq）。 */
+    fun loadOlderPage(sessionId: String) {
+        val s = _session.value
+        if (s.currentSessionId != sessionId || s.loadingOlder || !s.hasMore) return
+        val beforeSeq = s.events.minOfOrNull { it.seq } ?: return
+        _session.update { it.copy(loadingOlder = true) }
+        scope.launch {
+            if (!connection.send(ClientCommand.HistoryPage(sessionId, beforeSeq, 300))) {
+                _session.update { it.copy(loadingOlder = false) }
+                pushError("加载更早消息失败（连接已断开）")
+            }
+        }
+    }
+
     fun sendQueueAction(sessionId: String, itemId: String, action: String) {
         scope.launch {
             if (!connection.send(ClientCommand.QueueAction(sessionId, itemId, action))) {
@@ -820,15 +843,29 @@ class BridgeClient(
             }
             is ServerEvent.History -> {
                 _session.update { s ->
-                    if (ev.sessionId == s.currentSessionId) {
-                        s.copy(events = ev.events.bounded(), queueItems = ev.queue)
-                    } else {
+                    if (ev.sessionId != s.currentSessionId) {
                         s
+                    } else if (s.loadingOlder) {
+                        // 翻页响应：往前插入更早的一页（按 seq 去重）
+                        val merged = (ev.events + s.events).distinctBy { it.seq }
+                        s.copy(
+                            events = merged,
+                            hasMore = ev.hasMore,
+                            historyTotal = ev.total,
+                            loadingOlder = false,
+                        )
+                    } else {
+                        s.copy(
+                            events = ev.events.bounded(),
+                            queueItems = ev.queue,
+                            hasMore = ev.hasMore,
+                            historyTotal = ev.total,
+                        )
                     }
                 }
                 lastCacheSaveAt = 0
-                scope.launch { eventCache.save(eventCacheKey(ev.sessionId), ev.events.bounded()) }
-                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史 ${ev.events.size} 条已落盘（排队 ${ev.queue.size}）")
+                scope.launch { eventCache.save(eventCacheKey(ev.sessionId), _session.value.events.takeLast(MAX_EVENTS)) }
+                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史窗口 ${_session.value.events.size} 条（排队 ${ev.queue.size}）")
             }
             is ServerEvent.Event -> {
                 _session.update { s ->

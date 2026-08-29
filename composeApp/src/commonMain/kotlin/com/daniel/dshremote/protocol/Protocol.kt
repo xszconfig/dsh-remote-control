@@ -267,6 +267,10 @@ sealed interface ServerEvent {
         val events: List<EventProjection>,
         /** 该会话当前排队的消息；缺省 = 无排队。 */
         val queue: List<QueueItemWire> = emptyList(),
+        /** 是否还有更早的历史可翻页（history_page 继续加载）。 */
+        val hasMore: Boolean = false,
+        /** 会话事件总数（展示用）。 */
+        val total: Int = 0,
     ) : ServerEvent
 
     @Serializable
@@ -355,6 +359,11 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("send_message")
     data class SendMessage(val sessionId: String, val text: String) : ClientCommand
+
+    /** 历史分页：拉取 seq < beforeSeq 的最近一页（最多 limit 条）。 */
+    @Serializable
+    @SerialName("history_page")
+    data class HistoryPage(val sessionId: String, val beforeSeq: Long, val limit: Int = 300) : ClientCommand
 
     @Serializable
     @SerialName("interrupt")

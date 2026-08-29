@@ -29,6 +29,7 @@ val ClientCommand.typeName: String
         ClientCommand.List -> "list"
         is ClientCommand.Subscribe -> "subscribe"
         is ClientCommand.SendMessage -> "send_message"
+        is ClientCommand.HistoryPage -> "history_page"
         is ClientCommand.Interrupt -> "interrupt"
         is ClientCommand.Approve -> "approve"
         is ClientCommand.AnswerApproval -> "answer_approval"
