@@ -1,9 +1,12 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.daniel.dshremote
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -81,7 +84,11 @@ import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
@@ -984,6 +991,8 @@ private fun basenameOf(path: String): String =
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     // 草稿：进入会话时从磁盘载入未发送文本；输入变化防抖落盘。
     // 断线/重连、切会话、App 重启都不丢用户打字。
     LaunchedEffect(sessionId) {
@@ -1014,37 +1023,6 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
         if (state.events.isNotEmpty()) listState.scrollToItem(0)
     }
     Column(Modifier.fillMaxSize()) {
-        state.modelWaitingSince?.let { since ->
-            Surface(color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("🤿", fontSize = 13.sp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "Deep Diving",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "·",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "等待 ${(nowMillis() - since) / 1000}s",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f),
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            divingTick // 每秒重算时长
-        }
         if (state.events.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1086,6 +1064,40 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     }
                 }
             }
+        }
+        // Deep Diving：与 DSH Web 对齐——放在排队消息面板上方（不在列表顶部）；
+        // 深 Seek 品牌蓝；计时显示本轮对话总耗时（跨多次模型调用不重置）。
+        state.modelWaitingSince?.let { since ->
+            val turnStart = state.divingTurnStart ?: since
+            Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("🤿", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Deep Diving",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = DeepSeekBlue,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "·",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DeepSeekBlue.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "本轮 ${(nowMillis() - turnStart) / 1000}s",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DeepSeekBlue.copy(alpha = 0.85f),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            divingTick // 每秒重算时长
         }
         // 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除
         if (state.queueItems.isNotEmpty()) {
@@ -1169,6 +1181,9 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     if (text.isNotEmpty()) {
                         client.sendMessage(text)
                         input = ""
+                        // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
                     }
                 },
                 modifier = Modifier.size(48.dp),
@@ -1267,7 +1282,17 @@ private fun Bubble(
             }
         }
         Spacer(Modifier.height(3.dp))
+        // 长按复制：消息文本进剪贴板 + 长按触感反馈
+        val clipboard = LocalClipboardManager.current
+        val haptic = LocalHapticFeedback.current
         Surface(
+            modifier = Modifier.combinedClickable(
+                onClick = {},
+                onLongClick = {
+                    clipboard.setText(AnnotatedString(text))
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+            ),
             color = container,
             shape = RoundedCornerShape(
                 topStart = 16.dp, topEnd = 16.dp,
@@ -1301,8 +1326,16 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
         else -> "🛠"
     }
     val desc = e.toolDesc ?: ""
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
     Card(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded },
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).combinedClickable(
+            onClick = { expanded = !expanded },
+            onLongClick = {
+                clipboard.setText(AnnotatedString(listOfNotNull(desc.ifBlank { null }, e.toolArgs).joinToString("\n")))
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            },
+        ),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             // 失败的命令标红（与桌面端一致），正常命令保持青绿容器
@@ -1340,14 +1373,16 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                         desc,
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = if (e.toolCard == "terminal") FontFamily.Monospace else null,
-                        maxLines = 1,
+                        // 折叠时两行（原来一行截太短）；展开时全文
+                        maxLines = if (expanded) Int.MAX_VALUE else 2,
                         overflow = TextOverflow.Ellipsis,
                         color = if (isError) MaterialTheme.colorScheme.onErrorContainer
                         else MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.weight(1f),
                     )
                 }
-                Spacer(Modifier.weight(1f))
+                // Description 与时间戳之间留出空隙（不再用 weight 挤到最右）
+                Spacer(Modifier.width(10.dp))
                 Text(
                     formatClock(e.timestamp),
                     style = MaterialTheme.typography.labelSmall,
@@ -1371,11 +1406,19 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
     }
 }
 
-/** Think（思考）步骤：一行浓缩展示（与 dsh web 对齐）。 */
+/** Think（思考）步骤：一行浓缩展示（与 dsh web 对齐），长按复制全文。 */
 @Composable
 private fun ThinkCard(e: EventProjection) {
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
     Card(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).combinedClickable(
+            onClick = {},
+            onLongClick = {
+                clipboard.setText(AnnotatedString(e.text ?: ""))
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            },
+        ),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1423,8 +1466,16 @@ private fun ToolResultCard(e: EventProjection) {
     val isError = e.toolError == true
     val result = e.toolResult ?: "(empty)"
     var expanded by remember(e.seq) { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
     Card(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded },
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).combinedClickable(
+            onClick = { expanded = !expanded },
+            onLongClick = {
+                clipboard.setText(AnnotatedString(result))
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            },
+        ),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
@@ -1442,13 +1493,11 @@ private fun ToolResultCard(e: EventProjection) {
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.weight(1f))
-                if (result.length > 400) {
-                    Text(
-                        if (expanded) "收起 ▲" else "展开 ▼（${result.length} 字符）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = AccentBlue,
-                    )
-                }
+                Text(
+                    if (expanded) "收起 ▲" else "展开 ▼（${result.length} 字符）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentBlue,
+                )
             }
             Text(
                 result,
@@ -1457,7 +1506,8 @@ private fun ToolResultCard(e: EventProjection) {
                 fontFamily = FontFamily.Monospace,
                 color = if (isError) MaterialTheme.colorScheme.onErrorContainer
                 else MaterialTheme.colorScheme.onSurface,
-                maxLines = if (expanded) Int.MAX_VALUE else if (result.length > 400) 8 else Int.MAX_VALUE,
+                // 默认折叠成一行，点击展开全文（用户要求）
+                maxLines = if (expanded) Int.MAX_VALUE else 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }

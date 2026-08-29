@@ -103,6 +103,8 @@ data class SessionUiState(
     val queueItems: List<QueueItemWire> = emptyList(),
     /** 当前会话模型请求开始时间（null = 未在等待模型）。 */
     val modelWaitingSince: Long? = null,
+    /** 本轮对话开始时间（首个模型请求时间；Deep Diving 显示本轮总耗时，跨多次模型调用不重置）。 */
+    val divingTurnStart: Long? = null,
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -132,6 +134,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     loadingOlder = false,
     queueItems = emptyList(),
     modelWaitingSince = null,
+    divingTurnStart = null,
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -862,8 +865,9 @@ class BridgeClient(
                     if (ev.sessionId != s.currentSessionId) {
                         s
                     } else if (s.loadingOlder) {
-                        // 翻页响应：往前插入更早的一页（按 seq 去重）
-                        val merged = (ev.events + s.events).distinctBy { it.seq }
+                        // 翻页响应：往前插入更早的一页（按 seq+type 去重——
+                        // think/正文同 seq，纯 seq 去重会丢行）
+                        val merged = (ev.events + s.events).distinctBy { "${it.seq}-${it.type}" }
                         s.copy(
                             events = merged,
                             hasMore = ev.hasMore,
@@ -893,7 +897,15 @@ class BridgeClient(
                 if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
             }
             is ServerEvent.ModelWaiting -> _session.update { st ->
-                if (ev.sessionId == st.currentSessionId) st.copy(modelWaitingSince = ev.startedAt) else st
+                // Deep Diving 本轮计时：首轮模型请求记录本轮起点，后续请求沿用（不重置）
+                if (ev.sessionId == st.currentSessionId) {
+                    st.copy(
+                        modelWaitingSince = ev.startedAt,
+                        divingTurnStart = st.divingTurnStart ?: ev.startedAt,
+                    )
+                } else {
+                    st
+                }
             }
             is ServerEvent.ModelWaitingDone -> _session.update { st ->
                 if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
@@ -919,6 +931,12 @@ class BridgeClient(
                     s.copy(
                         sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
                         agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
+                        // 轮次边界：进入 running 开启新一轮计时；离开 running 清掉本轮起点
+                        divingTurnStart = when {
+                            ev.sessionId != s.currentSessionId -> s.divingTurnStart
+                            ev.status == "running" -> s.divingTurnStart
+                            else -> null
+                        },
                     )
                 }
                 scheduleSessionCacheSave()

@@ -48,6 +48,9 @@ val StatusOrange = Color(0xFFFFA94D)
 /** 深色背景上的浅色强调文字（小号标签/链接类，primary 太深对比不足时用这个）。 */
 val AccentBlue = Color(0xFF9DB8FF)
 
+/** DeepSeek 品牌蓝：Deep Diving 指示条等品牌元素专用（用户指定与 DSH Web 对齐）。 */
+val DeepSeekBlue = Color(0xFF4D6BFE)
+
 @Composable
 fun DshTheme(content: @Composable () -> Unit) {
     // 全局兜底默认内容色 = onBackground（浅色）：
