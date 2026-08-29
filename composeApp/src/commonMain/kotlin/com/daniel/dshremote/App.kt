@@ -831,8 +831,14 @@ private fun SessionCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     buildString {
-                        if (showWorkspace && workspaceTitle != null) append("📁 $workspaceTitle · ")
-                        if (s.cwd.isNotBlank()) append(basenameOf(s.cwd))
+                        val base = if (s.cwd.isNotBlank()) basenameOf(s.cwd) else ""
+                        if (showWorkspace && workspaceTitle != null) append("📁 $workspaceTitle")
+                        // 工作区目录常以项目名命名：目录名与工作区名实质相同（忽略大小写/标点）时
+                        // 不再重复显示，避免「📁 dsh-remote-control · dsh-remote-control」
+                        if (base.isNotBlank() && (workspaceTitle == null || normName(base) != normName(workspaceTitle))) {
+                            if (isNotEmpty()) append(" · ")
+                            append(base)
+                        }
                         if (s.subagentCount > 0) append(" · 🤖${s.subagentCount}")
                     }.ifBlank { "(no cwd)" },
                     style = MaterialTheme.typography.bodySmall,
@@ -862,6 +868,10 @@ private fun sessionName(s: SessionSummary): String =
 
 private fun basenameOf(path: String): String =
     path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
+
+/** 名称归一化（比较用）：小写 + 去非字母数字，忽略大小写与标点差异。 */
+private fun normName(s: String): String =
+    s.lowercase().filter { it.isLetterOrDigit() }
 
 // ================= 会话详情 =================
 
