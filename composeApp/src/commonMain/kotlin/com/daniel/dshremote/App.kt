@@ -969,6 +969,68 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 }
             }
         }
+        // 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除
+        if (state.queueItems.isNotEmpty()) {
+            var queueExpanded by remember { mutableStateOf(true) }
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { queueExpanded = !queueExpanded }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "⏳ 排队中的消息（${state.queueItems.size}）",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (queueExpanded) "收起 ▲" else "展开 ▼",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AccentBlue,
+                        )
+                    }
+                    if (queueExpanded) {
+                        for (item in state.queueItems) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    when (item.placement) {
+                                        "steering" -> "⚡插队中"
+                                        "context" -> "🔧上下文"
+                                        else -> "排队"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (item.placement == "steering") StatusAmber
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    item.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (item.placement == "queued") {
+                                    TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "steer") }) {
+                                        Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                                TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "remove") }) {
+                                    Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),

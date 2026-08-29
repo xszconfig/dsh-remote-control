@@ -33,6 +33,7 @@ val ClientCommand.typeName: String
         is ClientCommand.Approve -> "approve"
         is ClientCommand.AnswerApproval -> "answer_approval"
         is ClientCommand.AnswerQuestion -> "answer_question"
+        is ClientCommand.QueueAction -> "queue_action"
         is ClientCommand.RegisterDevice -> "register_device"
         is ClientCommand.RevokeDevice -> "revoke_device"
     }

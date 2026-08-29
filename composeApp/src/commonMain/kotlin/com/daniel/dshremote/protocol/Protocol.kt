@@ -220,6 +220,14 @@ data class ServerLogsResponse(
     val entries: List<ServerLogEntry> = emptyList(),
 )
 
+/** 排队消息投影：placement = queued(下一轮)/steering(插队中)/context(系统注入)。 */
+@Serializable
+data class QueueItemWire(
+    val id: String,
+    val placement: String,
+    val text: String,
+)
+
 // ---- 服务端事件（sealed 多态，type 字段判别）----
 
 @Serializable
@@ -243,7 +251,12 @@ sealed interface ServerEvent {
 
     @Serializable
     @SerialName("history")
-    data class History(val sessionId: String, val events: List<EventProjection>) : ServerEvent
+    data class History(
+        val sessionId: String,
+        val events: List<EventProjection>,
+        /** 该会话当前排队的消息；缺省 = 无排队。 */
+        val queue: List<QueueItemWire> = emptyList(),
+    ) : ServerEvent
 
     @Serializable
     @SerialName("event")
@@ -256,6 +269,10 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("session_title")
     data class SessionTitle(val sessionId: String, val title: String) : ServerEvent
+
+    @Serializable
+    @SerialName("session_queue")
+    data class SessionQueue(val sessionId: String, val items: List<QueueItemWire>) : ServerEvent
 
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
@@ -326,6 +343,11 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("interrupt")
     data class Interrupt(val sessionId: String) : ClientCommand
+
+    /** 排队消息操作：steer = 插队（作为 steering 注入当前轮）；remove = 移除。 */
+    @Serializable
+    @SerialName("queue_action")
+    data class QueueAction(val sessionId: String, val itemId: String, val action: String) : ClientCommand
 
     @Serializable
     @SerialName("approve")

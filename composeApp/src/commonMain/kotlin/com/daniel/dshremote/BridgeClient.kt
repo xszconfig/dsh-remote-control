@@ -10,6 +10,7 @@ import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
+import com.daniel.dshremote.protocol.QueueItemWire
 import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.ServerLogsResponse
@@ -91,6 +92,8 @@ data class SessionUiState(
     /** 查看子代理会话时记录的返回目标（主会话 id）；返回键/← 回到主会话。 */
     val subagentReturnTo: String? = null,
     val events: List<EventProjection> = emptyList(),
+    /** 当前会话排队的消息（inbox 投影；空 = 无排队）。 */
+    val queueItems: List<QueueItemWire> = emptyList(),
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -115,6 +118,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     currentSessionId = null,
     subagentReturnTo = null,
     events = emptyList(),
+    queueItems = emptyList(),
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -454,7 +458,7 @@ class BridgeClient(
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return
-        _session.update { it.copy(currentSessionId = sessionId, events = emptyList()) }
+        _session.update { it.copy(currentSessionId = sessionId, events = emptyList(), queueItems = emptyList()) }
         scope.launch {
             // 先渲染本地缓存（秒开），订阅返回后以服务端历史为准
             val key = eventCacheKey(sessionId)
@@ -582,6 +586,15 @@ class BridgeClient(
     fun interrupt(sessionId: String) {
         scope.launch {
             if (!connection.send(ClientCommand.Interrupt(sessionId))) pushError("中断指令发送失败（连接已断开）")
+        }
+    }
+
+    /** 排队消息操作：steer = 插队（注入当前轮）；remove = 移除排队消息。 */
+    fun sendQueueAction(sessionId: String, itemId: String, action: String) {
+        scope.launch {
+            if (!connection.send(ClientCommand.QueueAction(sessionId, itemId, action))) {
+                pushError("排队操作发送失败（连接已断开）")
+            }
         }
     }
 
@@ -753,16 +766,25 @@ class BridgeClient(
                 }
             }
             is ServerEvent.History -> {
-                _session.update { it.copy(events = ev.events.bounded()) }
+                _session.update { s ->
+                    if (ev.sessionId == s.currentSessionId) {
+                        s.copy(events = ev.events.bounded(), queueItems = ev.queue)
+                    } else {
+                        s
+                    }
+                }
                 lastCacheSaveAt = 0
                 scope.launch { eventCache.save(eventCacheKey(ev.sessionId), ev.events.bounded()) }
-                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史 ${ev.events.size} 条已落盘")
+                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史 ${ev.events.size} 条已落盘（排队 ${ev.queue.size}）")
             }
             is ServerEvent.Event -> {
                 _session.update { s ->
                     if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
                 }
                 if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
+            }
+            is ServerEvent.SessionQueue -> _session.update { s ->
+                if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
             }
             is ServerEvent.AgentStatus -> {
                 _session.update { s ->
