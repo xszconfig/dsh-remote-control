@@ -77,8 +77,11 @@ class ConnectionManager(private val scope: CoroutineScope) {
                 _info.update { ConnectionInfo(ConnectionState.Connected) }
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
-                        val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
-                        _events.emit(ev)
+                        try {
+                            val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
+                            _events.emit(ev)
+                        } catch (e: Exception) {
+                        }
                     }
                 }
             }
@@ -87,6 +90,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
         } catch (e: Exception) {
             if (!established) {
                 _info.update { ConnectionInfo(ConnectionState.Error, e.message ?: "connection failed") }
+            } else {
             }
         } finally {
             ws = null
@@ -115,11 +119,13 @@ class ConnectionManager(private val scope: CoroutineScope) {
 
     /** 发送一条命令；未连接或通道已关时返回 false（不抛异常、不静默成功）。 */
     suspend fun send(cmd: ClientCommand): Boolean {
-        val session = ws ?: return false
+        val session = ws ?: run {
+            return false
+        }
         return try {
             session.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), cmd)))
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             false
         }
     }

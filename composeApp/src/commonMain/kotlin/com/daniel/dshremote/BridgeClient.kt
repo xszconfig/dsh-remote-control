@@ -3,9 +3,12 @@ package com.daniel.dshremote
 import com.daniel.dshremote.protocol.AgentSummary
 import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
+import com.daniel.dshremote.protocol.BridgeJson
 import com.daniel.dshremote.protocol.ClientCommand
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.QuestionAnswerItemWire
+import com.daniel.dshremote.protocol.QuestionRequestWire
 import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
@@ -72,7 +75,14 @@ data class SessionUiState(
     val selectedWorkspaceId: String? = null,
     val currentSessionId: String? = null,
     val events: List<EventProjection> = emptyList(),
+    /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
+    /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
+    val decidingApprovalId: String? = null,
+    /** 待回答提问队列（桌面端持有、bridge 经 mux 转发）。 */
+    val questions: List<QuestionRequestWire> = emptyList(),
+    /** 正在提交答案的提问 rpcId。 */
+    val decidingQuestionRpcId: String? = null,
     val errors: List<String> = emptyList(),
 )
 
@@ -89,6 +99,9 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     currentSessionId = null,
     events = emptyList(),
     approvals = emptyList(),
+    decidingApprovalId = null,
+    questions = emptyList(),
+    decidingQuestionRpcId = null,
 )
 
 /**
@@ -284,7 +297,8 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         val failures = mutableListOf<Pair<String, String>>()
         for (url in urls) {
             if (connection.open(url, null)) return
-            failures.add(Pairing.endpointOf(url).host to connection.info.value.detail)
+            val reason = connection.info.value.detail
+            failures.add(Pairing.endpointOf(url).host to reason)
         }
         connection.fail(buildConnectFailureDetail(failures))
     }
@@ -328,9 +342,42 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         }
     }
 
-    fun approve(approvalId: String, decision: ApprovalDecision) {
+    /** 裁决审批：bridge 持有走 approve；桌面端（mux）持有走 answer_approval。 */
+    fun approve(approval: ApprovalRequestWire, decision: ApprovalDecision) {
+        _session.update { it.copy(decidingApprovalId = approval.approvalId) }
         scope.launch {
-            if (!connection.send(ClientCommand.Approve(approvalId, decision))) pushError("审批决策发送失败（连接已断开）")
+            val command = if (approval.rpcId != null) {
+                ClientCommand.AnswerApproval(
+                    rpcId = approval.rpcId,
+                    sessionId = approval.sessionId,
+                    approvalId = approval.approvalId,
+                    decision = decision,
+                )
+            } else {
+                ClientCommand.Approve(approval.approvalId, decision)
+            }
+            if (!connection.send(command)) {
+                _session.update { it.copy(decidingApprovalId = null) }
+                pushError("审批决策发送失败（连接已断开）")
+            }
+        }
+    }
+
+    /** 提交提问答案（桌面端持有的 ask_user_question）。 */
+    fun answerQuestion(question: QuestionRequestWire, answers: List<QuestionAnswerItemWire>) {
+        _session.update { it.copy(decidingQuestionRpcId = question.rpcId) }
+        scope.launch {
+            val sent = connection.send(
+                ClientCommand.AnswerQuestion(
+                    rpcId = question.rpcId,
+                    sessionId = question.sessionId,
+                    answers = answers,
+                ),
+            )
+            if (!sent) {
+                _session.update { it.copy(decidingQuestionRpcId = null) }
+                pushError("提问答案发送失败（连接已断开）")
+            }
         }
     }
 
@@ -338,6 +385,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     fun dismissErrors() {
         _session.update { it.copy(errors = emptyList()) }
     }
+
 
     // ---- 设备管理 ----
 
@@ -387,11 +435,22 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         when (ev) {
             is ServerEvent.Hello -> {
                 sawHelloThisConnection = true
+                val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
+                    .distinctBy { it.approvalId }
                 _session.update {
                     it.copy(
                         sessions = ev.sessions,
                         agents = ev.agents,
                         workspaces = ev.workspaces,
+                        // 服务端持有中的审批/提问是唯一事实源（重连/新连接后据此重建队列）
+                        approvals = allApprovals,
+                        decidingApprovalId = allApprovals
+                            .any { a -> a.approvalId == it.decidingApprovalId }
+                            .let { still -> if (still) it.decidingApprovalId else null },
+                        questions = ev.pendingQuestions,
+                        decidingQuestionRpcId = ev.pendingQuestions
+                            .any { q -> q.rpcId == it.decidingQuestionRpcId }
+                            .let { still -> if (still) it.decidingQuestionRpcId else null },
                         selectedWorkspaceId = it.selectedWorkspaceId
                             ?.takeIf { sel -> sel == UNGROUPED_KEY || ev.workspaces.any { w -> w.id == sel } },
                     )
@@ -415,11 +474,33 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     },
                 )
             }
-            is ServerEvent.ApprovalRequest -> _session.update {
-                it.copy(approvals = it.approvals + ev.approval)
+            is ServerEvent.ApprovalRequest -> _session.update { s ->
+                val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
+                if (!known) platformVibrateApproval()
+                s.copy(approvals = if (known) s.approvals else s.approvals + ev.approval)
             }
-            is ServerEvent.ApprovalSettled -> _session.update {
-                it.copy(approvals = it.approvals.filterNot { a -> a.approvalId == ev.approvalId })
+            is ServerEvent.ApprovalResolved -> _session.update { s ->
+                s.copy(
+                    approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
+                    decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+                )
+            }
+            is ServerEvent.ApprovalSettledLegacy -> _session.update { s ->
+                s.copy(
+                    approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
+                    decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+                )
+            }
+            is ServerEvent.QuestionRequest -> _session.update { s ->
+                val known = s.questions.any { it.rpcId == ev.question.rpcId }
+                if (!known) platformVibrateApproval()
+                s.copy(questions = if (known) s.questions else s.questions + ev.question)
+            }
+            is ServerEvent.QuestionResolved -> _session.update { s ->
+                s.copy(
+                    questions = s.questions.filterNot { q -> q.rpcId == ev.rpcId },
+                    decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != ev.rpcId },
+                )
             }
             is ServerEvent.DeviceRegistered -> {
                 val url = connection.currentUrl ?: return
@@ -451,6 +532,26 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             }
             is ServerEvent.Error -> {
                 pushError("${ev.code}: ${ev.message}")
+                // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
+                if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {
+                    val gone = Regex("approval not found: (\\S+)").find(ev.message)?.groupValues?.get(1)
+                    _session.update { s ->
+                        s.copy(
+                            approvals = s.approvals.filterNot { a -> a.approvalId == gone },
+                            decidingApprovalId = s.decidingApprovalId.takeIf { it != gone },
+                        )
+                    }
+                }
+                // 提问已被其他终端回答或回答被拒：本地同步清理
+                if (ev.code == "not_found" && ev.message.startsWith("question ")) {
+                    val gone = Regex("question (?:not pending|answer rejected): (\\S+)").find(ev.message)?.groupValues?.get(1)
+                    _session.update { s ->
+                        s.copy(
+                            questions = s.questions.filterNot { q -> q.rpcId == gone },
+                            decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != gone },
+                        )
+                    }
+                }
                 // 鉴权类错误重连无意义（token 失效/被撤销），熔断重连循环
                 if (ev.code.lowercase() in AUTH_FATAL_CODES) {
                     reconnectProvider = null

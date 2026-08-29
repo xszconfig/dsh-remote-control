@@ -17,3 +17,6 @@ expect fun createPingHttp(): HttpClient
 /** 全屏二维码扫描界面。 */
 @Composable
 expect fun QrScanner(onScanned: (String) -> Unit, onCancel: () -> Unit)
+
+/** 新审批到达的强提醒振动（中断式审批提示）。 */
+expect fun platformVibrateApproval()

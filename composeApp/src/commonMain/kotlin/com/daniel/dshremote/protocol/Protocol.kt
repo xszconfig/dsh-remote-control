@@ -60,7 +60,51 @@ data class ApprovalRequestWire(
     val approvalId: String,
     val sessionId: String,
     val toolName: String,
+    /** 关联的工具调用 id（有则透传）。 */
+    val callId: String? = null,
+    /** 请求方的可读理由（主文案）。 */
     val reason: String? = null,
+    /** 关联工具调用时提取的命令文本。 */
+    val command: String? = null,
+    val requestedAt: Long = 0,
+    /**
+     * 桌面端 apiproxy 持有时的 mux rpcId：裁决走 answer_approval；
+     * 缺省 = bridge 持有，走 approve。
+     */
+    val rpcId: String? = null,
+)
+
+// ---- 提问（ask_user_question，桌面端持有，bridge 经 mux 转发）----
+
+@Serializable
+data class QuestionOptionWire(
+    val label: String,
+    val description: String? = null,
+)
+
+@Serializable
+data class QuestionItemWire(
+    val id: String,
+    val question: String,
+    val header: String? = null,
+    val detail: String? = null,
+    val options: List<QuestionOptionWire> = emptyList(),
+    val multiSelect: Boolean = false,
+)
+
+@Serializable
+data class QuestionRequestWire(
+    val rpcId: String,
+    val sessionId: String,
+    val questions: List<QuestionItemWire>,
+    val requestedAt: Long = 0,
+)
+
+@Serializable
+data class QuestionAnswerItemWire(
+    val id: String,
+    val selected: List<String> = emptyList(),
+    val custom: String? = null,
 )
 
 /** 审批决策。wire 值与 bridge 协议一致："allowed-once" / "rejected"。 */
@@ -148,6 +192,12 @@ sealed interface ServerEvent {
         val sessions: List<SessionSummary>,
         val agents: List<AgentSummary>,
         val workspaces: List<WorkspaceSummary> = emptyList(),
+        /** 当前由 bridge 持有、等待手机裁决的审批（连接/重连时补发）。 */
+        val pendingApprovals: List<ApprovalRequestWire> = emptyList(),
+        /** 桌面端持有、bridge 经 mux 转发的审批（裁决走 answer_approval）。 */
+        val pendingRemoteApprovals: List<ApprovalRequestWire> = emptyList(),
+        /** 桌面端持有、bridge 经 mux 转发的提问（回答走 answer_question）。 */
+        val pendingQuestions: List<QuestionRequestWire> = emptyList(),
     ) : ServerEvent
 
     @Serializable
@@ -171,8 +221,25 @@ sealed interface ServerEvent {
     data class ApprovalRequest(val approval: ApprovalRequestWire) : ServerEvent
 
     @Serializable
+    @SerialName("approval_resolved")
+    data class ApprovalResolved(
+        val approvalId: String,
+        val sessionId: String,
+        val outcome: String,
+    ) : ServerEvent
+
+    /** 旧版 bridge（0.3.0）的事件名，保留以兼容混版本窗口。 */
+    @Serializable
     @SerialName("approval_settled")
-    data class ApprovalSettled(val approvalId: String, val outcome: String) : ServerEvent
+    data class ApprovalSettledLegacy(val approvalId: String, val outcome: String) : ServerEvent
+
+    @Serializable
+    @SerialName("question_request")
+    data class QuestionRequest(val question: QuestionRequestWire) : ServerEvent
+
+    @Serializable
+    @SerialName("question_resolved")
+    data class QuestionResolved(val rpcId: String, val sessionId: String, val outcome: String) : ServerEvent
 
     @Serializable
     @SerialName("device_registered")
@@ -215,6 +282,23 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("approve")
     data class Approve(val approvalId: String, val decision: ApprovalDecision) : ClientCommand
+
+    @Serializable
+    @SerialName("answer_approval")
+    data class AnswerApproval(
+        val rpcId: String,
+        val sessionId: String,
+        val approvalId: String,
+        val decision: ApprovalDecision,
+    ) : ClientCommand
+
+    @Serializable
+    @SerialName("answer_question")
+    data class AnswerQuestion(
+        val rpcId: String,
+        val sessionId: String,
+        val answers: kotlin.collections.List<QuestionAnswerItemWire>,
+    ) : ClientCommand
 
     @Serializable
     @SerialName("register_device")

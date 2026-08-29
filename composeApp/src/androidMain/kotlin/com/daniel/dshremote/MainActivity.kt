@@ -13,6 +13,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AppContext.context = applicationContext
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
         setContent {
             val client = remember {

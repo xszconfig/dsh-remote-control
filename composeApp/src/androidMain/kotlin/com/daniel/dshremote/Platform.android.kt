@@ -50,7 +50,37 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
 import java.util.concurrent.TimeUnit
 
+/** 应用级 Context 持有者（MainActivity.onCreate 注入；振动等平台能力使用）。 */
+object AppContext {
+    @Volatile
+    var context: android.content.Context? = null
+}
+
 actual fun platformDeviceModel(): String? = Build.MODEL
+
+actual fun platformVibrateApproval() {
+    try {
+        val context = AppContext.context ?: return
+        val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        }
+        if (vibrator == null || !vibrator.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= 26) {
+            // 强提醒：双短振 + 停顿 + 长振
+            vibrator.vibrate(
+                android.os.VibrationEffect.createWaveform(longArrayOf(0, 300, 200, 500), -1),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(longArrayOf(0, 300, 200, 500), -1)
+        }
+    } catch (_: Exception) {
+        // 振动失败不影响审批流程
+    }
+}
 
 actual fun createWsHttp(): HttpClient = HttpClient(OkHttp) {
     install(WebSockets)
