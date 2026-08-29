@@ -1441,14 +1441,21 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                 Text(if (expanded) "▲" else "▼", fontSize = 10.sp, color = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer)
             }
             AnimatedVisibility(visible = expanded) {
-                Text(
-                    e.toolArgs ?: "(no args)",
-                    modifier = Modifier.padding(top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
-                    else MaterialTheme.colorScheme.onSecondaryContainer,
-                )
+                if (e.diffs != null && e.diffs.isNotEmpty()) {
+                    // Edit/Write 等文件变更：展开显示 Code Diff（红删绿增，与 DSH Web 对齐）
+                    Column(Modifier.padding(top = 8.dp)) {
+                        CodeDiffBlock(e.diffs)
+                    }
+                } else {
+                    Text(
+                        e.toolArgs ?: "(no args)",
+                        modifier = Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                        else MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
             }
         }
     }

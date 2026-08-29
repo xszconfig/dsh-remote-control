@@ -75,6 +75,15 @@ data class EventProjection(
     val toolDesc: String? = null,
     /** 工具类别（read/edit/delete/move/search/execute/fetch/other），客户端选图标。 */
     val toolKind: String? = null,
+    /** 文件变更 diff（桌面端 DiffCallView.diffs 同源）：展开工具卡时按行渲染红删绿增。 */
+    val diffs: List<FileDiffWire>? = null,
+)
+
+@Serializable
+data class FileDiffWire(
+    val path: String,
+    val oldText: String? = null,
+    val newText: String,
 )
 
 @Serializable
