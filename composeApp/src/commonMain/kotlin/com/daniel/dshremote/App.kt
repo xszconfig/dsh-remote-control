@@ -95,6 +95,9 @@ fun App(client: BridgeClient) {
         client.autoConnectOnce()
     }
     DshTheme {
+        // 页面栈原则（docs/ui-navigation-guidelines.md）：A→B→C 时每按一次返回
+        // 只回上一级。覆盖层页面（设备页/日志页/扫码）都必须有返回处理，
+        // 关闭覆盖层后底下的页面状态原样保留，自然回到上一级。
         if (showDevices) {
             // 设备页（连接态从侧边栏进入）：查看/切换设备、扫码/手动连接
             LandingScreen(
@@ -107,13 +110,19 @@ fun App(client: BridgeClient) {
             )
             PlatformBackHandler(enabled = true) { showDevices = false }
         } else if (showLogs) {
+            // 日志页：从会话详情/首页/设备页进入，返回键 = 关闭日志页回上一级
             LogScreen(client, onClose = { showLogs = false })
+            PlatformBackHandler(enabled = true) { showLogs = false }
         } else {
             when {
-                scanning -> QrScanner(
-                    onScanned = { client.onQrScanned(it) },
-                    onCancel = { client.stopScan() },
-                )
+                scanning -> {
+                    QrScanner(
+                        onScanned = { client.onQrScanned(it) },
+                        onCancel = { client.stopScan() },
+                    )
+                    // 扫码页返回 = 取消扫码（等同 ✕ 取消按钮），回到上一级页面
+                    PlatformBackHandler(enabled = true) { client.stopScan() }
+                }
                 // 重连等待/重试期间保留会话界面，只加横幅提示
                 conn.state == ConnectionState.Connected || reconnecting ->
                     MainScreen(
