@@ -411,7 +411,7 @@ private fun DeviceCard(
                     "连接 ⟶",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = AccentBlue,
                 )
             }
             Spacer(Modifier.width(4.dp))
@@ -1075,7 +1075,7 @@ private fun ToolResultCard(e: EventProjection) {
                     Text(
                         if (expanded) "收起 ▲" else "展开 ▼（${result.length} 字符）",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = AccentBlue,
                     )
                 }
             }
@@ -1168,7 +1168,7 @@ private fun ApprovalSheet(
             Text(
                 "🛠 ${approval.toolName}",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = AccentBlue,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
@@ -1314,7 +1314,7 @@ private fun QuestionSheet(
                         item.header,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = AccentBlue,
                     )
                     Spacer(Modifier.height(6.dp))
                 }
@@ -1571,7 +1571,7 @@ private fun LogRow(time: String, level: String, levelColor: Color, tag: String, 
         Spacer(Modifier.width(6.dp))
         Text(level, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = levelColor)
         Spacer(Modifier.width(6.dp))
-        Text("[$tag]", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
+        Text("[$tag]", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = AccentBlue)
         Spacer(Modifier.width(6.dp))
         Text(message, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
     }
