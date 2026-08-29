@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -634,7 +635,11 @@ private fun WorkspaceDrawer(
 ) {
     val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
     val mainSessions = state.sessions.count { it.parentSessionId == null }
-    ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surface) {
+    ModalDrawerSheet(
+        drawerContainerColor = MaterialTheme.colorScheme.surface,
+        // 侧边栏占屏幕 70% 宽，不全屏遮挡（用户要求）
+        modifier = Modifier.fillMaxHeight().fillMaxWidth(0.7f),
+    ) {
         Column(Modifier.padding(vertical = 8.dp)) {
             Text(
                 "工作区",
