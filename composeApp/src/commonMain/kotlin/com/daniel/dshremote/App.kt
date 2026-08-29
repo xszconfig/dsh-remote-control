@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -903,7 +904,9 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 },
                 modifier = Modifier.size(48.dp),
                 shape = CircleShape,
-                contentPadding = ButtonDefaults.ContentPadding,
+                // 48dp 圆钮配默认 24dp 水平内边距会把内容区挤成 0 宽（图标不可见），
+                // 必须归零内边距让 20dp 纸飞机完整渲染。
+                contentPadding = PaddingValues(0.dp),
             ) {
                 SendIcon()
             }
