@@ -25,6 +25,8 @@ data class SessionSummary(
     val agentCount: Int,
     val subagentCount: Int,
     val updatedAt: Long,
+    /** 子代理会话所属的主会话 id；缺省 = 顶层（用户手动创建的）会话。 */
+    val parentSessionId: String? = null,
 )
 
 @Serializable

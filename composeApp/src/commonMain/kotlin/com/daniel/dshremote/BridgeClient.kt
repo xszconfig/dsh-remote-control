@@ -88,6 +88,8 @@ data class SessionUiState(
     /** null = 全部；UNGROUPED_KEY = 未分组。 */
     val selectedWorkspaceId: String? = null,
     val currentSessionId: String? = null,
+    /** 查看子代理会话时记录的返回目标（主会话 id）；返回键/← 回到主会话。 */
+    val subagentReturnTo: String? = null,
     val events: List<EventProjection> = emptyList(),
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
@@ -111,6 +113,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     agents = emptyList(),
     workspaces = emptyList(),
     currentSessionId = null,
+    subagentReturnTo = null,
     events = emptyList(),
     approvals = emptyList(),
     decidingApprovalId = null,
@@ -549,7 +552,22 @@ class BridgeClient(
      * 在 handle() 里按 sessionId 过滤丢弃，无需通知服务端。
      */
     fun closeSession() {
+        // 子代理视图的关闭 = 回到主会话（返回键与 ← 按钮共用此路径）
+        val returnTo = _session.value.subagentReturnTo
+        if (returnTo != null) {
+            _session.update { it.copy(subagentReturnTo = null) }
+            openSession(returnTo)
+            return
+        }
         _session.update { it.copy(currentSessionId = null, events = emptyList()) }
+    }
+
+    /** 从主会话进入子代理会话：记录返回目标，返回键/← 回到主会话。 */
+    fun openSubagent(subagentId: String) {
+        val parentId = _session.value.currentSessionId ?: return
+        if (parentId == subagentId) return
+        _session.update { it.copy(subagentReturnTo = parentId) }
+        openSession(subagentId)
     }
 
     fun sendMessage(text: String) {
@@ -714,6 +732,9 @@ class BridgeClient(
                         // 打开中的会话已被删除 → 关闭视图，避免停留幽灵会话
                         currentSessionId = it.currentSessionId
                             ?.takeIf { cid -> ev.sessions.any { s -> s.id == cid } },
+                        // 子代理返回目标同样以服务端快照为准校验
+                        subagentReturnTo = it.subagentReturnTo
+                            ?.takeIf { p -> ev.sessions.any { s -> s.id == p } },
                         events = it.currentSessionId
                             ?.takeIf { cid -> ev.sessions.none { s -> s.id == cid } }
                             ?.let { emptyList() } ?: it.events,

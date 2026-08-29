@@ -30,6 +30,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
@@ -590,7 +592,8 @@ private fun WorkspaceDrawer(
     onSelect: (String?) -> Unit,
     onOpenDevices: () -> Unit,
 ) {
-    val ungrouped = state.sessions.count { it.workspaceId == null }
+    val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
+    val mainSessions = state.sessions.count { it.parentSessionId == null }
     ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surface) {
         Column(Modifier.padding(vertical = 8.dp)) {
             Text(
@@ -601,7 +604,7 @@ private fun WorkspaceDrawer(
             )
             DrawerEntry(
                 label = "全部会话",
-                badge = state.sessions.size,
+                badge = mainSessions,
                 icon = "🗂",
                 selected = state.selectedWorkspaceId == null,
                 onClick = { onSelect(null) },
@@ -610,8 +613,8 @@ private fun WorkspaceDrawer(
                 DrawerEntry(
                     label = w.title,
                     // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
-                    // 与列表不一致会出现「外面 N 个、点进去没有」）
-                    badge = state.sessions.count { it.workspaceId == w.id },
+                    // 与列表不一致会出现「外面 N 个、点进去没有」）；只计顶层会话
+                    badge = state.sessions.count { it.parentSessionId == null && it.workspaceId == w.id },
                     icon = "📁",
                     selected = state.selectedWorkspaceId == w.id,
                     onClick = { onSelect(w.id) },
@@ -718,12 +721,62 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                 }
                 Text(
                     when {
+                        session != null && session.parentSessionId != null ->
+                            "🤖 子会话 · " + if (session.status == "running") "运行中" else "空闲"
                         session != null -> if (session.status == "running") "运行中" else "空闲"
-                        else -> state.connectedDevice?.let { "${it.host}:${it.port} · ${state.sessions.size} 会话" } ?: ""
+                        else -> state.connectedDevice
+                            ?.let { "${it.host}:${it.port} · ${state.sessions.count { s -> s.parentSessionId == null }} 会话" }
+                            ?: ""
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            // 子代理入口（右上角）：主会话挂载的子代理下拉列表
+            if (session != null && session.parentSessionId == null) {
+                val subagents = state.sessions.filter { it.parentSessionId == session.id }
+                if (subagents.isNotEmpty()) {
+                    var subagentMenuOpen by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { subagentMenuOpen = true }) {
+                            Text("🤖${subagents.size}", fontWeight = FontWeight.SemiBold)
+                        }
+                        DropdownMenu(
+                            expanded = subagentMenuOpen,
+                            onDismissRequest = { subagentMenuOpen = false },
+                        ) {
+                            Text(
+                                "子代理会话",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                            )
+                            subagents.forEach { sub ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                sessionName(sub),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                            )
+                                            Text(
+                                                if (sub.status == "running") "运行中" else "空闲",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (sub.status == "running") StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        subagentMenuOpen = false
+                                        client.openSubagent(sub.id)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
             }
             TextButton(onClick = onOpenLogs) { Text("📋") }
             TextButton(onClick = { client.disconnect() }) {
@@ -739,8 +792,9 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
 @Composable
 private fun SessionList(client: BridgeClient, state: SessionUiState) {
     val selected = state.selectedWorkspaceId
+    // 只展示顶层（用户手动创建）会话；子代理会话挂在主会话里经右上角入口查看
     val visible = state.sessions.filter { s ->
-        when (selected) {
+        s.parentSessionId == null && when (selected) {
             null -> true
             UNGROUPED_KEY -> s.workspaceId == null
             else -> s.workspaceId == selected
