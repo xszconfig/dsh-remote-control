@@ -48,6 +48,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1173,6 +1174,12 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 placeholder = { Text("发指令给DeepSeek Harness") },
                 shape = RoundedCornerShape(22.dp),
                 maxLines = 4,
+                // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
+                // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+                ),
             )
             Spacer(Modifier.width(8.dp))
             Button(
