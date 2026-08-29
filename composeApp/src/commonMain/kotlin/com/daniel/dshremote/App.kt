@@ -95,7 +95,7 @@ fun App(client: BridgeClient) {
                 )
                 // 重连等待/重试期间保留会话界面，只加横幅提示
                 conn.state == ConnectionState.Connected || reconnecting ->
-                    MainScreen(client, session, reconnecting, reconnectStatus)
+                    MainScreen(client, session, reconnecting, reconnectStatus, onOpenLogs = { showLogs = true })
                 conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
                 else -> LandingScreen(client, conn, devices, onOpenLogs = { showLogs = true })
             }
@@ -408,6 +408,7 @@ private fun MainScreen(
     state: SessionUiState,
     reconnecting: Boolean,
     reconnectStatus: String,
+    onOpenLogs: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -429,6 +430,7 @@ private fun MainScreen(
                 client = client,
                 state = state,
                 onMenu = { scope.launch { drawerState.open() } },
+                onOpenLogs = onOpenLogs,
             )
             if (reconnecting) {
                 ReconnectBanner(status = reconnectStatus, onCancel = { client.disconnect() })
@@ -583,7 +585,7 @@ private fun DrawerEntry(
 // ---- 顶栏 ----
 
 @Composable
-private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit) {
+private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit, onOpenLogs: () -> Unit) {
     val session = state.currentSessionId?.let { sid ->
         state.sessions.firstOrNull { it.id == sid }
     }
@@ -630,6 +632,7 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            TextButton(onClick = onOpenLogs) { Text("📋") }
             TextButton(onClick = { client.disconnect() }) {
                 Text("断开", color = MaterialTheme.colorScheme.error)
             }
@@ -1362,7 +1365,18 @@ private fun LogScreen(client: BridgeClient, onClose: () -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             FilterChip(tab == 0, "本机") { tab = 0 }
             Spacer(Modifier.width(6.dp))
-            FilterChip(tab == 1, "服务端") { tab = 1 }
+            FilterChip(tab == 1, "服务端") {
+                tab = 1
+                if (serverLogs.isEmpty() && !loadingServer) {
+                    loadingServer = true
+                    scope.launch {
+                        serverLogs = client.loadServerLogs() ?: emptyList()
+                        lastRefresh = nowMillis()
+                        loadingServer = false
+                        ConnLog.info("LOG", "已加载服务端日志（${serverLogs.size} 条）")
+                    }
+                }
+            }
             Spacer(Modifier.weight(1f))
             FilterChip(levelFilter == null, "全部") { levelFilter = null }
             ConnLogLevel.entries.forEach { lv ->

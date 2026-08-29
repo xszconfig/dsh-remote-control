@@ -500,9 +500,11 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore, privat
 
     private val logsClient: HttpClient = createPingHttp()
 
-    /** 拉取服务端结构化连接日志（/remote/logs；需已连接）。 */
+    /** 拉取服务端结构化连接日志（/remote/logs）。已连接时用当前设备，未连接时回退最近在线设备。 */
     suspend fun loadServerLogs(limit: Int = 300): List<ServerLogEntry>? {
-        val device = _session.value.connectedDevice ?: return null
+        val device = _session.value.connectedDevice
+            ?: devices.state.value.devices.maxByOrNull { it.lastSeenAt }
+            ?: return null
         return try {
             val resp = logsClient.get("http://${device.host}:${device.port}/remote/logs?limit=$limit")
             BridgeJson.decodeFromString(ServerLogsResponse.serializer(), resp.bodyAsText()).entries
