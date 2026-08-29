@@ -92,6 +92,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
@@ -1322,20 +1325,27 @@ private fun Bubble(
             if (markdown) {
                 // 开源 CommonMark 渲染（mikepenz/multiplatform-markdown-renderer，基于 JetBrains
                 // CommonMark/GFM 解析）：代码块、表格、标题、加粗/斜体/行内代码、列表、引用等。
-                Markdown(
-                    content = text,
-                    colors = markdownColor(
-                        text = content,
-                        codeText = MarkdownCodeFg,
-                        codeBackground = MarkdownCodeBg,
-                        inlineCodeText = content,
-                        inlineCodeBackground = content.copy(alpha = 0.14f),
-                        linkText = AccentBlue,
-                        tableText = content,
-                        dividerColor = content.copy(alpha = 0.35f),
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                )
+                // 库默认正文字号偏大（16sp）→ 统一缩放到与旧默认 bodyMedium(14sp) 一致，
+                // 标题/代码/表格等其余字号随正文等比缩放（×0.875）。
+                val baseDensity = LocalDensity.current
+                CompositionLocalProvider(
+                    LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * 0.875f),
+                ) {
+                    Markdown(
+                        content = text,
+                        colors = markdownColor(
+                            text = content,
+                            codeText = MarkdownCodeFg,
+                            codeBackground = MarkdownCodeBg,
+                            inlineCodeText = content,
+                            inlineCodeBackground = content.copy(alpha = 0.14f),
+                            linkText = AccentBlue,
+                            tableText = content,
+                            dividerColor = content.copy(alpha = 0.35f),
+                        ),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
             } else {
                 Text(
                     text.ifBlank { "…" },
