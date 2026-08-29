@@ -231,10 +231,13 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                         }
                         ConnLog.warn("RECONNECT", "候选失败 $url: ${connection.info.value.detail}")
                     }
-                    // 成功建立过连接且期间收到过 Hello → 重置退避
+                    // 成功建立过连接且期间收到过 Hello → 重置退避并清除重连横幅
                     if (established && sawHelloThisConnection) {
                         attempt = 1
                         sawHelloThisConnection = false
+                        _reconnecting.value = false
+                        _reconnectStatus.value = ""
+                        ConnLog.info("RECONNECT", "重连成功，横幅清除")
                     } else {
                         attempt++
                     }
@@ -515,6 +518,15 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     )
                 }
                 if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
+                // 重连/新连接后若停留在会话页：重新订阅以服务端历史为准（补齐断线期间事件）
+                val sid = _session.value.currentSessionId
+                if (sid != null) {
+                    scope.launch {
+                        if (!connection.send(ClientCommand.Subscribe(sid))) {
+                            pushError("订阅会话失败（连接已断开）")
+                        }
+                    }
+                }
             }
             is ServerEvent.History -> _session.update { it.copy(events = ev.events.bounded()) }
             is ServerEvent.Event -> _session.update { s ->
