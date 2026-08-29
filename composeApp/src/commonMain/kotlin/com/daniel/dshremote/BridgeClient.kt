@@ -151,6 +151,12 @@ class BridgeClient(
     private var reconnectJob: Job? = null
     private var registeredThisConnection = false
     private var sawHelloThisConnection = false
+    /** 设备切换进行中：旧连接关闭时抑制自动重连（由新 connectJob 接管）。 */
+    private var switchingDevice = false
+    /** 冷启动自动连接只尝试一次（每次进自动连接决策即消费）。 */
+    private var autoConnectAttempted = false
+    /** 本会话内进入过扫码流程 → 用户选择交互式配对，不再自动连接。 */
+    private var scanStartedOnce = false
 
     /**
      * 重连计划提供器：返回 (url, token) 或 null（无有效凭据，放弃重连）。
@@ -172,6 +178,7 @@ class BridgeClient(
                 if (connected && !wasConnected) {
                     registeredThisConnection = false
                     sawHelloThisConnection = false
+                    switchingDevice = false
                     devices.setPollingEnabled(false)
                 }
                 if (!connected && wasConnected) {
@@ -184,6 +191,11 @@ class BridgeClient(
 
     /** 连接断开后的策略：用户主动断开→清理；有凭据→自动重连；否则→清理。 */
     private fun onConnectionLost() {
+        if (switchingDevice) {
+            ConnLog.info("RECONNECT", "设备切换中的旧连接关闭，不触发自动重连")
+            switchingDevice = false
+            return
+        }
         if (userDisconnect) {
             ConnLog.info("RECONNECT", "用户主动断开，不自动重连")
             finishSession("已断开")
@@ -269,6 +281,7 @@ class BridgeClient(
     // ---- 连接 ----
 
     fun startScan() {
+        scanStartedOnce = true
         _scanning.value = true
     }
 
@@ -289,9 +302,55 @@ class BridgeClient(
         connectJob = scope.launch { connectFromQr(text) }
     }
 
+    /**
+     * 冷启动自动连接：上次连接的设备（或无记录时的最近使用设备）在线 → 直接连接，
+     * 免去每次手动点「连接」。只在完全空闲时触发一次；用户进过扫码流程则不打扰。
+     */
+    fun autoConnectOnce() {
+        if (autoConnectAttempted || scanStartedOnce || switchingDevice) return
+        if (_scanning.value) return
+        val connState = connection.info.value.state
+        if (connState == ConnectionState.Connected || connState == ConnectionState.Connecting || _reconnecting.value || userDisconnect) return
+        val st = devices.state.value
+        if (st.devices.isEmpty()) return
+        // 等首轮探测出结果再决策（Checking 未结束时先不动）
+        val statuses = st.deviceStatuses
+        if (statuses.isEmpty() || st.devices.any { statuses[deviceKey(it)] == DeviceStatus.Checking }) return
+        autoConnectAttempted = true
+        val target = st.devices.firstOrNull { deviceKey(it) == devices.lastConnectedKey }
+            ?: st.devices.maxByOrNull { it.lastSeenAt }
+        if (target == null) {
+            ConnLog.info("AUTO", "无候选设备，跳过自动连接")
+            return
+        }
+        val status = st.deviceStatuses[deviceKey(target)] ?: return
+        if (status != DeviceStatus.Online && status != DeviceStatus.Changed) {
+            ConnLog.info("AUTO", "上次设备离线（$status），等待手动连接: ${target.name}")
+            return
+        }
+        ConnLog.info("AUTO", "上次设备在线 → 自动连接 ${target.name} (${target.host}:${target.port})")
+        connectDevice(target)
+    }
+
     fun connectDevice(device: StoredDevice) {
+        devices.rememberLastConnected(device)
         hydrateFromSessionCache(device)
         val key = deviceKey(device)
+        // 已有连接/重连循环 → 先干净断开旧链路再连新设备（多设备切换）
+        val wasConnected = connection.info.value.state == ConnectionState.Connected || _reconnecting.value
+        if (wasConnected) {
+            ConnLog.info("CONNECT", "切换设备 → 先断开当前链路")
+            switchingDevice = true
+            userDisconnect = true // 抑制旧链路的自动重连
+            reconnectJob?.cancel()
+            reconnectJob = null
+            _reconnecting.value = false
+            _reconnectStatus.value = ""
+            connectJob?.cancel()
+            connection.close()
+            _session.update { it.clearedForDisconnect() }
+        }
+        userDisconnect = false
         reconnectProvider = {
             // 每次重试取最新存储的设备记录（token 可能已被轮换）；
             // 候选列表按存储顺序逐个快试（主端点在前，多路由回退）
@@ -302,7 +361,6 @@ class BridgeClient(
                 eps.map { Pairing.buildUrl(it.host, it.port) to stored.token }
             }
         }
-        userDisconnect = false
         // 首次直连同样走多候选（主端点优先、4s 快速失败逐路回退）：
         // USB 隧道失效时自动落到局域网/Tailscale 端点，无需等重连循环
         connectJob?.cancel()

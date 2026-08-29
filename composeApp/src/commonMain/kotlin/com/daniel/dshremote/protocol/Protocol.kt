@@ -174,6 +174,8 @@ data class StoredDevice(
 data class DeviceFile(
     val phoneId: String,
     val devices: List<StoredDevice> = emptyList(),
+    /** 上次连接的设备 key（host_port）；冷启动自动连接候选。 */
+    val lastConnectedKey: String? = null,
 )
 
 /** 设备列表里的在线状态（运行时计算，不持久化）。 */

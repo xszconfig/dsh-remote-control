@@ -79,6 +79,10 @@ class DeviceRepository(
     var phoneId: String = ""
         private set
 
+    /** 上次连接的设备 key（冷启动自动连接候选，随连接动作持久化）。 */
+    var lastConnectedKey: String? = null
+        private set
+
     /** 取手机 id；空白时生成并持久化一个新的。 */
     fun ensurePhoneId(): String {
         if (phoneId.isBlank()) {
@@ -87,6 +91,13 @@ class DeviceRepository(
             scope.launch { store.update { it.copy(phoneId = id) } }
         }
         return phoneId
+    }
+
+    /** 记录「上次连接」的设备，冷启动自动连接据此找目标。 */
+    fun rememberLastConnected(device: StoredDevice) {
+        val key = deviceKey(device)
+        lastConnectedKey = key
+        scope.launch { store.update { it.copy(lastConnectedKey = key) } }
     }
 
     /** 仅在未连接桌面时探测（已连接时在线状态没有意义）。 */
@@ -99,6 +110,7 @@ class DeviceRepository(
         pollJob = scope.launch {
             val file = store.load()
             phoneId = file.phoneId
+            lastConnectedKey = file.lastConnectedKey
             _state.update { it.copy(devices = file.devices) }
             refreshStatuses()
             while (isActive) {
