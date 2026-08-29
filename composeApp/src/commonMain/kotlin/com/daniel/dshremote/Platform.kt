@@ -20,3 +20,10 @@ expect fun QrScanner(onScanned: (String) -> Unit, onCancel: () -> Unit)
 
 /** 新审批到达的强提醒振动（中断式审批提示）。 */
 expect fun platformVibrateApproval()
+
+/** 系统返回键拦截（Android: OnBackPressedDispatcher，后注册者优先）。 */
+@Composable
+expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
+
+/** 退出应用回到桌面（等效系统返回键走到根：finish 当前 Activity）。 */
+expect fun platformExitApp()

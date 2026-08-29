@@ -15,6 +15,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppContext.context = applicationContext
+        AppContext.activity = this
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
         val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
         setContent {

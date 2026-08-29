@@ -451,6 +451,13 @@ private fun MainScreen(
             }
         }
     }
+    // 系统返回键的导航语义（后注册者优先，覆盖抽屉内部自带的"返回关闭抽屉"）：
+    // 抽屉展开（项目列表）→ 退出回桌面；会话列表 → 打开抽屉（查看多个项目）；
+    // 会话详情 → 返回列表（由 Conversation 内的返回拦截处理）。
+    PlatformBackHandler(enabled = drawerState.isOpen) { platformExitApp() }
+    PlatformBackHandler(enabled = !drawerState.isOpen && state.currentSessionId == null) {
+        scope.launch { drawerState.open() }
+    }
 }
 
 // ---- 重连横幅 ----
@@ -778,6 +785,8 @@ private fun basenameOf(path: String): String =
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
+    // 返回键 = 左上角 ←：回到会话列表，不退出应用
+    PlatformBackHandler(enabled = true) { client.closeSession() }
     Column(Modifier.fillMaxSize()) {
         if (state.events.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {

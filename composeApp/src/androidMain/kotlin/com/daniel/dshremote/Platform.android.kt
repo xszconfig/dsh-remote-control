@@ -54,6 +54,10 @@ import java.util.concurrent.TimeUnit
 object AppContext {
     @Volatile
     var context: android.content.Context? = null
+
+    /** 当前 Activity 引用（退出应用用；单 Activity 应用）。 */
+    @Volatile
+    var activity: android.app.Activity? = null
 }
 
 internal actual fun platformConnLog(level: ConnLogLevel, tag: String, message: String) {
@@ -93,6 +97,19 @@ actual fun platformVibrateApproval() {
         }
     } catch (_: Exception) {
         // 振动失败不影响审批流程
+    }
+}
+
+@Composable
+actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
+    androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
+}
+
+actual fun platformExitApp() {
+    try {
+        AppContext.activity?.finish()
+    } catch (_: Exception) {
+        // 退出失败不阻塞主流程
     }
 }
 
