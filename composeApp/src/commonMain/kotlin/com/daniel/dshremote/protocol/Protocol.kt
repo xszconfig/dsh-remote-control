@@ -179,6 +179,22 @@ data class PairQrPayload(
     val urls: List<String> = emptyList(),
 )
 
+/** 服务端结构化日志条目（/remote/logs）。 */
+@Serializable
+data class ServerLogEntry(
+    val seq: Long,
+    val ts: Long,
+    val level: String,
+    val tag: String,
+    val message: String,
+)
+
+@Serializable
+data class ServerLogsResponse(
+    val version: String = "",
+    val entries: List<ServerLogEntry> = emptyList(),
+)
+
 // ---- 服务端事件（sealed 多态，type 字段判别）----
 
 @Serializable

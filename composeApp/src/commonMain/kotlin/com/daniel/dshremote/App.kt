@@ -64,10 +64,13 @@ import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import kotlinx.coroutines.launch
 
 // ================= 根 =================
@@ -80,17 +83,22 @@ fun App(client: BridgeClient) {
     val session by client.session.collectAsState()
     val reconnecting by client.reconnecting.collectAsState()
     val reconnectStatus by client.reconnectStatus.collectAsState()
+    var showLogs by remember { mutableStateOf(false) }
     DshTheme {
-        when {
-            scanning -> QrScanner(
-                onScanned = { client.onQrScanned(it) },
-                onCancel = { client.stopScan() },
-            )
-            // 重连等待/重试期间保留会话界面，只加横幅提示
-            conn.state == ConnectionState.Connected || reconnecting ->
-                MainScreen(client, session, reconnecting, reconnectStatus)
-            conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
-            else -> LandingScreen(client, conn, devices)
+        if (showLogs) {
+            LogScreen(client, onClose = { showLogs = false })
+        } else {
+            when {
+                scanning -> QrScanner(
+                    onScanned = { client.onQrScanned(it) },
+                    onCancel = { client.stopScan() },
+                )
+                // 重连等待/重试期间保留会话界面，只加横幅提示
+                conn.state == ConnectionState.Connected || reconnecting ->
+                    MainScreen(client, session, reconnecting, reconnectStatus)
+                conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
+                else -> LandingScreen(client, conn, devices, onOpenLogs = { showLogs = true })
+            }
         }
         // 审批/提问都是中断式强提醒：半屏弹窗覆盖所有界面（含首页/扫码/会话），
         // 不可下滑/返回关闭，直到裁决/回答或服务端解决。审批优先于提问。
@@ -121,7 +129,7 @@ fun App(client: BridgeClient) {
 // ================= 首页（未连接） =================
 
 @Composable
-private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesState: DevicesUiState) {
+private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesState: DevicesUiState, onOpenLogs: () -> Unit) {
     var showManual by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("3080") }
@@ -142,7 +150,7 @@ private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesSta
                 Text("dsh", fontWeight = FontWeight.Black, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
             }
             Spacer(Modifier.width(12.dp))
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text("dsh Remote Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
                     "手机遥控桌面端 DeepSeek Harness",
@@ -150,6 +158,7 @@ private fun LandingScreen(client: BridgeClient, conn: ConnectionInfo, devicesSta
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            TextButton(onClick = onOpenLogs) { Text("📋 日志") }
         }
 
         // 连接错误提示
@@ -1288,6 +1297,168 @@ private fun QuestionSheet(
             )
         }
     }
+}
+
+// ================= 连接日志页（诊断基础组件） =================
+
+@Composable
+private fun LogScreen(client: BridgeClient, onClose: () -> Unit) {
+    var tab by remember { mutableStateOf(0) } // 0=本机 1=服务端
+    var levelFilter by remember { mutableStateOf<ConnLogLevel?>(null) }
+    val localLogs by ConnLog.flow.collectAsState()
+    var serverLogs by remember { mutableStateOf<List<ServerLogEntry>>(emptyList()) }
+    var loadingServer by remember { mutableStateOf(false) }
+    var lastRefresh by remember { mutableStateOf(0L) }
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
+    val filter = levelFilter
+    val shownLocal = if (filter == null) localLogs else localLogs.filter { it.level == filter }
+    val shownServer = if (filter == null) serverLogs else serverLogs.filter { it.level == filter.label.lowercase() }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding().background(MaterialTheme.colorScheme.background)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onClose) { Text("← 返回", fontWeight = FontWeight.SemiBold) }
+            Text("连接日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                val text = if (tab == 0) {
+                    shownLocal.joinToString("\n") { "[${it.level.label}][${it.tag}] ${formatClock(it.ts)} ${it.message}" }
+                } else {
+                    shownServer.joinToString("\n") { "[${it.level}][${it.tag}] ${formatClock(it.ts)} ${it.message}" }
+                }
+                clipboard.setText(AnnotatedString(text))
+                ConnLog.info("LOG", "日志已复制到剪贴板（${if (tab == 0) shownLocal.size else shownServer.size} 条）")
+            }) { Text("复制") }
+            if (tab == 0) {
+                TextButton(onClick = { ConnLog.clear() }) { Text("清空") }
+            } else {
+                TextButton(
+                    enabled = !loadingServer,
+                    onClick = {
+                        loadingServer = true
+                        scope.launch {
+                            serverLogs = client.loadServerLogs() ?: emptyList()
+                            lastRefresh = nowMillis()
+                            loadingServer = false
+                            ConnLog.info("LOG", "已刷新服务端日志（${serverLogs.size} 条）")
+                        }
+                    },
+                ) { Text(if (loadingServer) "刷新中…" else "刷新") }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(tab == 0, "本机") { tab = 0 }
+            Spacer(Modifier.width(6.dp))
+            FilterChip(tab == 1, "服务端") { tab = 1 }
+            Spacer(Modifier.weight(1f))
+            FilterChip(levelFilter == null, "全部") { levelFilter = null }
+            ConnLogLevel.entries.forEach { lv ->
+                Spacer(Modifier.width(4.dp))
+                FilterChip(levelFilter == lv, lv.label) { levelFilter = lv }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (tab == 0) {
+            if (shownLocal.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("暂无本地日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+                    items(shownLocal.asReversed(), key = { "l${it.seq}" }) { e ->
+                        LogRow(
+                            time = formatClock(e.ts),
+                            level = e.level.label,
+                            levelColor = levelColor(e.level),
+                            tag = e.tag,
+                            message = e.message,
+                        )
+                    }
+                }
+            }
+        } else {
+            if (loadingServer && serverLogs.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(28.dp))
+                }
+            } else if (shownServer.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("暂无服务端日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (lastRefresh == 0L) {
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(onClick = {
+                                loadingServer = true
+                                scope.launch {
+                                    serverLogs = client.loadServerLogs() ?: emptyList()
+                                    loadingServer = false
+                                }
+                            }) { Text("拉取一次") }
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+                    items(shownServer.asReversed(), key = { "s${it.seq}" }) { e ->
+                        LogRow(
+                            time = formatClock(e.ts),
+                            level = e.level.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                            levelColor = levelColorOf(e.level),
+                            tag = e.tag,
+                            message = e.message,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterChip(selected: Boolean, label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+}
+
+@Composable
+private fun LogRow(time: String, level: String, levelColor: Color, tag: String, message: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(time, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(6.dp))
+        Text(level, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = levelColor)
+        Spacer(Modifier.width(6.dp))
+        Text("[$tag]", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(6.dp))
+        Text(message, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+    }
+}
+
+private fun levelColor(level: ConnLogLevel): Color = when (level) {
+    ConnLogLevel.DEBUG -> Color(0xFF8B93A7)
+    ConnLogLevel.INFO -> Color(0xFF6E9BFF)
+    ConnLogLevel.WARN -> Color(0xFFF2C14E)
+    ConnLogLevel.ERROR -> Color(0xFFFF6B6B)
+}
+
+private fun levelColorOf(level: String): Color = when (level) {
+    "warn" -> Color(0xFFF2C14E)
+    "error" -> Color(0xFFFF6B6B)
+    "info" -> Color(0xFF6E9BFF)
+    else -> Color(0xFF8B93A7)
 }
 
 // ================= 工具 =================

@@ -10,9 +10,14 @@ import com.daniel.dshremote.protocol.EventProjection
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import com.daniel.dshremote.protocol.ServerEvent
+import com.daniel.dshremote.protocol.ServerLogEntry
+import com.daniel.dshremote.protocol.ServerLogsResponse
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.WorkspaceSummary
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -165,12 +170,15 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     /** 连接断开后的策略：用户主动断开→清理；有凭据→自动重连；否则→清理。 */
     private fun onConnectionLost() {
         if (userDisconnect) {
+            ConnLog.info("RECONNECT", "用户主动断开，不自动重连")
             finishSession("已断开")
             return
         }
         if (reconnectProvider != null) {
+            ConnLog.info("RECONNECT", "连接断开且有凭据 → 启动自动重连")
             startReconnect()
         } else {
+            ConnLog.info("RECONNECT", "连接断开且无凭据 → 清理会话")
             finishSession(null)
         }
     }
@@ -200,9 +208,11 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     val wait = reconnectDelayMs(attempt)
                     _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试"
                     connection.markReconnecting(_reconnectStatus.value)
+                    ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行")
                     delay(wait)
                     if (!isActive) return@launch
                     val (url, token) = reconnectProvider?.invoke() ?: break
+                    ConnLog.info("RECONNECT", "第 $attempt 次重连尝试: $url")
                     val established = connection.open(url, token)
                     // 成功建立过连接且期间收到过 Hello → 重置退避
                     if (established && sawHelloThisConnection) {
@@ -290,15 +300,19 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     private suspend fun connectFromQr(text: String) {
         val urls = Pairing.parseQr(text)
         if (urls.isEmpty()) {
+            ConnLog.warn("QR", "无法识别的二维码内容: ${text.take(80)}")
             connection.fail("无法识别的二维码内容")
             return
         }
+        ConnLog.info("QR", "扫码得到 ${urls.size} 个候选地址: ${urls.joinToString(" | ")}")
         // 逐候选尝试并记录各自失败原因（refused/timeout/401…），全部失败时给出完整诊断
         val failures = mutableListOf<Pair<String, String>>()
         for (url in urls) {
+            ConnLog.info("QR", "尝试候选: $url")
             if (connection.open(url, null)) return
             val reason = connection.info.value.detail
             failures.add(Pairing.endpointOf(url).host to reason)
+            ConnLog.warn("QR", "候选失败 ${Pairing.endpointOf(url).host}: $reason")
         }
         connection.fail(buildConnectFailureDetail(failures))
     }
@@ -347,6 +361,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         _session.update { it.copy(decidingApprovalId = approval.approvalId) }
         scope.launch {
             val command = if (approval.rpcId != null) {
+                ConnLog.info("APPROVAL", "裁决桌面审批 approval=${approval.approvalId.take(8)} decision=${decision.wire}（answer_approval）")
                 ClientCommand.AnswerApproval(
                     rpcId = approval.rpcId,
                     sessionId = approval.sessionId,
@@ -354,6 +369,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                     decision = decision,
                 )
             } else {
+                ConnLog.info("APPROVAL", "裁决审批 approval=${approval.approvalId.take(8)} decision=${decision.wire}（approve）")
                 ClientCommand.Approve(approval.approvalId, decision)
             }
             if (!connection.send(command)) {
@@ -366,6 +382,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
     /** 提交提问答案（桌面端持有的 ask_user_question）。 */
     fun answerQuestion(question: QuestionRequestWire, answers: List<QuestionAnswerItemWire>) {
         _session.update { it.copy(decidingQuestionRpcId = question.rpcId) }
+        ConnLog.info("QUESTION", "提交提问答案 rpc=${question.rpcId.take(8)} answers=${answers.size}")
         scope.launch {
             val sent = connection.send(
                 ClientCommand.AnswerQuestion(
@@ -386,6 +403,21 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
         _session.update { it.copy(errors = emptyList()) }
     }
 
+    // ---- 诊断日志 ----
+
+    private val logsClient: HttpClient = createPingHttp()
+
+    /** 拉取服务端结构化连接日志（/remote/logs；需已连接）。 */
+    suspend fun loadServerLogs(limit: Int = 300): List<ServerLogEntry>? {
+        val device = _session.value.connectedDevice ?: return null
+        return try {
+            val resp = logsClient.get("http://${device.host}:${device.port}/remote/logs?limit=$limit")
+            BridgeJson.decodeFromString(ServerLogsResponse.serializer(), resp.bodyAsText()).entries
+        } catch (e: Exception) {
+            ConnLog.warn("LOG", "拉取服务端日志失败: ${e.message}")
+            null
+        }
+    }
 
     // ---- 设备管理 ----
 
@@ -437,6 +469,11 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                 sawHelloThisConnection = true
                 val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
                     .distinctBy { it.approvalId }
+                ConnLog.info(
+                    "EVENT",
+                    "收到 hello: sessions=${ev.sessions.size} workspaces=${ev.workspaces.size} " +
+                        "pendingApprovals=${allApprovals.size} pendingQuestions=${ev.pendingQuestions.size}",
+                )
                 _session.update {
                     it.copy(
                         sessions = ev.sessions,
@@ -476,16 +513,23 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             }
             is ServerEvent.ApprovalRequest -> _session.update { s ->
                 val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
+                ConnLog.info(
+                    "APPROVAL",
+                    "收到审批 approval=${ev.approval.approvalId.take(8)} tool=${ev.approval.toolName} " +
+                        "rpc=${ev.approval.rpcId?.take(8) ?: "bridge-held"}${if (known) "（重复，忽略）" else ""}",
+                )
                 if (!known) platformVibrateApproval()
                 s.copy(approvals = if (known) s.approvals else s.approvals + ev.approval)
             }
             is ServerEvent.ApprovalResolved -> _session.update { s ->
+                ConnLog.info("APPROVAL", "审批已解决 approval=${ev.approvalId.take(8)} outcome=${ev.outcome}")
                 s.copy(
                     approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
                     decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
                 )
             }
             is ServerEvent.ApprovalSettledLegacy -> _session.update { s ->
+                ConnLog.info("APPROVAL", "审批已解决（旧版事件）approval=${ev.approvalId.take(8)}")
                 s.copy(
                     approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
                     decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
@@ -493,10 +537,15 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
             }
             is ServerEvent.QuestionRequest -> _session.update { s ->
                 val known = s.questions.any { it.rpcId == ev.question.rpcId }
+                ConnLog.info(
+                    "QUESTION",
+                    "收到提问 rpc=${ev.question.rpcId.take(8)} questions=${ev.question.questions.size}${if (known) "（重复，忽略）" else ""}",
+                )
                 if (!known) platformVibrateApproval()
                 s.copy(questions = if (known) s.questions else s.questions + ev.question)
             }
             is ServerEvent.QuestionResolved -> _session.update { s ->
+                ConnLog.info("QUESTION", "提问已解决 rpc=${ev.rpcId.take(8)} outcome=${ev.outcome}")
                 s.copy(
                     questions = s.questions.filterNot { q -> q.rpcId == ev.rpcId },
                     decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != ev.rpcId },
@@ -531,6 +580,7 @@ class BridgeClient(private val scope: CoroutineScope, store: DeviceStore) {
                 scope.launch { devices.removeByDeviceId(ev.deviceId) }
             }
             is ServerEvent.Error -> {
+                ConnLog.warn("EVENT", "服务端错误 ${ev.code}: ${ev.message}")
                 pushError("${ev.code}: ${ev.message}")
                 // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
                 if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {

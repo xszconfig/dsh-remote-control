@@ -23,6 +23,20 @@ import kotlinx.coroutines.flow.update
 
 enum class ConnectionState { Disconnected, Connecting, Connected, Reconnecting, Error }
 
+/** 命令的 wire 类型名（日志/诊断用）。 */
+val ClientCommand.typeName: String
+    get() = when (this) {
+        ClientCommand.List -> "list"
+        is ClientCommand.Subscribe -> "subscribe"
+        is ClientCommand.SendMessage -> "send_message"
+        is ClientCommand.Interrupt -> "interrupt"
+        is ClientCommand.Approve -> "approve"
+        is ClientCommand.AnswerApproval -> "answer_approval"
+        is ClientCommand.AnswerQuestion -> "answer_question"
+        is ClientCommand.RegisterDevice -> "register_device"
+        is ClientCommand.RevokeDevice -> "revoke_device"
+    }
+
 /** 连接面状态：生命周期 + 给用户看的细节（正在尝试的地址/失败原因）。 */
 data class ConnectionInfo(
     val state: ConnectionState = ConnectionState.Disconnected,
@@ -64,6 +78,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
     suspend fun open(url: String, token: String?): Boolean = openMutex.withLock {
         currentUrl = url
         var established = false
+        ConnLog.info("CONNECT", "开始握手 $url${if (token != null) "（带凭证）" else "（无凭证）"}")
         _info.update { ConnectionInfo(ConnectionState.Connecting, url.removePrefix("ws://").removePrefix("wss://")) }
         try {
             wsClient.webSocket(
@@ -74,6 +89,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
             ) {
                 established = true
                 ws = this
+                ConnLog.info("CONNECT", "握手成功，连接已建立")
                 _info.update { ConnectionInfo(ConnectionState.Connected) }
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
@@ -81,6 +97,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
                             val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
                             _events.emit(ev)
                         } catch (e: Exception) {
+                            ConnLog.warn("WS", "事件解码失败（跳过该帧）: ${e.message}")
                         }
                     }
                 }
@@ -89,13 +106,16 @@ class ConnectionManager(private val scope: CoroutineScope) {
             throw e
         } catch (e: Exception) {
             if (!established) {
+                ConnLog.warn("CONNECT", "握手失败: ${e.message}")
                 _info.update { ConnectionInfo(ConnectionState.Error, e.message ?: "connection failed") }
             } else {
+                ConnLog.warn("CONNECT", "连接异常中断: ${e.message}")
             }
         } finally {
             ws = null
             currentUrl = null
             if (established) {
+                ConnLog.info("CONNECT", "连接关闭")
                 _info.update { ConnectionInfo(ConnectionState.Disconnected) }
             }
         }
@@ -120,12 +140,15 @@ class ConnectionManager(private val scope: CoroutineScope) {
     /** 发送一条命令；未连接或通道已关时返回 false（不抛异常、不静默成功）。 */
     suspend fun send(cmd: ClientCommand): Boolean {
         val session = ws ?: run {
+            ConnLog.warn("CMD", "发送 ${cmd.typeName} 失败：未连接")
             return false
         }
         return try {
             session.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), cmd)))
+            ConnLog.debug("CMD", "已发送 ${cmd.typeName}")
             true
         } catch (e: Exception) {
+            ConnLog.warn("CMD", "发送 ${cmd.typeName} 异常: ${e.message}")
             false
         }
     }
@@ -133,6 +156,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
     /** 关闭当前连接（若无则无操作）。 */
     fun close() {
         val session = ws ?: return
+        ConnLog.info("CONNECT", "主动关闭连接")
         scope.launch {
             try {
                 session.close()

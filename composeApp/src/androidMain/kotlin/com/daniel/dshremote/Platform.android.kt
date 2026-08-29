@@ -56,6 +56,20 @@ object AppContext {
     var context: android.content.Context? = null
 }
 
+internal actual fun platformConnLog(level: ConnLogLevel, tag: String, message: String) {
+    try {
+        val fullTag = "dsh-conn/$tag"
+        when (level) {
+            ConnLogLevel.DEBUG -> android.util.Log.d(fullTag, message)
+            ConnLogLevel.INFO -> android.util.Log.i(fullTag, message)
+            ConnLogLevel.WARN -> android.util.Log.w(fullTag, message)
+            ConnLogLevel.ERROR -> android.util.Log.e(fullTag, message)
+        }
+    } catch (_: Exception) {
+        // 日志本身永不抛异常
+    }
+}
+
 actual fun platformDeviceModel(): String? = Build.MODEL
 
 actual fun platformVibrateApproval() {
