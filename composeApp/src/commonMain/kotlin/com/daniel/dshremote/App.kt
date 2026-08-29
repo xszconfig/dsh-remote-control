@@ -940,8 +940,10 @@ private fun ToolCallCard(e: EventProjection) {
 @Composable
 private fun ToolResultCard(e: EventProjection) {
     val isError = e.toolError == true
+    val result = e.toolResult ?: "(empty)"
+    var expanded by remember(e.seq) { mutableStateOf(false) }
     Card(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
@@ -958,8 +960,15 @@ private fun ToolResultCard(e: EventProjection) {
                     color = if (isError) MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.weight(1f))
+                if (result.length > 400) {
+                    Text(
+                        if (expanded) "收起 ▲" else "展开 ▼（${result.length} 字符）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
-            val result = e.toolResult ?: "(empty)"
             Text(
                 result,
                 modifier = Modifier.padding(top = 6.dp),
@@ -967,7 +976,7 @@ private fun ToolResultCard(e: EventProjection) {
                 fontFamily = FontFamily.Monospace,
                 color = if (isError) MaterialTheme.colorScheme.onErrorContainer
                 else MaterialTheme.colorScheme.onSurface,
-                maxLines = if (result.length > 400) 8 else Int.MAX_VALUE,
+                maxLines = if (expanded) Int.MAX_VALUE else if (result.length > 400) 8 else Int.MAX_VALUE,
                 overflow = TextOverflow.Ellipsis,
             )
         }
