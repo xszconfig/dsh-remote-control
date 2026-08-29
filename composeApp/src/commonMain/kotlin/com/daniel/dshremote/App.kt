@@ -94,6 +94,7 @@ fun App(client: BridgeClient) {
     val session by client.session.collectAsState()
     val reconnecting by client.reconnecting.collectAsState()
     val reconnectStatus by client.reconnectStatus.collectAsState()
+    val reconnectRoutes by client.reconnectRoutes.collectAsState()
     var showLogs by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
@@ -120,6 +121,11 @@ fun App(client: BridgeClient) {
             LogScreen(client, onClose = { showLogs = false })
             PlatformBackHandler(enabled = true) { showLogs = false }
         } else {
+            // 断线/重连期间**永不跳页**（docs/ui-navigation-guidelines.md）：
+            // 只要有会话上下文（connectedDevice 还在）且不是首次 Connecting，
+            // 就留在会话界面，用横幅表达连接状态；落地页只在冷启动或用户主动断开后出现。
+            val keepSessionUi = conn.state == ConnectionState.Connected || reconnecting ||
+                (session.connectedDevice != null && conn.state != ConnectionState.Connecting)
             when {
                 scanning -> {
                     QrScanner(
@@ -130,12 +136,14 @@ fun App(client: BridgeClient) {
                     PlatformBackHandler(enabled = true) { client.stopScan() }
                 }
                 // 重连等待/重试期间保留会话界面，只加横幅提示
-                conn.state == ConnectionState.Connected || reconnecting ->
+                keepSessionUi ->
                     MainScreen(
                         client = client,
                         state = session,
                         reconnecting = reconnecting,
                         reconnectStatus = reconnectStatus,
+                        reconnectRoutes = reconnectRoutes,
+                        onSelectRoute = { client.reconnectVia(it) },
                         onOpenLogs = { showLogs = true },
                         onOpenDevices = { showDevices = true },
                     )
@@ -483,6 +491,8 @@ private fun MainScreen(
     state: SessionUiState,
     reconnecting: Boolean,
     reconnectStatus: String,
+    reconnectRoutes: List<String>,
+    onSelectRoute: (String) -> Unit,
     onOpenLogs: () -> Unit,
     onOpenDevices: () -> Unit,
 ) {
@@ -513,7 +523,12 @@ private fun MainScreen(
                 onOpenLogs = onOpenLogs,
             )
             if (reconnecting) {
-                ReconnectBanner(status = reconnectStatus, onCancel = { client.disconnect() })
+                ReconnectBanner(
+                    status = reconnectStatus,
+                    routes = reconnectRoutes,
+                    onSelectRoute = onSelectRoute,
+                    onCancel = { client.disconnect() },
+                )
             }
             state.errors.lastOrNull()?.let { lastError ->
                 ErrorBanner(
@@ -540,24 +555,44 @@ private fun MainScreen(
 // ---- 重连横幅 ----
 
 @Composable
-private fun ReconnectBanner(status: String, onCancel: () -> Unit) {
+private fun ReconnectBanner(
+    status: String,
+    routes: List<String>,
+    onSelectRoute: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "连接已断开，正在自动重连（$status）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            TextButton(onClick = onCancel) {
-                Text("取消", color = MaterialTheme.colorScheme.onTertiaryContainer)
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "连接已断开，正在自动重连（$status）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(onClick = onCancel) {
+                    Text("取消", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+            // 多路由选择：只提示、不跳页；点选某个路由立即用它重试
+            if (routes.size > 1) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    routes.forEach { url ->
+                        val label = url
+                            .removePrefix("ws://").removePrefix("wss://")
+                            .substringBefore('/').ifBlank { url }
+                        TextButton(onClick = { onSelectRoute(url) }) {
+                            Text(label, style = MaterialTheme.typography.labelSmall, color = AccentBlue)
+                        }
+                    }
+                }
             }
         }
     }
