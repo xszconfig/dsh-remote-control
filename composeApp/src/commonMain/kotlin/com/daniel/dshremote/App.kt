@@ -831,8 +831,12 @@ private fun SessionList(client: BridgeClient, state: SessionUiState) {
                     SessionCard(
                         s = s,
                         running = s.status == "running",
+                        // 副标题只在「全部会话」视图显示所属工作区名（区分来源）；
+                        // 已进入某个工作区时不再显示 cwd——上下文已明确
                         showWorkspace = selected == null && s.workspaceId != null,
                         workspaceTitle = state.workspaces.firstOrNull { it.id == s.workspaceId }?.title,
+                        // 挂载的子代理数（含冷会话），与服务端 live 计数无关
+                        subagentCount = state.sessions.count { it.parentSessionId == s.id },
                         onClick = { client.openSession(s.id) },
                         onInterrupt = { client.interrupt(s.id) },
                     )
@@ -848,9 +852,19 @@ private fun SessionCard(
     running: Boolean,
     showWorkspace: Boolean,
     workspaceTitle: String?,
+    subagentCount: Int,
     onClick: () -> Unit,
     onInterrupt: () -> Unit,
 ) {
+    // 副标题：仅「全部会话」视图显示工作区名（区分会话来源）；
+    // 进入具体工作区后不再显示 cwd/工作区信息；挂载子代理时附 🤖N。
+    val subtitle = buildString {
+        if (showWorkspace && workspaceTitle != null) append("📁 $workspaceTitle")
+        if (subagentCount > 0) {
+            if (isNotEmpty()) append(" · ")
+            append("🤖$subagentCount")
+        }
+    }
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick),
         shape = RoundedCornerShape(14.dp),
@@ -881,33 +895,29 @@ private fun SessionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    buildString {
-                        val base = if (s.cwd.isNotBlank()) basenameOf(s.cwd) else ""
-                        if (showWorkspace && workspaceTitle != null) append("📁 $workspaceTitle")
-                        // 工作区目录常以项目名命名：目录名与工作区名实质相同（忽略大小写/标点）时
-                        // 不再重复显示，避免「📁 dsh-remote-control · dsh-remote-control」
-                        if (base.isNotBlank() && (workspaceTitle == null || normName(base) != normName(workspaceTitle))) {
-                            if (isNotEmpty()) append(" · ")
-                            append(base)
+            if (subtitle.isNotEmpty() || running) {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (subtitle.isNotEmpty()) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                    if (running) {
+                        OutlinedButton(
+                            onClick = onInterrupt,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = ButtonDefaults.ContentPadding,
+                        ) {
+                            Text("中断", style = MaterialTheme.typography.labelSmall)
                         }
-                        if (s.subagentCount > 0) append(" · 🤖${s.subagentCount}")
-                    }.ifBlank { "(no cwd)" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                if (running) {
-                    OutlinedButton(
-                        onClick = onInterrupt,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = ButtonDefaults.ContentPadding,
-                    ) {
-                        Text("中断", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -922,10 +932,6 @@ private fun sessionName(s: SessionSummary): String =
 
 private fun basenameOf(path: String): String =
     path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
-
-/** 名称归一化（比较用）：小写 + 去非字母数字，忽略大小写与标点差异。 */
-private fun normName(s: String): String =
-    s.lowercase().filter { it.isLetterOrDigit() }
 
 // ================= 会话详情 =================
 
