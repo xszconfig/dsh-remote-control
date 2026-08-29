@@ -105,6 +105,8 @@ data class SessionUiState(
     val modelWaitingSince: Long? = null,
     /** 本轮对话开始时间（首个模型请求时间；Deep Diving 显示本轮总耗时，跨多次模型调用不重置）。 */
     val divingTurnStart: Long? = null,
+    /** 思考流式实时行（reasoning-delta 节流推送；null = 无流式思考）。 */
+    val liveThink: String? = null,
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -135,6 +137,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     queueItems = emptyList(),
     modelWaitingSince = null,
     divingTurnStart = null,
+    liveThink = null,
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -913,6 +916,9 @@ class BridgeClient(
                 } else {
                     st
                 }
+            }
+            is ServerEvent.ThinkDelta -> _session.update { st ->
+                if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
             }
             is ServerEvent.LogsRequest -> {
                 // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）

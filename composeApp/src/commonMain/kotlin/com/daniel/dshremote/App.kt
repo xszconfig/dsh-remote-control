@@ -1051,6 +1051,10 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
                 reverseLayout = true,
             ) {
+                // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
+                state.liveThink?.let { lt ->
+                    item(key = "live-think") { LiveThinkRow(lt) }
+                }
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
                     EventBubble(e, state.events)
                 }
@@ -1409,6 +1413,47 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                     else MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
+        }
+    }
+}
+
+/** 思考流式实时行：一行持续刷新（与 DeepSeek Web 的 thinking 流式体验对齐）。 */
+@Composable
+private fun LiveThinkRow(text: String) {
+    Card(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("💭", fontSize = 13.sp)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "思考中",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = AccentBlue,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "·",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }

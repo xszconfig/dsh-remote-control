@@ -310,6 +310,11 @@ sealed interface ServerEvent {
     @SerialName("model_waiting_done")
     data class ModelWaitingDone(val sessionId: String, val startedAt: Long, val elapsedMs: Long) : ServerEvent
 
+    /** 思考流式增量（空 text = 清除实时思考行）。 */
+    @Serializable
+    @SerialName("think_delta")
+    data class ThinkDelta(val sessionId: String, val text: String) : ServerEvent
+
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
     @SerialName("session_upsert")
