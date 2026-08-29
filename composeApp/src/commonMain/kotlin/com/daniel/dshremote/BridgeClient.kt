@@ -756,6 +756,14 @@ class BridgeClient(
         when (ev) {
             is ServerEvent.Hello -> {
                 sawHelloThisConnection = true
+                // hello = 连接已建立且完全同步的权威信号：重连成功后由这里清横幅，
+                // 不依赖重连循环里「open 返回时 hello 是否恰好已到达」的竞态判断。
+                if (_reconnecting.value) {
+                    _reconnecting.value = false
+                    _reconnectStatus.value = ""
+                    _reconnectRoutes.value = emptyList()
+                    ConnLog.info("RECONNECT", "hello 到达，重连完成，横幅清除")
+                }
                 val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
                     .distinctBy { it.approvalId }
                 // 增量对账：服务端快照是唯一事实源，与当前列表 diff 出增/改/删
