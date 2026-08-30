@@ -341,6 +341,11 @@ sealed interface ServerEvent {
         val source: String? = null,
     )
 
+    /** 服务端重启通知：重连后推送（版本 + 启动时间 + 新增功能说明）。 */
+    @Serializable
+    @SerialName("server_boot")
+    data class ServerBoot(val version: String, val bootedAt: Long, val notes: List<String> = emptyList()) : ServerEvent
+
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
     @SerialName("session_upsert")

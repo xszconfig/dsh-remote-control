@@ -550,6 +550,42 @@ private fun MainScreen(
                     onCancel = { client.disconnect() },
                 )
             }
+            // 服务端重启通知：重连后收到 server_boot → 横幅告知版本与新增功能（可关闭）
+            state.serverBoot?.let { boot ->
+                Surface(color = DeepSeekBlue.copy(alpha = 0.14f)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("✅", fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "服务端已重启 · v${boot.version}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = DeepSeekBlue,
+                            )
+                            if (boot.notes.isNotEmpty()) {
+                                Text(
+                                    boot.notes.joinToString("；"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "知道了",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = AccentBlue,
+                            modifier = Modifier.clickable { client.dismissBootNotice() },
+                        )
+                    }
+                }
+            }
             state.errors.lastOrNull()?.let { lastError ->
                 ErrorBanner(
                     message = lastError,

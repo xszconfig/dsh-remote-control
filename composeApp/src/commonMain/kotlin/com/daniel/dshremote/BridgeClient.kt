@@ -109,6 +109,8 @@ data class SessionUiState(
     val liveThink: String? = null,
     /** LSP 诊断（跨会话全局：文件级最新集合，cap 100 条）。 */
     val diagnostics: List<com.daniel.dshremote.protocol.ServerEvent.DiagnosticWire> = emptyList(),
+    /** 服务端重启通知（重连后 server_boot 推送；横幅展示，可关闭）。 */
+    val serverBoot: com.daniel.dshremote.protocol.ServerEvent.ServerBoot? = null,
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -141,6 +143,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     divingTurnStart = null,
     liveThink = null,
     diagnostics = emptyList(),
+    serverBoot = null,
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -738,6 +741,11 @@ class BridgeClient(
         _session.update { it.copy(errors = emptyList()) }
     }
 
+    /** 关闭服务端重启通知横幅。 */
+    fun dismissBootNotice() {
+        _session.update { it.copy(serverBoot = null) }
+    }
+
     // ---- 诊断日志 ----
 
     private val logsClient: HttpClient = createPingHttp()
@@ -928,6 +936,7 @@ class BridgeClient(
                 val rest = st.diagnostics.filterNot { it.path == ev.path }
                 st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
             }
+            is ServerEvent.ServerBoot -> _session.update { st -> st.copy(serverBoot = ev) }
             is ServerEvent.LogsRequest -> {
                 // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）
                 val entries = ConnLog.snapshot().takeLast(500).map {
