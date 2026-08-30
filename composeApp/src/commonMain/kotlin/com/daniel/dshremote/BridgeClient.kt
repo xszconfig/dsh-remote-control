@@ -937,14 +937,15 @@ class BridgeClient(
                             loadingOlder = false,
                         )
                     } else {
-                        // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）
+                        // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）。
+                        // 轮次起点优先用服务端 turnSince（中途切入也能显示标签），回退模型等待起点。
                         s.copy(
                             events = ev.events.bounded(),
                             queueItems = ev.queue,
                             hasMore = ev.hasMore,
                             historyTotal = ev.total,
                             modelWaitingSince = ev.modelWaitingSince,
-                            divingTurnStart = ev.modelWaitingSince,
+                            divingTurnStart = ev.turnSince ?: ev.modelWaitingSince,
                             goal = ev.goal,
                             todos = ev.todos ?: emptyList(),
                         )

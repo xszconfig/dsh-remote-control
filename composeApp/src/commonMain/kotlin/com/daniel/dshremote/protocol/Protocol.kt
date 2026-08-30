@@ -292,6 +292,8 @@ sealed interface ServerEvent {
         val goal: GoalWire? = null,
         /** 该会话的任务列表（订阅响应携带；null = 无/旧版 bridge）。 */
         val todos: List<TodoWire>? = null,
+        /** 当前 OPEN 轮次的开始时间（null = 无进行中的轮次）；中途切入会话也能立即显示 Deep diving 标签。 */
+        val turnSince: Long? = null,
     ) : ServerEvent
 
     @Serializable
