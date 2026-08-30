@@ -998,6 +998,7 @@ private fun basenameOf(path: String): String =
 
 // ================= 会话详情 =================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
@@ -1171,6 +1172,67 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        // LSP 诊断条：Agent 改完文件后实时推送的错误/警告，点击展开详情
+        var showDiagnostics by remember { mutableStateOf(false) }
+        if (state.diagnostics.isNotEmpty()) {
+            val errorCount = state.diagnostics.count { it.severity == 1 }
+            val warnCount = state.diagnostics.count { it.severity == 2 }
+            Surface(color = if (errorCount > 0) MaterialTheme.colorScheme.error.copy(alpha = 0.10f) else StatusAmber.copy(alpha = 0.10f)) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showDiagnostics = true }.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        buildString {
+                            append("${state.diagnostics.size} 条诊断")
+                            if (errorCount > 0) append("（$errorCount 错误）")
+                            else if (warnCount > 0) append("（$warnCount 警告）")
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text("查看详情", style = MaterialTheme.typography.labelSmall, color = AccentBlue)
+                }
+            }
+        }
+        if (showDiagnostics) {
+            ModalBottomSheet(
+                onDismissRequest = { showDiagnostics = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
+                ) {
+                    Text("代码诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    state.diagnostics.forEach { d ->
+                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                            Text(
+                                when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
+                                fontSize = 12.sp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(d.message, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    "${d.path} : ${d.line}:${d.column}" + (d.source?.let { " · $it" } ?: ""),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
                 }
             }

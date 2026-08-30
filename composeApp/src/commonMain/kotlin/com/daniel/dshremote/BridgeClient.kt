@@ -107,6 +107,8 @@ data class SessionUiState(
     val divingTurnStart: Long? = null,
     /** 思考流式实时行（reasoning-delta 节流推送；null = 无流式思考）。 */
     val liveThink: String? = null,
+    /** LSP 诊断（跨会话全局：文件级最新集合，cap 100 条）。 */
+    val diagnostics: List<com.daniel.dshremote.protocol.ServerEvent.DiagnosticWire> = emptyList(),
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
     val approvals: List<ApprovalRequestWire> = emptyList(),
     /** 正在发送裁决的审批 id（按钮置灰、发送失败时据此清理）。 */
@@ -138,6 +140,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     modelWaitingSince = null,
     divingTurnStart = null,
     liveThink = null,
+    diagnostics = emptyList(),
     approvals = emptyList(),
     decidingApprovalId = null,
     questions = emptyList(),
@@ -919,6 +922,11 @@ class BridgeClient(
             }
             is ServerEvent.ThinkDelta -> _session.update { st ->
                 if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
+            }
+            is ServerEvent.Diagnostics -> _session.update { st ->
+                // 文件级替换：同 path 旧诊断清掉，写入最新集合（空集合 = 该文件已无问题）
+                val rest = st.diagnostics.filterNot { it.path == ev.path }
+                st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
             }
             is ServerEvent.LogsRequest -> {
                 // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）

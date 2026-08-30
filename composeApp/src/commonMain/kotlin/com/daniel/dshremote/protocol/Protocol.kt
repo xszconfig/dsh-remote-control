@@ -324,6 +324,23 @@ sealed interface ServerEvent {
     @SerialName("think_delta")
     data class ThinkDelta(val sessionId: String, val text: String) : ServerEvent
 
+    /** LSP 诊断推送：某文件的最新诊断集合（空 = 该文件已无问题）。 */
+    @Serializable
+    @SerialName("diagnostics")
+    data class Diagnostics(val path: String, val diagnostics: List<DiagnosticWire>) : ServerEvent
+
+    @Serializable
+    data class DiagnosticWire(
+        val path: String,
+        val line: Int,
+        val column: Int,
+        val endLine: Int? = null,
+        val endColumn: Int? = null,
+        val severity: Int, // 1=error 2=warning 3=info 4=hint
+        val message: String,
+        val source: String? = null,
+    )
+
     /** 会话列表增量：新建/下线的会话行（hello 全量对账兜底）。 */
     @Serializable
     @SerialName("session_upsert")
