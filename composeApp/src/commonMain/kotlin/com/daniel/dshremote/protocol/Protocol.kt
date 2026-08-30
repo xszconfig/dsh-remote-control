@@ -290,6 +290,8 @@ sealed interface ServerEvent {
         val modelWaitingSince: Long? = null,
         /** 该会话当前持久化目标（null = 无目标）；会话级状态，切换会话不串扰。 */
         val goal: GoalWire? = null,
+        /** 该会话的任务列表（订阅响应携带；null = 无/旧版 bridge）。 */
+        val todos: List<TodoWire>? = null,
     ) : ServerEvent
 
     @Serializable
@@ -323,6 +325,11 @@ sealed interface ServerEvent {
     @SerialName("model_waiting_done")
     data class ModelWaitingDone(val sessionId: String, val startedAt: Long, val elapsedMs: Long) : ServerEvent
 
+    /** Deep Diving 已等待时长推送（服务端时钟秒数，每秒广播；客户端不再本地计时）。 */
+    @Serializable
+    @SerialName("deep_diving_tick")
+    data class DeepDivingTick(val sessionId: String, val elapsedSeconds: Long, val since: Long) : ServerEvent
+
     /** 思考流式增量（空 text = 清除实时思考行）。 */
     @Serializable
     @SerialName("think_delta")
@@ -349,6 +356,80 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("goal_update")
     data class GoalUpdate(val sessionId: String, val goal: GoalWire? = null) : ServerEvent
+
+    /** 会话任务列表条目（DSH todo_write 清单投影）。 */
+    @Serializable
+    data class TodoWire(
+        val content: String,
+        val status: String, // pending / in_progress / completed
+    )
+
+    /** 会话任务列表推送（每会话一份）。会话级，按 sessionId 隔离。 */
+    @Serializable
+    @SerialName("todos_update")
+    data class TodosUpdate(val sessionId: String, val todos: List<TodoWire> = emptyList()) : ServerEvent
+
+    /** 调试断点（1-based 行号）。 */
+    @Serializable
+    data class DebugBreakpointWire(val path: String, val line: Int)
+
+    @Serializable
+    data class DebugScopeWire(val name: String, val variablesReference: String)
+
+    @Serializable
+    data class DebugFrameWire(
+        val id: String,
+        val name: String,
+        val path: String,
+        val line: Int,
+        val scopes: List<DebugScopeWire> = emptyList(),
+    )
+
+    @Serializable
+    data class DebugVariableWire(
+        val name: String,
+        val value: String,
+        val type: String? = null,
+        val hasChildren: Boolean = false,
+        val variablesReference: String = "",
+    )
+
+    @Serializable
+    data class DebugStoppedAt(val path: String, val line: Int)
+
+    @Serializable
+    data class DebugPausedWire(
+        val reason: String,
+        val stoppedAt: DebugStoppedAt? = null,
+        val frames: List<DebugFrameWire> = emptyList(),
+    )
+
+    /** 调试会话状态快照（服务端投影为准，单向流）。 */
+    @Serializable
+    data class DebugStateWire(
+        val state: String, // starting / running / paused / stopped
+        val program: String,
+        val cwd: String = "",
+        val breakpoints: List<DebugBreakpointWire> = emptyList(),
+        val paused: DebugPausedWire? = null,
+        val error: String? = null,
+    )
+
+    @Serializable
+    @SerialName("debug_state")
+    data class DebugState(val sessionId: String, val debug: DebugStateWire) : ServerEvent
+
+    @Serializable
+    @SerialName("debug_output")
+    data class DebugOutput(val sessionId: String, val line: String) : ServerEvent
+
+    @Serializable
+    @SerialName("debug_variables")
+    data class DebugVariables(
+        val sessionId: String,
+        val variablesReference: String,
+        val variables: List<DebugVariableWire> = emptyList(),
+    ) : ServerEvent
 
     @Serializable
     data class DiagnosticWire(
@@ -446,6 +527,11 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("queue_action")
     data class QueueAction(val sessionId: String, val itemId: String, val action: String) : ClientCommand
+
+    /** 调试控制：resume / step / step_out / stop / variables（按引用拉变量）。 */
+    @Serializable
+    @SerialName("debug_command")
+    data class DebugCommand(val sessionId: String, val action: String, val variablesReference: String? = null) : ClientCommand
 
     @Serializable
     @SerialName("upload_logs")

@@ -51,6 +51,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -79,6 +81,7 @@ import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
@@ -95,7 +98,6 @@ import com.mikepenz.markdown.m3.markdownColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -805,6 +807,8 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            // 标题占满剩余宽度（右上角只剩 🤖/📋 两个按钮），展示更完整
+                            modifier = Modifier.weight(1f),
                         )
                     } else {
                         Box(Modifier.size(8.dp).clip(CircleShape).background(StatusGreen))
@@ -878,9 +882,6 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                 }
             }
             TextButton(onClick = onOpenLogs) { Text("📋") }
-            TextButton(onClick = { client.disconnect() }) {
-                Text("断开", color = MaterialTheme.colorScheme.error)
-            }
         }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -1049,16 +1050,6 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             .debounce(600)
             .collect { text -> client.saveDraft(sessionId, text) }
     }
-    // Deep Diving 指示：等待模型回复时显示 + 每秒跳动的等待时长
-    var divingTick by remember { mutableStateOf(0L) }
-    LaunchedEffect(state.modelWaitingSince) {
-        if (state.modelWaitingSince != null) {
-            while (true) {
-                delay(1000)
-                divingTick++
-            }
-        }
-    }
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()
@@ -1116,10 +1107,9 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 }
             }
         }
-        // Deep Diving：与 DSH Web 对齐——放在排队消息面板上方（不在列表顶部）；
-        // 深 Seek 品牌蓝；计时显示本轮对话总耗时（跨多次模型调用不重置）。
-        state.modelWaitingSince?.let { since ->
-            val turnStart = state.divingTurnStart ?: since
+        // Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）；
+        // 深 Seek 品牌蓝；等待时长只显示服务端推送的 deepDivingElapsed（不再本地计时）。
+        state.modelWaitingSince?.let {
             Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
@@ -1133,25 +1123,92 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                         fontWeight = FontWeight.SemiBold,
                         color = DeepSeekBlue,
                     )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "·",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = DeepSeekBlue.copy(alpha = 0.7f),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "本轮 ${(nowMillis() - turnStart) / 1000}s",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = DeepSeekBlue.copy(alpha = 0.85f),
-                        modifier = Modifier.weight(1f),
-                    )
+                    state.deepDivingElapsed?.let { elapsed ->
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "·",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = DeepSeekBlue.copy(alpha = 0.7f),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            formatDivingDuration(elapsed),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = DeepSeekBlue.copy(alpha = 0.85f),
+                            modifier = Modifier.weight(1f),
+                        )
+                    } ?: Spacer(Modifier.weight(1f))
                 }
             }
-            divingTick // 每秒重算时长
+        }
+        // 任务列表条：DSH 的 todo_write 清单（每会话一份），位于 Deep Diving 下方、Goal 上方。
+        if (state.todos.isNotEmpty()) {
+            var todosExpanded by remember { mutableStateOf(true) }
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { todosExpanded = !todosExpanded }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "📋 任务（${state.todos.size}）",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (todosExpanded) "收起 ▲" else "展开 ▼",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AccentBlue,
+                        )
+                    }
+                    if (todosExpanded) {
+                        // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 行高）并支持纵向滚动
+                        val scrollState = rememberScrollState()
+                        Column(
+                            Modifier.fillMaxWidth().then(
+                                if (state.todos.size > 3) Modifier.height(112.dp).verticalScroll(scrollState)
+                                else Modifier
+                            ),
+                        ) {
+                            state.todos.forEach { todo ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        when (todo.status) {
+                                            "completed" -> "✅"
+                                            "in_progress" -> "▶️"
+                                            else -> "⏳"
+                                        },
+                                        fontSize = 13.sp,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        todo.content,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = if (todo.status == "completed") {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。
-        // 位置：Deep Diving 下方、排队消息上方；会话级状态（切会话重置，不串扰）。
+        // 位置：任务列表下方、排队消息上方；会话级状态（切会话重置，不串扰）。
         state.goal?.let { goal ->
             var goalExpanded by remember { mutableStateOf(false) }
             val phaseColor = when (goal.phase) {
@@ -1200,7 +1257,8 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     Text(
                         goal.objective,
                         style = MaterialTheme.typography.bodySmall,
-                        maxLines = if (goalExpanded) Int.MAX_VALUE else 2,
+                        // 小屏空间预算：折叠态只占一行，点开看全文
+                        maxLines = if (goalExpanded) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (goal.phase == "blocked" && !goal.blockedMessage.isNullOrBlank()) {
@@ -1239,36 +1297,47 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                         )
                     }
                     if (queueExpanded) {
-                        for (item in state.queueItems) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    when (item.placement) {
-                                        "steering" -> "⚡插队中"
-                                        "context" -> "🔧上下文"
-                                        else -> "排队"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (item.placement == "steering") StatusAmber
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    item.text,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (item.placement == "queued") {
-                                    TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "steer") }) {
-                                        Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                        // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 条行高）并支持纵向滚动；
+                        // 收起/展开逻辑不变（展开时才渲染列表区）。
+                        val queueItems = state.queueItems
+                        val scrollState = rememberScrollState()
+                        Column(
+                            Modifier.fillMaxWidth().then(
+                                if (queueItems.size > 3) Modifier.height(160.dp).verticalScroll(scrollState)
+                                else Modifier
+                            ),
+                        ) {
+                            queueItems.forEach { item ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        when (item.placement) {
+                                            "steering" -> "⚡插队中"
+                                            "context" -> "🔧上下文"
+                                            else -> "排队"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (item.placement == "steering") StatusAmber
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        item.text,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    if (item.placement == "queued") {
+                                        TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "steer") }) {
+                                            Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                                        }
                                     }
-                                }
-                                TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "remove") }) {
-                                    Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                    TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "remove") }) {
+                                        Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                    }
                                 }
                             }
                         }
@@ -1276,63 +1345,112 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 }
             }
         }
-        // LSP 诊断条：Agent 改完文件后实时推送的错误/警告，点击展开详情
-        var showDiagnostics by remember { mutableStateOf(false) }
-        if (state.diagnostics.isNotEmpty()) {
+        // 开发状态行：LSP 诊断 + 调试状态聚合为一条细行（小屏空间预算；无信号完全不占空间）。
+        // 绝不自动弹面板：只更新徽标，用户点开才进详情。
+        var showDevPanel by remember { mutableStateOf(false) }
+        if (state.diagnostics.isNotEmpty() || state.debug != null) {
             val errorCount = state.diagnostics.count { it.severity == 1 }
             val warnCount = state.diagnostics.count { it.severity == 2 }
-            Surface(color = if (errorCount > 0) MaterialTheme.colorScheme.error.copy(alpha = 0.10f) else StatusAmber.copy(alpha = 0.10f)) {
+            val debugSnap = state.debug
+            val pausedAt = debugSnap?.paused?.stoppedAt
+            val tint = when {
+                errorCount > 0 -> MaterialTheme.colorScheme.error
+                debugSnap?.state == "paused" -> StatusAmber
+                warnCount > 0 -> StatusAmber
+                debugSnap != null && debugSnap.error != null -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Surface(color = tint.copy(alpha = 0.10f)) {
                 Row(
-                    Modifier.fillMaxWidth().clickable { showDiagnostics = true }.padding(horizontal = 14.dp, vertical = 6.dp),
+                    Modifier.fillMaxWidth().clickable { showDevPanel = true }.padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        buildString {
-                            append("${state.diagnostics.size} 条诊断")
-                            if (errorCount > 0) append("（$errorCount 错误）")
-                            else if (warnCount > 0) append("（$warnCount 警告）")
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
-                    )
+                    if (state.diagnostics.isNotEmpty()) {
+                        Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            buildString {
+                                append("${state.diagnostics.size} 诊断")
+                                if (errorCount > 0) append("（$errorCount 错误）")
+                                else if (warnCount > 0) append("（$warnCount 警告）")
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
+                        )
+                    }
+                    if (state.diagnostics.isNotEmpty() && debugSnap != null) {
+                        Spacer(Modifier.width(10.dp))
+                        Text("·", style = MaterialTheme.typography.labelMedium, color = tint.copy(alpha = 0.6f))
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    if (debugSnap != null) {
+                        Text("🐛", fontSize = 13.sp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            when (debugSnap.state) {
+                                "paused" -> "暂停中 ${pausedAt?.path?.substringAfterLast('/') ?: ""}${pausedAt?.let { ":${it.line}" } ?: ""}"
+                                "starting" -> "调试启动中…"
+                                "running" -> "调试运行中"
+                                else -> "调试已停止" + (debugSnap.error?.let { "（$it）" } ?: "")
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = tint,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     Text("查看详情", style = MaterialTheme.typography.labelSmall, color = AccentBlue)
                 }
             }
         }
-        if (showDiagnostics) {
+        if (showDevPanel) {
+            var devTab by remember { mutableStateOf(0) }
             ModalBottomSheet(
-                onDismissRequest = { showDiagnostics = false },
+                onDismissRequest = { showDevPanel = false },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
                 containerColor = MaterialTheme.colorScheme.surface,
             ) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
                 ) {
-                    Text("代码诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("开发面板", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(10.dp))
-                    state.diagnostics.forEach { d ->
-                        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
-                            Text(
-                                when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
-                                fontSize = 12.sp,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(d.message, style = MaterialTheme.typography.bodySmall)
-                                Text(
-                                    "${d.path} : ${d.line}:${d.column}" + (d.source?.let { " · $it" } ?: ""),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                    TabRow(selectedTabIndex = devTab) {
+                        Tab(selected = devTab == 0, onClick = { devTab = 0 }, text = { Text("诊断 ${state.diagnostics.size}") })
+                        Tab(selected = devTab == 1, onClick = { devTab = 1 }, text = { Text("调试") })
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    if (devTab == 0) {
+                        if (state.diagnostics.isEmpty()) {
+                            Text("暂无诊断：Agent 编辑代码后，语言服务器的错误/警告会自动出现在这里。", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            state.diagnostics.forEach { d ->
+                                Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                                    Text(
+                                        when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
+                                        fontSize = 12.sp,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(d.message, style = MaterialTheme.typography.bodySmall)
+                                        Text(
+                                            "${d.path} : ${d.line}:${d.column}" + (d.source?.let { " · $it" } ?: ""),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                             }
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    } else {
+                        DebugPanelContent(state, client, sessionId)
                     }
                 }
             }
@@ -1357,24 +1475,36 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 ),
             )
             Spacer(Modifier.width(8.dp))
+            // 发送按钮：Agent 运行中变为红色终止按钮，点击中断当前推理/任务
+            val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
+                state.modelWaitingSince != null
             Button(
                 onClick = {
-                    val text = input.trim()
-                    if (text.isNotEmpty()) {
-                        client.sendMessage(text)
-                        input = ""
-                        // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
+                    if (agentRunning) {
+                        client.interrupt(sessionId)
+                    } else {
+                        val text = input.trim()
+                        if (text.isNotEmpty()) {
+                            client.sendMessage(text)
+                            input = ""
+                            // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                        }
                     }
                 },
                 modifier = Modifier.size(48.dp),
                 shape = CircleShape,
                 // 48dp 圆钮配默认 24dp 水平内边距会把内容区挤成 0 宽（图标不可见），
-                // 必须归零内边距让 20dp 纸飞机完整渲染。
+                // 必须归零内边距让 20dp 图标完整渲染。
                 contentPadding = PaddingValues(0.dp),
+                colors = if (agentRunning) {
+                    ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                } else {
+                    ButtonDefaults.buttonColors()
+                },
             ) {
-                SendIcon()
+                if (agentRunning) StopIcon() else SendIcon()
             }
         }
     }
@@ -1396,6 +1526,274 @@ private fun SendIcon(modifier: Modifier = Modifier) {
             close()
         }
         drawPath(path, color)
+    }
+}
+
+/** 终止图标：圆角实心方块（Canvas 自绘，随主题着色）。 */
+@Composable
+private fun StopIcon(modifier: Modifier = Modifier) {
+    val color = LocalContentColor.current
+    Canvas(modifier.size(16.dp)) {
+        drawRoundRect(color = color, cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()))
+    }
+}
+
+// ================= 开发面板 · 调试 Tab =================
+
+/** 调试面板内容：断点 / 调用栈 / 变量 / 输出（小屏紧凑，中文文案）。 */
+@Composable
+private fun DebugPanelContent(
+    state: SessionUiState,
+    client: BridgeClient,
+    sessionId: String,
+) {
+    val debug = state.debug
+    if (debug == null) {
+        Text(
+            "当前无调试会话",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column {
+        // 程序路径（单行省略）
+        Text(
+            "程序：${debug.program}",
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // 断点
+        if (debug.breakpoints.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("断点", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            debug.breakpoints.forEach { bp ->
+                Text(
+                    "● ${bp.path.substringAfterLast('/')} : ${bp.line}",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        val paused = debug.paused
+        if (paused == null) {
+            // 未暂停：仅状态文本
+            when (debug.state) {
+                "starting" -> Text("启动中…", style = MaterialTheme.typography.bodyMedium)
+                "running" -> Text("运行中…", style = MaterialTheme.typography.bodyMedium, color = StatusGreen)
+                else -> Text(
+                    "已停止" + (debug.error?.let { "：$it" } ?: ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (debug.error != null) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            PausedDebugSection(
+                paused = paused,
+                debugVars = state.debugVars,
+                client = client,
+                sessionId = sessionId,
+            )
+        }
+        // 输出区（暂停中也显示，放面板最底部）
+        if (state.debugOutput.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "输出（最近 ${state.debugOutput.size} 行）",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                    state.debugOutput.takeLast(40).forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 暂停态的调试详情：状态行 + 调用栈 + 变量 + 操作按钮。 */
+@Composable
+private fun PausedDebugSection(
+    paused: ServerEvent.DebugPausedWire,
+    debugVars: Map<String, List<ServerEvent.DebugVariableWire>>,
+    client: BridgeClient,
+    sessionId: String,
+) {
+    // 选中的调用栈帧（默认第一帧；paused 快照更新时复位）
+    var selectedFrameId by remember(paused) { mutableStateOf(paused.frames.firstOrNull()?.id) }
+    val selectedFrame = paused.frames.firstOrNull { it.id == selectedFrameId }
+        ?: paused.frames.firstOrNull()
+
+    Column {
+        // 状态行：⏸ 文件名:行号
+        val stoppedAt = paused.stoppedAt
+        Text(
+            stoppedAt?.let { "⏸ ${it.path.substringAfterLast('/')}:${it.line}" } ?: "⏸ 已暂停",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = StatusAmber,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // 调用栈（最多 6 帧）
+        if (paused.frames.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("调用栈", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            paused.frames.take(6).forEach { frame ->
+                val isSelected = frame.id == selectedFrame?.id
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (frame.id != selectedFrameId) {
+                                selectedFrameId = frame.id
+                                // 切换帧：自动拉取该帧每个 scope（跳过全局）的变量
+                                frame.scopes.filter { it.name != "全局" }.forEach { scope ->
+                                    client.sendDebugCommand(sessionId, "variables", scope.variablesReference)
+                                }
+                            }
+                        }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (isSelected) "▸ " else "　",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${frame.name} · ${frame.path.substringAfterLast('/')}:${frame.line}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        // 变量：选中帧的 scopes（跳过全局，不展示不预拉）
+        val scopes = selectedFrame?.scopes?.filter { it.name != "全局" }.orEmpty()
+        if (scopes.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("变量", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            scopes.forEach { scope ->
+                val loaded = debugVars.containsKey(scope.variablesReference)
+                Text(
+                    (if (loaded) "▾ " else "▸ ") + scope.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AccentBlue,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { client.sendDebugCommand(sessionId, "variables", scope.variablesReference) }
+                        .padding(vertical = 4.dp),
+                )
+                if (loaded) {
+                    debugVars[scope.variablesReference].orEmpty().forEach { v ->
+                        VariableNode(
+                            v = v,
+                            depth = 0,
+                            vars = debugVars,
+                            onExpand = { ref -> client.sendDebugCommand(sessionId, "variables", ref) },
+                        )
+                    }
+                }
+            }
+        }
+        // 操作按钮：继续 / 单步 / 跳出 / 停止
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { client.sendDebugCommand(sessionId, "resume") },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("继续 ▶", style = MaterialTheme.typography.labelMedium)
+            }
+            OutlinedButton(
+                onClick = { client.sendDebugCommand(sessionId, "step") },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("单步 ⤵", style = MaterialTheme.typography.labelMedium)
+            }
+            OutlinedButton(
+                onClick = { client.sendDebugCommand(sessionId, "step_out") },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("跳出 ⤴", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        TextButton(
+            onClick = { client.sendDebugCommand(sessionId, "stop") },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("停止调试", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/** 递归渲染单个调试变量；hasChildren 可展开，子级按 depth 缩进显示。 */
+@Composable
+private fun VariableNode(
+    v: ServerEvent.DebugVariableWire,
+    depth: Int,
+    vars: Map<String, List<ServerEvent.DebugVariableWire>>,
+    onExpand: (String) -> Unit,
+) {
+    val children = vars[v.variablesReference]
+    Column(Modifier.fillMaxWidth().padding(start = (depth * 14).dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(enabled = v.hasChildren) { onExpand(v.variablesReference) }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (v.hasChildren) {
+                Text("▸", style = MaterialTheme.typography.labelSmall, color = AccentBlue)
+                Spacer(Modifier.width(4.dp))
+            }
+            Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(4.dp))
+            Text(
+                v.name,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(" = ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                v.value,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (children != null) {
+            children.forEach { child ->
+                VariableNode(child, depth + 1, vars, onExpand)
+            }
+        }
     }
 }
 
@@ -2272,3 +2670,21 @@ private fun levelColorOf(level: String): Color = when (level) {
 
 // ================= 工具 =================
 // 时间格式化（formatClock / relativeTime）与 nowMillis 见 TimeFormat.kt
+
+/** Deep Diving 等待时长文案（服务端时钟秒数透传）。 */
+private fun formatDivingDuration(seconds: Long): String {
+    val s = seconds.coerceAtLeast(0)
+    return when {
+        s < 60 -> "本轮 ${s}秒"
+        s < 3600 -> {
+            val m = s / 60
+            val rem = s % 60
+            if (rem == 0L) "本轮 ${m}分" else "本轮 ${m}分${rem}秒"
+        }
+        else -> {
+            val h = s / 3600
+            val m = (s % 3600) / 60
+            if (m == 0L) "本轮 ${h}小时" else "本轮 ${h}小时${m}分"
+        }
+    }
+}

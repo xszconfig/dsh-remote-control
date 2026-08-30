@@ -105,10 +105,20 @@ data class SessionUiState(
     val modelWaitingSince: Long? = null,
     /** 本轮对话开始时间（首个模型请求时间；Deep Diving 显示本轮总耗时，跨多次模型调用不重置）。 */
     val divingTurnStart: Long? = null,
+    /** Deep Diving 已等待时长（服务端时钟秒数；null = 无等待；客户端不本地计时）。 */
+    val deepDivingElapsed: Long? = null,
+    /** 当前会话任务列表（DSH todo_write 清单；会话级，切会话重置）。 */
+    val todos: List<com.daniel.dshremote.protocol.ServerEvent.TodoWire> = emptyList(),
     /** 思考流式实时行（reasoning-delta 节流推送；null = 无流式思考）。 */
     val liveThink: String? = null,
     /** 当前会话持久化目标（null = 无目标）；会话级，切会话重置、按 sessionId 过滤。 */
     val goal: com.daniel.dshremote.protocol.ServerEvent.GoalWire? = null,
+    /** 当前会话调试会话状态（null = 无调试）；会话级隔离。 */
+    val debug: com.daniel.dshremote.protocol.ServerEvent.DebugStateWire? = null,
+    /** 调试进程输出流（最近 200 行）。 */
+    val debugOutput: List<String> = emptyList(),
+    /** 变量缓存：variablesReference → 变量列表（离开 paused 清空）。 */
+    val debugVars: Map<String, List<com.daniel.dshremote.protocol.ServerEvent.DebugVariableWire>> = emptyMap(),
     /** LSP 诊断（跨会话全局：文件级最新集合，cap 100 条）。 */
     val diagnostics: List<com.daniel.dshremote.protocol.ServerEvent.DiagnosticWire> = emptyList(),
     /** 服务端重启通知（重连后 server_boot 推送；横幅展示，可关闭）。 */
@@ -143,8 +153,13 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     queueItems = emptyList(),
     modelWaitingSince = null,
     divingTurnStart = null,
+    deepDivingElapsed = null,
+    todos = emptyList(),
     liveThink = null,
     goal = null,
+    debug = null,
+    debugOutput = emptyList(),
+    debugVars = emptyMap(),
     diagnostics = emptyList(),
     serverBoot = null,
     approvals = emptyList(),
@@ -514,8 +529,8 @@ class BridgeClient(
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return
-        // 关键：切换会话必须清空全部会话级状态（Deep Diving/思考流/诊断/目标/队列/分页），
-        // 否则上个会话的指示条/诊断/目标会串到新会话里展示。
+        // 关键：切换会话必须清空全部会话级状态（Deep Diving/思考流/诊断/目标/调试/队列/分页），
+        // 否则上个会话的指示条/诊断/目标/调试状态会串到新会话里展示。
         _session.update {
             it.copy(
                 currentSessionId = sessionId,
@@ -523,8 +538,13 @@ class BridgeClient(
                 queueItems = emptyList(),
                 modelWaitingSince = null,
                 divingTurnStart = null,
+                deepDivingElapsed = null,
+                todos = emptyList(),
                 liveThink = null,
                 goal = null,
+                debug = null,
+                debugOutput = emptyList(),
+                debugVars = emptyMap(),
                 diagnostics = emptyList(),
                 hasMore = false,
                 loadingOlder = false,
@@ -709,6 +729,15 @@ class BridgeClient(
         scope.launch {
             if (!connection.send(ClientCommand.QueueAction(sessionId, itemId, action))) {
                 pushError("排队操作发送失败（连接已断开）")
+            }
+        }
+    }
+
+    /** 调试控制：resume / step / step_out / stop / variables（带引用）。 */
+    fun sendDebugCommand(sessionId: String, action: String, variablesReference: String? = null) {
+        scope.launch {
+            if (!connection.send(ClientCommand.DebugCommand(sessionId, action, variablesReference))) {
+                pushError("调试指令发送失败（连接已断开）")
             }
         }
     }
@@ -917,6 +946,7 @@ class BridgeClient(
                             modelWaitingSince = ev.modelWaitingSince,
                             divingTurnStart = ev.modelWaitingSince,
                             goal = ev.goal,
+                            todos = ev.todos ?: emptyList(),
                         )
                     }
                 }
@@ -946,10 +976,14 @@ class BridgeClient(
             }
             is ServerEvent.ModelWaitingDone -> _session.update { st ->
                 if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
-                    st.copy(modelWaitingSince = null)
+                    st.copy(modelWaitingSince = null, deepDivingElapsed = null)
                 } else {
                     st
                 }
+            }
+            is ServerEvent.DeepDivingTick -> _session.update { st ->
+                // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
+                if (ev.sessionId == st.currentSessionId) st.copy(deepDivingElapsed = ev.elapsedSeconds) else st
             }
             is ServerEvent.ThinkDelta -> _session.update { st ->
                 if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
@@ -966,6 +1000,35 @@ class BridgeClient(
             is ServerEvent.GoalUpdate -> _session.update { st ->
                 // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
                 if (ev.sessionId == st.currentSessionId) st.copy(goal = ev.goal) else st
+            }
+            is ServerEvent.TodosUpdate -> _session.update { st ->
+                // 会话隔离：任务列表只归属对应会话（每会话一份）
+                if (ev.sessionId == st.currentSessionId) st.copy(todos = ev.todos) else st
+            }
+            is ServerEvent.DebugState -> _session.update { st ->
+                // 会话隔离；离开 paused 时清空变量缓存（objectId 已失效）
+                if (ev.sessionId != st.currentSessionId) {
+                    st
+                } else {
+                    st.copy(
+                        debug = ev.debug,
+                        debugVars = if (ev.debug.state == "paused") st.debugVars else emptyMap(),
+                    )
+                }
+            }
+            is ServerEvent.DebugOutput -> _session.update { st ->
+                if (ev.sessionId == st.currentSessionId) {
+                    st.copy(debugOutput = (st.debugOutput + ev.line).takeLast(200))
+                } else {
+                    st
+                }
+            }
+            is ServerEvent.DebugVariables -> _session.update { st ->
+                if (ev.sessionId == st.currentSessionId) {
+                    st.copy(debugVars = st.debugVars + (ev.variablesReference to ev.variables))
+                } else {
+                    st
+                }
             }
             is ServerEvent.ServerBoot -> _session.update { st -> st.copy(serverBoot = ev) }
             is ServerEvent.LogsRequest -> {
