@@ -95,9 +95,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -1054,11 +1056,27 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()
     val latestSeq = state.events.lastOrNull()?.seq
-    // 新消息到达（含刚发出的消息回显）→ 滚到列表底部，始终展示最新内容。
+    // 自动跟随底部状态机：
+    // - 默认跟随（新消息到达 → 滚到底部；切会话重置为跟随）
+    // - 用户上滑浏览历史 → 滚动停稳后暂停跟随（让他看）
+    // - 用户滑回底部 → 恢复跟随（reverseLayout 下 canScrollForward=false 即底部）
+    var followBottom by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .collect { scrolling ->
+                if (!scrolling) followBottom = !listState.canScrollForward
+            }
+    }
+    // 切会话/打开会话：重置为跟随并定位底部
+    LaunchedEffect(sessionId) {
+        followBottom = true
+        if (state.events.isNotEmpty()) listState.scrollToItem(0)
+    }
+    // 新消息到达（含刚发出的消息回显）→ 仅当处于跟随态才滚到列表底部。
     // reverseLayout 下 index 0 = 底部最新；以最后事件 seq 为键，
     // 列表达 MAX_EVENTS 上限后 size 不再增长也能继续触发。
-    LaunchedEffect(latestSeq, sessionId) {
-        if (state.events.isNotEmpty()) listState.scrollToItem(0)
+    LaunchedEffect(latestSeq) {
+        if (followBottom && state.events.isNotEmpty()) listState.scrollToItem(0)
     }
     Column(Modifier.fillMaxSize()) {
         if (state.events.isEmpty()) {
@@ -1501,6 +1519,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 onClick = {
                     val text = input.trim()
                     if (text.isNotEmpty()) {
+                        followBottom = true // 发送后重新跟随底部（要看到自己的消息与回复）
                         client.sendMessage(text)
                         input = ""
                         // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
@@ -1896,27 +1915,39 @@ private fun Bubble(
             if (markdown) {
                 // 开源 CommonMark 渲染（mikepenz/multiplatform-markdown-renderer，基于 JetBrains
                 // CommonMark/GFM 解析）：代码块、表格、标题、加粗/斜体/行内代码、列表、引用等。
-                // 库默认正文字号偏大（16sp）→ 统一缩放到与旧默认 bodyMedium(14sp) 一致，
-                // 标题/代码/表格等其余字号随正文等比缩放（×0.875）。
-                val baseDensity = LocalDensity.current
-                CompositionLocalProvider(
-                    LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * 0.875f),
-                ) {
-                    Markdown(
-                        content = text,
-                        colors = markdownColor(
-                            text = content,
-                            codeText = MarkdownCodeFg,
-                            codeBackground = MarkdownCodeBg,
-                            inlineCodeText = content,
-                            inlineCodeBackground = content.copy(alpha = 0.14f),
-                            linkText = AccentBlue,
-                            tableText = content,
-                            dividerColor = content.copy(alpha = 0.35f),
-                        ),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                    )
-                }
+                // 字号：移动端档位显式映射（库默认 H1~H3 用 display 级 57/45/36sp，那是桌面大屏
+                // 展示字号，手机上巨大——我们做的是手机 App，逐元素定号，不依赖库默认值）。
+                Markdown(
+                    content = text,
+                    typography = markdownTypography(
+                        h1 = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.Bold),
+                        h2 = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                        h3 = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                        h4 = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                        h5 = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
+                        h6 = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+                        text = TextStyle(fontSize = 14.sp),
+                        paragraph = TextStyle(fontSize = 14.sp),
+                        ordered = TextStyle(fontSize = 14.sp),
+                        bullet = TextStyle(fontSize = 14.sp),
+                        list = TextStyle(fontSize = 14.sp),
+                        code = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                        inlineCode = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                        quote = TextStyle(fontSize = 13.sp, fontStyle = FontStyle.Italic),
+                        link = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline),
+                    ),
+                    colors = markdownColor(
+                        text = content,
+                        codeText = MarkdownCodeFg,
+                        codeBackground = MarkdownCodeBg,
+                        inlineCodeText = content,
+                        inlineCodeBackground = content.copy(alpha = 0.14f),
+                        linkText = AccentBlue,
+                        tableText = content,
+                        dividerColor = content.copy(alpha = 0.35f),
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                )
             } else {
                 Text(
                     text.ifBlank { "…" },
