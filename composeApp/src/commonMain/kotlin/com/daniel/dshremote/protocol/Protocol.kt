@@ -288,6 +288,8 @@ sealed interface ServerEvent {
         val total: Int = 0,
         /** 该会话正在进行的模型请求开始时间（null = 未在等待）；切会话后指示条不串扰。 */
         val modelWaitingSince: Long? = null,
+        /** 该会话当前持久化目标（null = 无目标）；会话级状态，切换会话不串扰。 */
+        val goal: GoalWire? = null,
     ) : ServerEvent
 
     @Serializable
@@ -330,6 +332,23 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("diagnostics")
     data class Diagnostics(val sessionId: String, val path: String, val diagnostics: List<DiagnosticWire>) : ServerEvent
+
+    /** 会话持久化目标（goal/change 事件投影）。 */
+    @Serializable
+    data class GoalWire(
+        val objective: String,
+        val phase: String, // active / paused / blocked / complete
+        val blockedCode: String? = null,
+        val blockedMessage: String? = null,
+        val maxGoalRounds: Int = 0,
+        val roundsStarted: Int = 0,
+        val updatedAt: Long = 0,
+    )
+
+    /** 目标变更推送（goal = null 表示已清除）。会话级，按 sessionId 隔离。 */
+    @Serializable
+    @SerialName("goal_update")
+    data class GoalUpdate(val sessionId: String, val goal: GoalWire? = null) : ServerEvent
 
     @Serializable
     data class DiagnosticWire(

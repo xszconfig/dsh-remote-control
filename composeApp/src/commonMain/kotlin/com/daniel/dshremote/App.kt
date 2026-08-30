@@ -1150,6 +1150,70 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
             divingTick // 每秒重算时长
         }
+        // Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。
+        // 位置：Deep Diving 下方、排队消息上方；会话级状态（切会话重置，不串扰）。
+        state.goal?.let { goal ->
+            var goalExpanded by remember { mutableStateOf(false) }
+            val phaseColor = when (goal.phase) {
+                "active" -> StatusGreen
+                "paused" -> StatusAmber
+                "blocked" -> MaterialTheme.colorScheme.error
+                else -> StatusGray
+            }
+            val phaseLabel = when (goal.phase) {
+                "active" -> "进行中"
+                "paused" -> "已暂停"
+                "blocked" -> "已阻塞"
+                else -> "已完成"
+            }
+            Surface(color = phaseColor.copy(alpha = 0.10f)) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { goalExpanded = !goalExpanded }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("🎯", fontSize = 13.sp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Goal",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = phaseColor,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            phaseLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = phaseColor,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (goal.maxGoalRounds > 0) {
+                            Text(
+                                "第 ${goal.roundsStarted}/${goal.maxGoalRounds} 轮",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = phaseColor.copy(alpha = 0.85f),
+                            )
+                        }
+                    }
+                    Text(
+                        goal.objective,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = if (goalExpanded) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (goal.phase == "blocked" && !goal.blockedMessage.isNullOrBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "⛔ ${goal.blockedMessage}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
         // 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除
         if (state.queueItems.isNotEmpty()) {
             var queueExpanded by remember { mutableStateOf(true) }
