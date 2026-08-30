@@ -1108,8 +1108,12 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
         }
         // Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）；
-        // 深 Seek 品牌蓝；等待时长只显示服务端推送的 deepDivingElapsed（不再本地计时）。
-        state.modelWaitingSince?.let {
+        // 深 Seek 品牌蓝；标签在整个轮次期间显示（服务端 turn_status），时钟在 ≥15s 后出现
+        // （DSH Web showClock 阈值），时长只显示服务端推送的 deepDivingElapsed（不本地计时）。
+        val divingVisible = state.divingTurnStart != null || state.modelWaitingSince != null
+        if (divingVisible) {
+            val elapsed = state.deepDivingElapsed ?: 0
+            val showClock = elapsed >= 15
             Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
@@ -1123,7 +1127,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                         fontWeight = FontWeight.SemiBold,
                         color = DeepSeekBlue,
                     )
-                    state.deepDivingElapsed?.let { elapsed ->
+                    if (showClock) {
                         Spacer(Modifier.width(6.dp))
                         Text(
                             "·",
@@ -1137,7 +1141,9 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                             color = DeepSeekBlue.copy(alpha = 0.85f),
                             modifier = Modifier.weight(1f),
                         )
-                    } ?: Spacer(Modifier.weight(1f))
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
                 }
             }
         }

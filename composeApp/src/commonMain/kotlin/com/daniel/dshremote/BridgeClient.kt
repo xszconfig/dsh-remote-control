@@ -985,6 +985,17 @@ class BridgeClient(
                 // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
                 if (ev.sessionId == st.currentSessionId) st.copy(deepDivingElapsed = ev.elapsedSeconds) else st
             }
+            is ServerEvent.TurnStatus -> _session.update { st ->
+                // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
+                // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
+                if (ev.sessionId != st.currentSessionId) {
+                    st
+                } else if (ev.open) {
+                    st.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
+                } else {
+                    st.copy(divingTurnStart = null, deepDivingElapsed = null)
+                }
+            }
             is ServerEvent.ThinkDelta -> _session.update { st ->
                 if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
             }
@@ -1048,12 +1059,7 @@ class BridgeClient(
                     s.copy(
                         sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
                         agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
-                        // 轮次边界：进入 running 开启新一轮计时；离开 running 清掉本轮起点
-                        divingTurnStart = when {
-                            ev.sessionId != s.currentSessionId -> s.divingTurnStart
-                            ev.status == "running" -> s.divingTurnStart
-                            else -> null
-                        },
+                        // 轮次生命周期由服务端 turn_status 事件管理（本地不再推断轮次边界）
                     )
                 }
                 scheduleSessionCacheSave()

@@ -330,6 +330,11 @@ sealed interface ServerEvent {
     @SerialName("deep_diving_tick")
     data class DeepDivingTick(val sessionId: String, val elapsedSeconds: Long, val since: Long) : ServerEvent
 
+    /** Deep Diving 轮次状态（与 DSH Web 对齐）：open=true 时整个轮次期间显示标签；since=轮次起点。 */
+    @Serializable
+    @SerialName("turn_status")
+    data class TurnStatus(val sessionId: String, val open: Boolean, val since: Long? = null) : ServerEvent
+
     /** 思考流式增量（空 text = 清除实时思考行）。 */
     @Serializable
     @SerialName("think_delta")
