@@ -1064,7 +1064,11 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }
             .collect { scrolling ->
-                if (!scrolling) followBottom = !listState.canScrollForward
+                if (!scrolling) {
+                    // reverseLayout 下 index 0 = 底部：canScrollBackward=false 即已贴底。
+                    // （不能用 canScrollForward——那是"上方还有更早历史"的方向，几乎恒为 true）
+                    followBottom = !listState.canScrollBackward
+                }
             }
     }
     // 切会话/打开会话：重置为跟随并定位底部
