@@ -1481,22 +1481,31 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 ),
             )
             Spacer(Modifier.width(8.dp))
-            // 发送按钮：Agent 运行中变为红色终止按钮，点击中断当前推理/任务
+            // 与 DSH Web 对齐：运行中「终止」与「发送」并存——点终止中断当前推理；
+            // 发送照常可用（消息进入排队队列，与桌面端行为一致）。非运行中只显示发送。
             val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
                 state.modelWaitingSince != null
+            if (agentRunning) {
+                Button(
+                    onClick = { client.interrupt(sessionId) },
+                    modifier = Modifier.size(48.dp),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(0.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    StopIcon()
+                }
+                Spacer(Modifier.width(8.dp))
+            }
             Button(
                 onClick = {
-                    if (agentRunning) {
-                        client.interrupt(sessionId)
-                    } else {
-                        val text = input.trim()
-                        if (text.isNotEmpty()) {
-                            client.sendMessage(text)
-                            input = ""
-                            // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                        }
+                    val text = input.trim()
+                    if (text.isNotEmpty()) {
+                        client.sendMessage(text)
+                        input = ""
+                        // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
                     }
                 },
                 modifier = Modifier.size(48.dp),
@@ -1504,13 +1513,9 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 // 48dp 圆钮配默认 24dp 水平内边距会把内容区挤成 0 宽（图标不可见），
                 // 必须归零内边距让 20dp 图标完整渲染。
                 contentPadding = PaddingValues(0.dp),
-                colors = if (agentRunning) {
-                    ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                } else {
-                    ButtonDefaults.buttonColors()
-                },
+                colors = ButtonDefaults.buttonColors(),
             ) {
-                if (agentRunning) StopIcon() else SendIcon()
+                SendIcon()
             }
         }
     }
