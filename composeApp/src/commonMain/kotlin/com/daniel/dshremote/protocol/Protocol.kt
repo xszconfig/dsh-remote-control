@@ -286,6 +286,8 @@ sealed interface ServerEvent {
         val hasMore: Boolean = false,
         /** 会话事件总数（展示用）。 */
         val total: Int = 0,
+        /** 该会话正在进行的模型请求开始时间（null = 未在等待）；切会话后指示条不串扰。 */
+        val modelWaitingSince: Long? = null,
     ) : ServerEvent
 
     @Serializable
@@ -327,7 +329,7 @@ sealed interface ServerEvent {
     /** LSP 诊断推送：某文件的最新诊断集合（空 = 该文件已无问题）。 */
     @Serializable
     @SerialName("diagnostics")
-    data class Diagnostics(val path: String, val diagnostics: List<DiagnosticWire>) : ServerEvent
+    data class Diagnostics(val sessionId: String, val path: String, val diagnostics: List<DiagnosticWire>) : ServerEvent
 
     @Serializable
     data class DiagnosticWire(

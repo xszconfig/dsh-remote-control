@@ -511,7 +511,22 @@ class BridgeClient(
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return
-        _session.update { it.copy(currentSessionId = sessionId, events = emptyList(), queueItems = emptyList()) }
+        // 关键：切换会话必须清空全部会话级状态（Deep Diving/思考流/诊断/队列/分页），
+        // 否则上个会话的指示条/诊断会串到新会话里展示。
+        _session.update {
+            it.copy(
+                currentSessionId = sessionId,
+                events = emptyList(),
+                queueItems = emptyList(),
+                modelWaitingSince = null,
+                divingTurnStart = null,
+                liveThink = null,
+                diagnostics = emptyList(),
+                hasMore = false,
+                loadingOlder = false,
+                historyTotal = 0,
+            )
+        }
         scope.launch {
             // 先渲染本地缓存（秒开），订阅返回后以服务端历史为准
             val key = eventCacheKey(sessionId)
@@ -889,11 +904,14 @@ class BridgeClient(
                             loadingOlder = false,
                         )
                     } else {
+                        // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）
                         s.copy(
                             events = ev.events.bounded(),
                             queueItems = ev.queue,
                             hasMore = ev.hasMore,
                             historyTotal = ev.total,
+                            modelWaitingSince = ev.modelWaitingSince,
+                            divingTurnStart = ev.modelWaitingSince,
                         )
                     }
                 }
@@ -932,9 +950,13 @@ class BridgeClient(
                 if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
             }
             is ServerEvent.Diagnostics -> _session.update { st ->
-                // 文件级替换：同 path 旧诊断清掉，写入最新集合（空集合 = 该文件已无问题）
-                val rest = st.diagnostics.filterNot { it.path == ev.path }
-                st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
+                // 会话隔离：诊断只归属触发它的会话；文件级替换（空集合 = 该文件已无问题）
+                if (ev.sessionId != st.currentSessionId) {
+                    st
+                } else {
+                    val rest = st.diagnostics.filterNot { it.path == ev.path }
+                    st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
+                }
             }
             is ServerEvent.ServerBoot -> _session.update { st -> st.copy(serverBoot = ev) }
             is ServerEvent.LogsRequest -> {
