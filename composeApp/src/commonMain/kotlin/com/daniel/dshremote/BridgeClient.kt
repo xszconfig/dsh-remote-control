@@ -197,9 +197,8 @@ class BridgeClient(
     private val _reconnecting = MutableStateFlow(false)
     val reconnecting: StateFlow<Boolean> = _reconnecting.asStateFlow()
 
-    /** 重连进度文案（"第 2 次 · 4s 后重试"）。 */
+    /** 重连进度文案（"第 2 次 · 4s 后重试"；仅用于日志与 markReconnecting 详情，不再上横幅）。 */
     private val _reconnectStatus = MutableStateFlow("")
-    val reconnectStatus: StateFlow<String> = _reconnectStatus.asStateFlow()
 
     private var connectJob: Job? = null
     private var reconnectJob: Job? = null
@@ -270,50 +269,25 @@ class BridgeClient(
         reconnectJob = null
         _reconnecting.value = false
         _reconnectStatus.value = ""
-        _reconnectRoutes.value = emptyList()
-        preferredRoute = null
         _session.update { it.clearedForDisconnect() }
         devices.setPollingEnabled(true)
         if (detail != null) connection.fail(detail) else connection.markDisconnected()
     }
 
     /** 指数退避自动重连；凭据失效（provider 返回 null）或鉴权错误时放弃。 */
-    /** 重连候选路由（横幅内供用户手动选择；主路由在前）。 */
-    private val _reconnectRoutes = MutableStateFlow<List<String>>(emptyList())
-    val reconnectRoutes: StateFlow<List<String>> = _reconnectRoutes.asStateFlow()
-
-    /** 用户从横幅指定的首选路由（本次尝试提至最前，用完即清）。 */
-    private var preferredRoute: String? = null
-
-    /** 横幅内选择多路由：指定首选端点并立即重试。 */
-    fun reconnectVia(url: String) {
-        preferredRoute = url
-        ConnLog.info("RECONNECT", "用户选择路由 $url 立即重试")
-        reconnectJob?.cancel()
-        startReconnect()
-    }
-
     private fun startReconnect() {
         // 幂等：断开边沿可能多次触发，已有活跃循环时不得重启——
-        // 否则新旧循环会在 ConnectionManager 里并发 open()，互相踩 ws/currentUrl 状态
-        if (reconnectJob?.isActive == true) return
+        // 否则新旧循环会在 ConnectionManager 里并发 open()，互相踩 ws/currentUrl 状态。
+        // 但每次进入（含循环存活期间再次触发）都必须重断言 reconnecting：否则标志被
+        // hello 清掉后，循环存活期的重试会被 UI 误判成「首次连接」而跳整页。
         _reconnecting.value = true
+        if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             try {
                 var attempt = 1
                 var consecutiveFailures = 0
                 while (isActive) {
                     val plan = reconnectProvider?.invoke() ?: break
-                    _reconnectRoutes.value = plan.map { it.first }
-                    // 用户指定了首选路由：本次尝试提到最前（token 保持对应），用完即清
-                    val pref = preferredRoute
-                    val ordered = if (pref != null) {
-                        val hit = plan.firstOrNull { it.first == pref }
-                        if (hit != null) listOf(hit) + plan.filter { it !== hit } else plan
-                    } else {
-                        plan
-                    }
-                    preferredRoute = null
                     val wait = reconnectDelayMs(attempt)
                     // 连续失败 3 次以上且候选含 127.0.0.1：给出 USB 隧道断开指引
                     val hint = if (consecutiveFailures >= 3 && plan.any { it.first.contains("127.0.0.1") }) {
@@ -328,9 +302,9 @@ class BridgeClient(
                     if (!isActive) return@launch
                     val candidates = reconnectProvider?.invoke() ?: break
                     var established = false
-                    for ((index, candidate) in ordered.withIndex()) {
+                    for ((index, candidate) in plan.withIndex()) {
                         val (url, token) = candidate
-                        ConnLog.info("RECONNECT", "第 $attempt 次重连 · 候选 ${index + 1}/${ordered.size}: $url")
+                        ConnLog.info("RECONNECT", "第 $attempt 次重连 · 候选 ${index + 1}/${plan.size}: $url")
                         if (connection.open(url, token)) {
                             established = true
                             break
@@ -338,13 +312,12 @@ class BridgeClient(
                         ConnLog.warn("RECONNECT", "候选失败 $url: ${connection.info.value.detail}")
                     }
                     if (established) consecutiveFailures = 0 else consecutiveFailures++
-                    // 成功建立过连接且期间收到过 Hello → 重置退避并清除重连横幅
+                    // 成功建立过连接且期间收到过 Hello → 重置退避（横幅由 hello 到达清除）
                     if (established && sawHelloThisConnection) {
                         attempt = 1
                         sawHelloThisConnection = false
-                        _reconnecting.value = false
-                        _reconnectStatus.value = ""
-                        ConnLog.info("RECONNECT", "重连成功，横幅清除")
+                        // 横幅由 hello 到达统一清除（handle(Hello)），这里只重置退避。
+                        ConnLog.info("RECONNECT", "重连成功，退避重置")
                     } else {
                         attempt++
                     }
@@ -869,7 +842,6 @@ class BridgeClient(
                 if (_reconnecting.value) {
                     _reconnecting.value = false
                     _reconnectStatus.value = ""
-                    _reconnectRoutes.value = emptyList()
                     ConnLog.info("RECONNECT", "hello 到达，重连完成，横幅清除")
                 }
                 val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
