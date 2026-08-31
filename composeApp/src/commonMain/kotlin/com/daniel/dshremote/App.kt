@@ -1177,6 +1177,16 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
         // 任务列表条：DSH 的 todo_write 清单（每会话一份），位于 Deep Diving 下方、Goal 上方。
         if (state.todos.isNotEmpty()) {
             var todosExpanded by remember { mutableStateOf(true) }
+            // 与服务端 DSH Web progressLabel 完全对齐：已完成 → 进行中 → 待处理，
+            // 零计数的段省略（"·" 连接）。
+            val doneCount = state.todos.count { it.status == "completed" }
+            val activeCount = state.todos.count { it.status == "in_progress" }
+            val pendingCount = state.todos.size - doneCount - activeCount
+            val progressSegments = buildList {
+                if (doneCount > 0) add("$doneCount 已完成")
+                if (activeCount > 0) add("$activeCount 进行中")
+                if (pendingCount > 0) add("$pendingCount 待处理")
+            }.joinToString(" · ")
             Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
                 Column {
                     Row(
@@ -1191,7 +1201,19 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        Spacer(Modifier.weight(1f))
+                        if (progressSegments.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                progressSegments,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
                         Text(
                             if (todosExpanded) "收起 ▲" else "展开 ▼",
                             style = MaterialTheme.typography.labelSmall,
