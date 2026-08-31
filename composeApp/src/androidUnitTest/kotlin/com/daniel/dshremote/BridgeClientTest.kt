@@ -1,6 +1,9 @@
 package com.daniel.dshremote
 
 import com.daniel.dshremote.protocol.ApprovalDecision
+import com.daniel.dshremote.protocol.ApprovalRequestWire
+import com.daniel.dshremote.protocol.CachedSessionSnapshot
+import com.daniel.dshremote.protocol.EventProjection
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,7 +19,26 @@ class BridgeClientTest {
 
     private fun newClient(scope: CoroutineScope): BridgeClient {
         val dir = File(System.getProperty("java.io.tmpdir"), "dsh-client-test-${System.nanoTime()}")
-        return BridgeClient(scope, AndroidDeviceStore(dir))
+        return BridgeClient(
+            scope = scope,
+            store = AndroidDeviceStore(dir),
+            eventCache = object : EventCache {
+                override suspend fun load(key: String): List<EventProjection> = emptyList()
+                override suspend fun save(key: String, events: List<EventProjection>) {}
+            },
+            sessionCache = object : SessionCache {
+                override suspend fun load(key: String): CachedSessionSnapshot? = null
+                override suspend fun save(key: String, snapshot: CachedSessionSnapshot) {}
+            },
+            draftCache = object : DraftCache {
+                override suspend fun load(key: String): String? = null
+                override suspend fun save(key: String, text: String) {}
+            },
+            bootNoticeCache = object : BootNoticeCache {
+                override suspend fun load(key: String): String? = null
+                override suspend fun save(key: String, version: String) {}
+            },
+        )
     }
 
     @Test
@@ -30,7 +52,12 @@ class BridgeClientTest {
     @Test
     fun sendFailures_cappedAtMaxErrors() = runTest {
         val client = newClient(backgroundScope)
-        repeat(30) { client.approve("a$it", ApprovalDecision.AllowedOnce) }
+        repeat(30) { i ->
+            client.approve(
+                ApprovalRequestWire(approvalId = "a$i", sessionId = "s1", toolName = "bash"),
+                ApprovalDecision.AllowedOnce,
+            )
+        }
         runCurrent()
         assertEquals(MAX_ERRORS, client.session.value.errors.size)
         // 只保留最近的：最后一条对应审批发送失败

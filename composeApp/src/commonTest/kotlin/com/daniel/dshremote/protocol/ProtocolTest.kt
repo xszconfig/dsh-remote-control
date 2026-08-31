@@ -82,7 +82,7 @@ class ProtocolTest {
             ServerEvent.serializer(),
             """{"type":"approval_settled","approvalId":"a1","outcome":"allowed-once"}""",
         )
-        val s = assertIs<ServerEvent.ApprovalSettled>(settled)
+        val s = assertIs<ServerEvent.ApprovalSettledLegacy>(settled)
         assertEquals("allowed-once", s.outcome)
     }
 
