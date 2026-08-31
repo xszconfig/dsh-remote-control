@@ -981,8 +981,12 @@ class BridgeClient(
                 }
             }
             is ServerEvent.ModelWaitingDone -> _session.update { st ->
+                // 只清「等待模型」指示；Deep Diving 时钟是轮次级状态（锚定轮次起点），
+                // 一轮中可能有多次模型调用，每次完成都会广播一次 model_waiting_done——
+                // 若在这里清 deepDivingElapsed，时钟会在下一个 tick（≤1s）前短暂消失，
+                // 正是用户看到的「计时器闪烁」。轮次级时钟只在 turn_status(closed) 清除。
                 if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
-                    st.copy(modelWaitingSince = null, deepDivingElapsed = null)
+                    st.copy(modelWaitingSince = null)
                 } else {
                     st
                 }
