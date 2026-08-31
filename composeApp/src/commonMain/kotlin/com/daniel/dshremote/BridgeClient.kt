@@ -182,6 +182,7 @@ class BridgeClient(
     private val eventCache: EventCache,
     private val sessionCache: SessionCache,
     private val draftCache: DraftCache,
+    private val bootNoticeCache: BootNoticeCache,
 ) {
 
     val connection = ConnectionManager(scope)
@@ -588,6 +589,10 @@ class BridgeClient(
     private fun sessionCacheKeyOf(device: StoredDevice): String =
         device.serverId ?: "${device.host}_${device.port}"
 
+    /** server_boot「已读版本」记忆 key：桌面指纹 serverId 优先，退化为端点（不同桌面互不吞提示）。 */
+    private fun bootNoticeKey(device: StoredDevice): String =
+        device.serverId ?: "${device.host}_${device.port}"
+
     /**
      * 连接开始时用本地缓存水合会话/工作区列表（打开 App 秒开，不实时拉）；
      * Hello 快照到达后做增量对账覆盖。仅在状态为空时水合，不打断在线数据。
@@ -766,9 +771,13 @@ class BridgeClient(
         _session.update { it.copy(errors = emptyList()) }
     }
 
-    /** 关闭服务端重启通知横幅。 */
+    /** 关闭服务端重启通知横幅：记下该服务端标识的已读版本，并隐藏横幅。 */
     fun dismissBootNotice() {
+        val boot = _session.value.serverBoot ?: return
+        val device = _session.value.connectedDevice
+        val key = device?.let { bootNoticeKey(it) } ?: "unknown"
         _session.update { it.copy(serverBoot = null) }
+        scope.launch { bootNoticeCache.save(key, boot.version) }
     }
 
     // ---- 诊断日志 ----
@@ -1027,7 +1036,18 @@ class BridgeClient(
                     st
                 }
             }
-            is ServerEvent.ServerBoot -> _session.update { st -> st.copy(serverBoot = ev) }
+            is ServerEvent.ServerBoot -> {
+                // 「一个版本提示一次」：本地已读版本与服务端版本一致 → 不弹（保持隐藏）；
+                // 版本变化（服务端升级）→ 重新展示。按服务端标识 key 隔离，不同电脑互不吞提示。
+                val device = _session.value.connectedDevice
+                val key = device?.let { bootNoticeKey(it) } ?: "unknown"
+                scope.launch {
+                    val seen = bootNoticeCache.load(key)
+                    _session.update { st ->
+                        if (seen == ev.version) st.copy(serverBoot = null) else st.copy(serverBoot = ev)
+                    }
+                }
+            }
             is ServerEvent.LogsRequest -> {
                 // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）
                 val entries = ConnLog.snapshot().takeLast(500).map {

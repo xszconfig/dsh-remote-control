@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
         val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
         val sessionCache = AndroidSessionCache(File(applicationContext.filesDir, "session-cache"))
         val draftCache = AndroidDraftCache(File(applicationContext.filesDir, "draft-cache"))
+        val bootNoticeCache = AndroidBootNoticeCache(File(applicationContext.filesDir, "boot-notice-cache"))
         setContent {
             val client = remember {
                 BridgeClient(
@@ -28,6 +29,7 @@ class MainActivity : ComponentActivity() {
                     eventCache = eventCache,
                     sessionCache = sessionCache,
                     draftCache = draftCache,
+                    bootNoticeCache = bootNoticeCache,
                 )
             }
             App(client)
