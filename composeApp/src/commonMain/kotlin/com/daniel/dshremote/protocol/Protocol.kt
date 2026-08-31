@@ -57,6 +57,22 @@ data class AgentSummary(
     val depth: Int,
 )
 
+/** 斜杠命令注册表条目（DSH CommandDescriptor 的 wire 投影；服务端权威，客户端不做本地枚举）。 */
+@Serializable
+data class CommandWire(
+    val name: String,
+    val description: String,
+    /** 命令参数提示（如 plan 的 "off|message"）；无参数命令缺省。 */
+    val input: CommandInputWire? = null,
+)
+
+@Serializable
+data class CommandInputWire(
+    val hint: String,
+    /** 是否接受图片附件（手机端当前只发文本，字段保留以对齐 Web）。 */
+    val images: Boolean = false,
+)
+
 @Serializable
 data class EventProjection(
     val seq: Long,
@@ -77,6 +93,19 @@ data class EventProjection(
     val toolKind: String? = null,
     /** 文件变更 diff（桌面端 DiffCallView.diffs 同源）：展开工具卡时按行渲染红删绿增。 */
     val diffs: List<FileDiffWire>? = null,
+    /**
+     * 斜杠命令生命周期（DSH commands 服务 command/run + command/done 会话事件投影；
+     * 与 Web composer 路由同一条执行链）。客户端按 commandId 把 running 行与 done 行合并成一行。
+     */
+    val commandId: String? = null,
+    /** 命令名（不含斜杠，如 "compact"）。 */
+    val commandName: String? = null,
+    /** 命令参数（rawInput 去首尾空白；无参数为 ''）。 */
+    val commandArgs: String? = null,
+    /** running=执行中；done=已完结；error=未注册等准入失败（瞬时行，不落会话日志）。 */
+    val commandStatus: String? = null,
+    /** 仅 done/error 行：handler 结果是否成功（kind == success）。 */
+    val commandOk: Boolean? = null,
 )
 
 @Serializable
@@ -294,6 +323,11 @@ sealed interface ServerEvent {
         val todos: List<TodoWire>? = null,
         /** 当前 OPEN 轮次的开始时间（null = 无进行中的轮次）；中途切入会话也能立即显示 Deep diving 标签。 */
         val turnSince: Long? = null,
+        /**
+         * 该会话可用的斜杠命令清单（DSH commands 服务 list(agent)，与 Web composer 同一注册表；
+         * 名称+一句话说明，客户端输入 "/" 时弹候选）。冷会话/无 commands 服务时为空数组。
+         */
+        val commands: List<CommandWire> = emptyList(),
     ) : ServerEvent
 
     @Serializable
@@ -375,6 +409,10 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("todos_update")
     data class TodosUpdate(val sessionId: String, val todos: List<TodoWire> = emptyList()) : ServerEvent
+
+    /** 斜杠命令注册表变更（DSH commands/change）：重读该会话命令清单（客户端候选弹窗数据源）。 */
+    @SerialName("commands_update")
+    data class CommandsUpdate(val sessionId: String, val commands: List<CommandWire> = emptyList()) : ServerEvent
 
     /** 调试断点（1-based 行号）。 */
     @Serializable

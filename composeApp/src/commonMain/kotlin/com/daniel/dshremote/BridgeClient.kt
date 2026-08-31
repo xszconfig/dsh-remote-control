@@ -109,6 +109,8 @@ data class SessionUiState(
     val deepDivingElapsed: Long? = null,
     /** 当前会话任务列表（DSH todo_write 清单；会话级，切会话重置）。 */
     val todos: List<com.daniel.dshremote.protocol.ServerEvent.TodoWire> = emptyList(),
+    /** 当前会话可用的斜杠命令清单（服务端注册表权威；输入 "/" 时弹候选，会话级）。 */
+    val commands: List<com.daniel.dshremote.protocol.CommandWire> = emptyList(),
     /** 思考流式实时行（reasoning-delta 节流推送；null = 无流式思考）。 */
     val liveThink: String? = null,
     /** 当前会话持久化目标（null = 无目标）；会话级，切会话重置、按 sessionId 过滤。 */
@@ -155,6 +157,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     divingTurnStart = null,
     deepDivingElapsed = null,
     todos = emptyList(),
+    commands = emptyList(),
     liveThink = null,
     goal = null,
     debug = null,
@@ -540,6 +543,7 @@ class BridgeClient(
                 divingTurnStart = null,
                 deepDivingElapsed = null,
                 todos = emptyList(),
+                commands = emptyList(),
                 liveThink = null,
                 goal = null,
                 debug = null,
@@ -948,6 +952,7 @@ class BridgeClient(
                             divingTurnStart = ev.turnSince ?: ev.modelWaitingSince,
                             goal = ev.goal,
                             todos = ev.todos ?: emptyList(),
+                            commands = ev.commands,
                         )
                     }
                 }
@@ -1016,6 +1021,10 @@ class BridgeClient(
             is ServerEvent.TodosUpdate -> _session.update { st ->
                 // 会话隔离：任务列表只归属对应会话（每会话一份）
                 if (ev.sessionId == st.currentSessionId) st.copy(todos = ev.todos) else st
+            }
+            is ServerEvent.CommandsUpdate -> _session.update { st ->
+                // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
+                if (ev.sessionId == st.currentSessionId) st.copy(commands = ev.commands) else st
             }
             is ServerEvent.DebugState -> _session.update { st ->
                 // 会话隔离；离开 paused 时清空变量缓存（objectId 已失效）

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -70,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontFamily
@@ -79,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
+import com.daniel.dshremote.protocol.CommandWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
 import com.daniel.dshremote.protocol.ServerEvent
@@ -1041,6 +1044,8 @@ private fun basenameOf(path: String): String =
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     var input by remember { mutableStateOf("") }
+    // 输入框焦点：斜杠命令候选弹窗只在聚焦时出现（草稿载入不误弹）
+    var inputFocused by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     // 草稿：进入会话时从磁盘载入未发送文本；输入变化防抖落盘。
@@ -1484,6 +1489,20 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
+        // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
+        // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
+        val slashFragment = input.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
+        if (inputFocused && slashFragment != null && state.commands.isNotEmpty()) {
+            val partial = slashFragment.removePrefix("/")
+            val candidates = state.commands.filter { it.name.startsWith(partial) }
+            if (candidates.isNotEmpty()) {
+                CommandCandidatePopup(
+                    candidates = candidates,
+                    onPick = { name -> input = "/$name " },
+                )
+            }
+        }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1491,7 +1510,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).onFocusChanged { inputFocused = it.isFocused },
                 placeholder = { Text("发指令给DeepSeek Harness") },
                 shape = RoundedCornerShape(22.dp),
                 maxLines = 4,
@@ -1859,6 +1878,7 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
         "tool_call" -> ToolCallCard(e, isError = callFailed)
         "tool_result" -> ToolResultCard(e)
         "think" -> ThinkCard(e)
+        "command" -> CommandRow(e, allEvents)
         else -> Bubble(
             text = e.text ?: e.type,
             label = e.type,
@@ -2159,6 +2179,136 @@ private fun ThinkCard(e: EventProjection) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
+        }
+    }
+}
+
+/**
+ * 斜杠命令候选弹窗：输入 "/" 时列出该会话可用的命令（名称 + 一句话说明）。
+ * 数据来自服务端注册表（与 Web composer 同源），按已输入前缀过滤；
+ * 点击行填入 "/命令名 "（尾空格就绪输入参数）并收起弹窗。
+ * 移动端形态：贴在输入框上方、限高可滚动、每行名称 + 单行省略说明。
+ */
+@Composable
+private fun CommandCandidatePopup(candidates: List<CommandWire>, onPick: (String) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 6.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+    ) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).heightIn(max = 208.dp),
+        ) {
+            candidates.forEachIndexed { index, cmd ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onPick(cmd.name) }
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "/${cmd.name}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AccentBlue,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        cmd.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (index != candidates.lastIndex) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 斜杠命令行：/compact 等命令的执行与结果（与 Web composer 同一条服务端执行链）。
+ * 协议上 command/run 与 command/done 是两行（同一 commandId），这里合并成一行呈现：
+ * - running 行若存在后续 done 行 → 本行折叠（done 行已由桥补齐命令名，单行展示结果）；
+ * - 只有 running 没有 done（执行中/异常中断）→ 显示"执行中…"；
+ * - error 行（未注册命令等准入失败，瞬时）→ 错误样式。
+ */
+@Composable
+private fun CommandRow(e: EventProjection, allEvents: List<EventProjection>) {
+    if (e.commandStatus == "running" && e.commandId != null) {
+        val done = allEvents.lastOrNull {
+            it.type == "command" && it.commandId == e.commandId && it.commandStatus == "done"
+        }
+        if (done != null) return // 结果由 done 行呈现，本行折叠
+    }
+    val isError = e.commandStatus == "error" || (e.commandStatus == "done" && e.commandOk != true)
+    val icon = when {
+        isError -> "⚠️"
+        e.commandStatus == "running" -> "⏳"
+        else -> "✅"
+    }
+    val accent = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    val name = e.commandName?.let { "/$it" } ?: "命令"
+    val args = e.commandArgs?.takeIf { it.isNotBlank() }
+    val label = listOfNotNull(name, args).joinToString(" ")
+    val body = when {
+        e.commandStatus == "running" -> null
+        e.text.isNullOrBlank() -> if (isError) "执行失败" else "完成"
+        else -> e.text
+    }
+    Card(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, fontSize = 13.sp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (e.commandStatus == "running") {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "执行中…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    )
+                } else {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        formatClock(e.timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
+            }
+            if (body != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    body,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = accent.copy(alpha = 0.9f),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
