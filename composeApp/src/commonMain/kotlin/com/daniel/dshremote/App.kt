@@ -1026,6 +1026,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val latestSeq = state.events.lastOrNull()?.seq
     // 自动跟随底部状态机：
     // - 默认跟随（新消息到达 → 滚到底部；切会话重置为跟随）
@@ -1076,28 +1077,49 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     client.loadOlderPage(sessionId)
                 }
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
-                reverseLayout = true,
-            ) {
-                // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
-                state.liveThink?.let { lt ->
-                    item(key = "live-think") { LiveThinkRow(lt) }
+            // 「回到底部」按钮显隐：最新一条消息不在可见区（且列表已布局）→ 显示。
+            // liveThink 流式行占 index 0 时最新消息在 index 1，否则在 index 0。
+            val latestIndex = latestEventIndex(state.liveThink != null)
+            val showJumpToBottom by remember(latestIndex, listState) {
+                derivedStateOf {
+                    val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
+                    visible.isNotEmpty() && !latestMessageVisible(visible, latestIndex)
                 }
-                items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
-                    EventBubble(e, state.events)
-                }
-                if (state.loadingOlder) {
-                    item(key = "loading-older") {
-                        Box(
-                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                    reverseLayout = true,
+                ) {
+                    // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
+                    state.liveThink?.let { lt ->
+                        item(key = "live-think") { LiveThinkRow(lt) }
+                    }
+                    items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
+                        EventBubble(e, state.events)
+                    }
+                    if (state.loadingOlder) {
+                        item(key = "loading-older") {
+                            Box(
+                                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            }
                         }
                     }
                 }
+                // 「回到底部」悬浮按钮：位于 Deep Diving 上方、右对齐（bottomEnd 即消息列表右下角）。
+                // 淡入淡出（不做位移动画，避免突兀）；点击瞬间 scrollToItem(0) + 置回跟随态。
+                JumpToBottomOverlay(
+                    visible = showJumpToBottom,
+                    onClick = {
+                        followBottom = true
+                        scope.launch { listState.scrollToItem(0) }
+                    },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
+                )
             }
         }
         // Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）；
