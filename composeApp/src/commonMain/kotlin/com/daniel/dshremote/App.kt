@@ -95,6 +95,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -110,6 +113,10 @@ import kotlinx.coroutines.launch
 /** Markdown 代码块固定配色（两种气泡底色上都清晰可读）。 */
 private val MarkdownCodeBg = Color(0xFF14181F)
 private val MarkdownCodeFg = Color(0xFFDCE4EF)
+
+/** 子代理下拉列表：最多同时展示 10 条（移动端小屏上限，铁律 9），超过则列表内上下滚动。 */
+private const val SUBAGENT_MENU_MAX_VISIBLE = 10
+private val SUBAGENT_MENU_MAX_HEIGHT = 48.dp * SUBAGENT_MENU_MAX_VISIBLE
 
 // ================= 根 =================
 
@@ -825,28 +832,29 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             )
-                            subagents.forEach { sub ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                sessionName(sub),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                            )
-                                            Text(
-                                                if (sub.status == "running") "运行中" else "空闲",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (sub.status == "running") StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        subagentMenuOpen = false
-                                        client.openSubagent(sub.id)
-                                    },
-                                )
+                            // 最多同时展示 10 条，超过则列表内上下滚动（LazyColumn 虚拟化 + 高度上限）
+                            LazyColumn(modifier = Modifier.heightIn(max = SUBAGENT_MENU_MAX_HEIGHT)) {
+                                items(subagents, key = { it.id }) { sub ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    sessionName(sub),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                )
+                                                // 副标题：状态标志 + 元信息（最后消息时间 / 运行时长 / token），
+                                                // 各段用 · 分隔；过长可换行成多段（服务端投影为准，客户端不做推算）。
+                                                SubagentSubtitle(sub)
+                                            }
+                                        },
+                                        onClick = {
+                                            subagentMenuOpen = false
+                                            client.openSubagent(sub.id)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -1003,6 +1011,33 @@ private fun sessionName(s: SessionSummary): String =
 
 private fun basenameOf(path: String): String =
     path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
+
+/**
+ * 子代理列表副标题：状态标志（空闲/运行中）+ 元信息（最后消息时间 / 运行时长 / token），
+ * 各段用 · 分隔，过长可换行成多段。状态段保留原配色（运行中绿色），元信息段用次要色。
+ * 所有元信息均来自服务端投影字段（铁律 6：客户端不做本地推算）。
+ */
+@Composable
+private fun SubagentSubtitle(sub: SessionSummary) {
+    val running = sub.status == "running"
+    val status = if (running) "运行中" else "空闲"
+    val meta = subagentMetaSegments(sub, nowMillis()).joinToString(" · ")
+    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = if (running) StatusGreen else secondary)) {
+                append(status)
+            }
+            if (meta.isNotEmpty()) {
+                withStyle(SpanStyle(color = secondary)) {
+                    append(" · ")
+                    append(meta)
+                }
+            }
+        },
+        style = MaterialTheme.typography.labelSmall,
+    )
+}
 
 // ================= 会话详情 =================
 

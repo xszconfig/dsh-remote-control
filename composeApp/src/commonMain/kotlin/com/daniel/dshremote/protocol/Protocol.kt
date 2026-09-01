@@ -25,6 +25,15 @@ data class SessionSummary(
     val agentCount: Int,
     val subagentCount: Int,
     val updatedAt: Long,
+    /**
+     * 最后一条消息的时间戳（epoch ms，服务端权威投影）。旧版 bridge（0.12.0）无此字段，
+     * 渲染时回退 updatedAt。
+     */
+    val lastMessageAt: Long? = null,
+    /** 总运行时长（累计活跃计算时长，毫秒，服务端权威投影）；旧版 bridge 缺省。 */
+    val runDurationMs: Long? = null,
+    /** 总消耗 token 量（provider 上报累计，服务端权威投影）；旧版 bridge 缺省。 */
+    val totalTokens: Long? = null,
     /** 子代理会话所属的主会话 id；缺省 = 顶层（用户手动创建的）会话。 */
     val parentSessionId: String? = null,
 )
