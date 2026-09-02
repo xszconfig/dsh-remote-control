@@ -832,9 +832,16 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             )
-                            // 最多同时展示 10 条，超过则列表内上下滚动（LazyColumn 虚拟化 + 高度上限）
-                            LazyColumn(modifier = Modifier.heightIn(max = SUBAGENT_MENU_MAX_HEIGHT)) {
-                                items(subagents, key = { it.id }) { sub ->
+                            // 最多同时展示 10 条，超过则列表内上下滚动（高度上限 + 滚动）。
+                            // 注意：不能用 LazyColumn——DropdownMenu 内容区以 width(IntrinsicSize.Max)
+                            // 做固有尺寸测量，LazyColumn 是 SubcomposeLayout，固有测量会抛
+                            // IllegalStateException；26 条以内用非懒布局无性能问题。
+                            Column(
+                                modifier = Modifier
+                                    .heightIn(max = SUBAGENT_MENU_MAX_HEIGHT)
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                subagents.forEach { sub ->
                                     DropdownMenuItem(
                                         text = {
                                             Column {
