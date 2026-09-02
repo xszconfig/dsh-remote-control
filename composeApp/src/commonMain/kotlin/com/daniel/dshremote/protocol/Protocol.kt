@@ -86,6 +86,15 @@ data class CommandInputWire(
 data class EventProjection(
     val seq: Long,
     val type: String,
+    /**
+     * 消息来源分类（仅 user_message 行承载；与桥 protocol.ts 的 EventSource 对齐）。
+     * - "user"：真实用户输入 → 用户气泡。
+     * - "inject"：注入的上下文/系统消息（agent.inject()/plugin/steer/压缩检查点/session 起始等）
+     *   → 弱化的「上下文」行，不得用用户气泡。
+     * 铁律 6：分类由服务端投影给出，客户端只渲染、不推算。
+     * 缺省 null = 旧桥（无 source 字段），向后兼容按用户消息呈现。
+     */
+    val source: String? = null,
     val text: String? = null,
     val toolName: String? = null,
     val toolArgs: String? = null,
