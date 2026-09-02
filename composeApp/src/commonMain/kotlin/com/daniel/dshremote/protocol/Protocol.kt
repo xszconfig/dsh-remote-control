@@ -296,6 +296,14 @@ data class LogEntryWire(
 
 @Serializable
 sealed interface ServerEvent {
+    /** LSP 代码智能状态（hello 载荷；对齐 TS `EvHello.lsp` 内联匿名类型）。 */
+    @Serializable
+    data class HelloLsp(val languages: List<String> = emptyList())
+
+    /** 持久化工作状态（hello 载荷；对齐 TS `EvHello.work` 内联匿名类型）。 */
+    @Serializable
+    data class HelloWork(val activity: String? = null, val pending: List<String> = emptyList())
+
     @Serializable
     @SerialName("hello")
     data class Hello(
@@ -311,6 +319,10 @@ sealed interface ServerEvent {
         val pendingRemoteApprovals: List<ApprovalRequestWire> = emptyList(),
         /** 桌面端持有、bridge 经 mux 转发的提问（回答走 answer_question）。 */
         val pendingQuestions: List<QuestionRequestWire> = emptyList(),
+        /** LSP 代码智能状态：语言 → 是否可用（server 二进制已安装）；旧版 bridge 缺省 null。 */
+        val lsp: HelloLsp? = null,
+        /** 持久化工作状态（自动续跑）：当前事项 + 待办清单；旧版 bridge 缺省 null。 */
+        val work: HelloWork? = null,
     ) : ServerEvent
 
     @Serializable
