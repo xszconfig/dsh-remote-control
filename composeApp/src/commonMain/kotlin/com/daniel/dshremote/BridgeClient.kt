@@ -78,6 +78,23 @@ internal fun buildConnectFailureDetail(failures: List<Pair<String, String>>): St
 internal fun List<EventProjection>.bounded(): List<EventProjection> =
     if (size <= MAX_EVENTS) this else takeLast(MAX_EVENTS)
 
+/** 错误分类：recoverable=true 表示「连接类」错误（hello 到达可自动清除）；false 表示业务类错误（需手动清除）。 */
+data class NoticeError(val message: String, val recoverable: Boolean)
+
+/** 统一「连接状态提示槽」：单一槽、三形态互斥展示，取代旧的 reconnecting 布尔 + errors 横幅两套独立机制。 */
+sealed interface ConnectionNotice {
+    /** 无提示（已恢复/未出错）。 */
+    data object Hidden : ConnectionNotice
+    /** 自动重连中（Loading 形态）。 */
+    data class Reconnecting(val attempt: Int) : ConnectionNotice
+    /** 错误形态（真实错误）。 */
+    data class Error(val message: String) : ConnectionNotice
+}
+
+/** hello 到达后的错误对账：清掉「连接类」（可自动恢复）错误，保留业务类错误。 */
+internal fun reconcileErrorsOnHello(errors: List<NoticeError>): List<NoticeError> =
+    errors.filterNot { it.recoverable }
+
 /**
  * 会话面状态：连接着哪台设备、桌面端来的会话/工作区/事件/审批。
  * （设备列表与连接生命周期分别在 DevicesUiState / ConnectionInfo。）
@@ -133,7 +150,7 @@ data class SessionUiState(
     val questions: List<QuestionRequestWire> = emptyList(),
     /** 正在提交答案的提问 rpcId。 */
     val decidingQuestionRpcId: String? = null,
-    val errors: List<String> = emptyList(),
+    val errors: List<NoticeError> = emptyList(),
 )
 
 /**
@@ -201,9 +218,9 @@ class BridgeClient(
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
-    /** 正在自动重连（UI 保留会话数据 + 显示横幅）。 */
-    private val _reconnecting = MutableStateFlow(false)
-    val reconnecting: StateFlow<Boolean> = _reconnecting.asStateFlow()
+    /** 统一连接状态提示槽（单一槽：Hidden / Reconnecting / Error；取代旧 reconnecting 布尔）。 */
+    private val _notice = MutableStateFlow<ConnectionNotice>(ConnectionNotice.Hidden)
+    val notice: StateFlow<ConnectionNotice> = _notice.asStateFlow()
 
     /** 重连进度文案（"第 2 次 · 4s 后重试"；仅用于日志与 markReconnecting 详情，不再上横幅）。 */
     private val _reconnectStatus = MutableStateFlow("")
@@ -275,7 +292,7 @@ class BridgeClient(
     private fun finishSession(detail: String?) {
         reconnectJob?.cancel()
         reconnectJob = null
-        _reconnecting.value = false
+        _notice.value = ConnectionNotice.Hidden
         _reconnectStatus.value = ""
         _session.update { it.clearedForDisconnect() }
         devices.setPollingEnabled(true)
@@ -283,12 +300,19 @@ class BridgeClient(
     }
 
     /** 指数退避自动重连；凭据失效（provider 返回 null）或鉴权错误时放弃。 */
+    /** 进入自动重连：置槽为 Reconnecting（幂等，已重连中则保留原 attempt）。internal 供单测注入重连态。 */
+    internal fun beginReconnectNotice(attempt: Int = 1) {
+        if (_notice.value !is ConnectionNotice.Reconnecting) {
+            _notice.value = ConnectionNotice.Reconnecting(attempt)
+        }
+    }
+
     private fun startReconnect() {
         // 幂等：断开边沿可能多次触发，已有活跃循环时不得重启——
         // 否则新旧循环会在 ConnectionManager 里并发 open()，互相踩 ws/currentUrl 状态。
-        // 但每次进入（含循环存活期间再次触发）都必须重断言 reconnecting：否则标志被
+        // 但每次进入（含循环存活期间再次触发）都必须重断言 Reconnecting：否则标志被
         // hello 清掉后，循环存活期的重试会被 UI 误判成「首次连接」而跳整页。
-        _reconnecting.value = true
+        beginReconnectNotice(1)
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             try {
@@ -304,6 +328,7 @@ class BridgeClient(
                         ""
                     }
                     _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试$hint"
+                    _notice.value = ConnectionNotice.Reconnecting(attempt)
                     connection.markReconnecting(_reconnectStatus.value)
                     ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行$hint")
                     delay(wait)
@@ -360,7 +385,7 @@ class BridgeClient(
         userDisconnect = false
         connectJob?.cancel()
         reconnectJob?.cancel()
-        _reconnecting.value = false
+        _notice.value = ConnectionNotice.Hidden
         connectJob = scope.launch { connectFromQr(text) }
     }
 
@@ -372,7 +397,7 @@ class BridgeClient(
         if (autoConnectAttempted || scanStartedOnce || switchingDevice) return
         if (_scanning.value) return
         val connState = connection.info.value.state
-        if (connState == ConnectionState.Connected || connState == ConnectionState.Connecting || _reconnecting.value || userDisconnect) return
+        if (connState == ConnectionState.Connected || connState == ConnectionState.Connecting || _notice.value is ConnectionNotice.Reconnecting || userDisconnect) return
         val st = devices.state.value
         if (st.devices.isEmpty()) return
         // 等首轮探测出结果再决策（Checking 未结束时先不动）
@@ -399,14 +424,14 @@ class BridgeClient(
         hydrateFromSessionCache(device)
         val key = deviceKey(device)
         // 已有连接/重连循环 → 先干净断开旧链路再连新设备（多设备切换）
-        val wasConnected = connection.info.value.state == ConnectionState.Connected || _reconnecting.value
+        val wasConnected = connection.info.value.state == ConnectionState.Connected || _notice.value is ConnectionNotice.Reconnecting
         if (wasConnected) {
             ConnLog.info("CONNECT", "切换设备 → 先断开当前链路")
             switchingDevice = true
             userDisconnect = true // 抑制旧链路的自动重连
             reconnectJob?.cancel()
             reconnectJob = null
-            _reconnecting.value = false
+            _notice.value = ConnectionNotice.Hidden
             _reconnectStatus.value = ""
             connectJob?.cancel()
             connection.close()
@@ -551,7 +576,7 @@ class BridgeClient(
                 }
                 ConnLog.info("CACHE", "会话 $sessionId 载入本地缓存 ${cached.size} 条")
             }
-            if (!connection.send(ClientCommand.Subscribe(sessionId))) pushError("订阅会话失败（连接已断开）")
+            if (!connection.send(ClientCommand.Subscribe(sessionId))) pushConnectionError("订阅会话失败（连接已断开）")
         }
     }
 
@@ -689,7 +714,7 @@ class BridgeClient(
         }
         scope.launch {
             if (!connection.send(ClientCommand.SendMessage(sid, text))) {
-                pushError("「${text.take(20)}」未发送：连接已断开")
+                pushConnectionError("「${text.take(20)}」未发送：连接已断开")
                 // 发送失败：回滚乐观项
                 _session.update { s ->
                     s.copy(queueItems = s.queueItems.filterNot { it.text == text && it.id.startsWith("local-") })
@@ -700,7 +725,7 @@ class BridgeClient(
 
     fun interrupt(sessionId: String) {
         scope.launch {
-            if (!connection.send(ClientCommand.Interrupt(sessionId))) pushError("中断指令发送失败（连接已断开）")
+            if (!connection.send(ClientCommand.Interrupt(sessionId))) pushConnectionError("中断指令发送失败（连接已断开）")
         }
     }
 
@@ -714,7 +739,7 @@ class BridgeClient(
         scope.launch {
             if (!connection.send(ClientCommand.HistoryPage(sessionId, beforeSeq, 300))) {
                 _session.update { it.copy(loadingOlder = false) }
-                pushError("加载更早消息失败（连接已断开）")
+                pushConnectionError("加载更早消息失败（连接已断开）")
             }
         }
     }
@@ -722,7 +747,7 @@ class BridgeClient(
     fun sendQueueAction(sessionId: String, itemId: String, action: String) {
         scope.launch {
             if (!connection.send(ClientCommand.QueueAction(sessionId, itemId, action))) {
-                pushError("排队操作发送失败（连接已断开）")
+                pushConnectionError("排队操作发送失败（连接已断开）")
             }
         }
     }
@@ -731,7 +756,7 @@ class BridgeClient(
     fun sendDebugCommand(sessionId: String, action: String, variablesReference: String? = null) {
         scope.launch {
             if (!connection.send(ClientCommand.DebugCommand(sessionId, action, variablesReference))) {
-                pushError("调试指令发送失败（连接已断开）")
+                pushConnectionError("调试指令发送失败（连接已断开）")
             }
         }
     }
@@ -754,7 +779,7 @@ class BridgeClient(
             }
             if (!connection.send(command)) {
                 _session.update { it.copy(decidingApprovalId = null) }
-                pushError("审批决策发送失败（连接已断开）")
+                pushConnectionError("审批决策发送失败（连接已断开）")
             }
         }
     }
@@ -773,14 +798,15 @@ class BridgeClient(
             )
             if (!sent) {
                 _session.update { it.copy(decidingQuestionRpcId = null) }
-                pushError("提问答案发送失败（连接已断开）")
+                pushConnectionError("提问答案发送失败（连接已断开）")
             }
         }
     }
 
-    /** 清空错误提示。 */
+    /** 清空错误提示（含统一槽）。 */
     fun dismissErrors() {
         _session.update { it.copy(errors = emptyList()) }
+        _notice.value = ConnectionNotice.Hidden
     }
 
     /** 关闭服务端重启通知横幅：记下该服务端标识的已读版本，并隐藏横幅。 */
@@ -819,7 +845,7 @@ class BridgeClient(
             val connected = _session.value.connectedDevice
             if (connected != null && deviceKey(connected) == key) {
                 if (!connection.send(ClientCommand.RevokeDevice(device.deviceId))) {
-                    pushError("撤销桌面端凭据失败（连接已断开）")
+                    pushConnectionError("撤销桌面端凭据失败（连接已断开）")
                 }
             }
         }
@@ -827,8 +853,22 @@ class BridgeClient(
 
     // ---- 内部 ----
 
-    private fun pushError(message: String) {
-        _session.update { it.copy(errors = (it.errors + message).takeLast(MAX_ERRORS)) }
+    /** 连接类错误（「连接已断开」）：重连中静默（不堆积、不覆盖 Reconnecting 槽）；否则展示于槽并按可自动恢复入历史。 */
+    internal fun pushConnectionError(message: String) {
+        if (_notice.value is ConnectionNotice.Reconnecting) {
+            // 重连中已用 Reconnecting 表达状态，抑制「连接已断开」类错误，避免矛盾同屏
+            return
+        }
+        _session.update { it.copy(errors = (it.errors + NoticeError(message, recoverable = true)).takeLast(MAX_ERRORS)) }
+        _notice.value = ConnectionNotice.Error(message)
+    }
+
+    /** 业务类错误（服务端错误码）：入历史、展示于槽、需手动清除（hello 不清）。internal 供单测。 */
+    internal fun pushBusinessError(message: String) {
+        _session.update { it.copy(errors = (it.errors + NoticeError(message, recoverable = false)).takeLast(MAX_ERRORS)) }
+        if (_notice.value !is ConnectionNotice.Reconnecting) {
+            _notice.value = ConnectionNotice.Error(message)
+        }
     }
 
     private fun registerIfNeeded(serverId: String, hostname: String?) {
@@ -849,7 +889,7 @@ class BridgeClient(
                     ),
                 )
             ) {
-                pushError("设备注册失败（连接已断开）")
+                pushConnectionError("设备注册失败（连接已断开）")
             }
         }
     }
@@ -860,8 +900,14 @@ class BridgeClient(
                 sawHelloThisConnection = true
                 // hello = 连接已建立且完全同步的权威信号：重连成功后由这里清横幅，
                 // 不依赖重连循环里「open 返回时 hello 是否恰好已到达」的竞态判断。
-                if (_reconnecting.value) {
-                    _reconnecting.value = false
+                val wasReconnecting = _notice.value is ConnectionNotice.Reconnecting
+                // 错误对账：清掉「连接类」（可自动恢复）错误，业务错误保留（手动清除）
+                val keptErrors = reconcileErrorsOnHello(_session.value.errors)
+                _session.update { it.copy(errors = keptErrors) }
+                // 槽收敛：重连/瞬断恢复后静默（不弹「已重新连接」）；若有业务错误则展示最新一条
+                _notice.value = keptErrors.lastOrNull()?.let { ConnectionNotice.Error(it.message) }
+                    ?: ConnectionNotice.Hidden
+                if (wasReconnecting) {
                     _reconnectStatus.value = ""
                     ConnLog.info("RECONNECT", "hello 到达，重连完成，横幅清除")
                 }
@@ -914,7 +960,7 @@ class BridgeClient(
                 if (sid != null) {
                     scope.launch {
                         if (!connection.send(ClientCommand.Subscribe(sid))) {
-                            pushError("订阅会话失败（连接已断开）")
+                            pushConnectionError("订阅会话失败（连接已断开）")
                         }
                     }
                 }
@@ -1176,7 +1222,7 @@ class BridgeClient(
             }
             is ServerEvent.Error -> {
                 ConnLog.warn("EVENT", "服务端错误 ${ev.code}: ${ev.message}")
-                pushError("${ev.code}: ${ev.message}")
+                pushBusinessError("${ev.code}: ${ev.message}")
                 // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
                 if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {
                     val gone = Regex("approval not found: (\\S+)").find(ev.message)?.groupValues?.get(1)

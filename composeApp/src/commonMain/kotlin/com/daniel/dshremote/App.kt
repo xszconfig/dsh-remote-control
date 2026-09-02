@@ -126,7 +126,9 @@ fun App(client: BridgeClient) {
     val conn by client.connection.info.collectAsState()
     val devices by client.devices.state.collectAsState()
     val session by client.session.collectAsState()
-    val reconnecting by client.reconnecting.collectAsState()
+    val notice by client.notice.collectAsState()
+    // 重连态派生自统一槽（用于 keepSessionUi 的「断线/重连不跳页」判断）
+    val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
@@ -172,7 +174,7 @@ fun App(client: BridgeClient) {
                     MainScreen(
                         client = client,
                         state = session,
-                        reconnecting = reconnecting,
+                        notice = notice,
                         onOpenLogs = { showLogs = true },
                         onOpenDevices = { showDevices = true },
                     )
@@ -518,7 +520,7 @@ private fun ConnectingScreen(client: BridgeClient, conn: ConnectionInfo) {
 private fun MainScreen(
     client: BridgeClient,
     state: SessionUiState,
-    reconnecting: Boolean,
+    notice: ConnectionNotice,
     onOpenLogs: () -> Unit,
     onOpenDevices: () -> Unit,
 ) {
@@ -548,8 +550,16 @@ private fun MainScreen(
                 onMenu = { scope.launch { drawerState.open() } },
                 onOpenLogs = onOpenLogs,
             )
-            if (reconnecting) {
-                ReconnectBanner()
+            // 统一连接状态提示槽：三形态互斥展示（重连中 / 错误 / 隐藏）
+            when (val n = notice) {
+                is ConnectionNotice.Reconnecting -> ReconnectBanner()
+                is ConnectionNotice.Error -> ConnectionErrorBanner(
+                    message = n.message,
+                    more = state.errors.size - 1,
+                    history = state.errors,
+                    onDismiss = { client.dismissErrors() },
+                )
+                ConnectionNotice.Hidden -> Unit
             }
             // 服务端重启通知：重连后收到 server_boot → 横幅告知版本与新增功能（可关闭）
             state.serverBoot?.let { boot ->
@@ -586,13 +596,6 @@ private fun MainScreen(
                         )
                     }
                 }
-            }
-            state.errors.lastOrNull()?.let { lastError ->
-                ErrorBanner(
-                    message = lastError,
-                    more = state.errors.size - 1,
-                    onDismiss = { client.dismissErrors() },
-                )
             }
             when (val sid = state.currentSessionId) {
                 null -> SessionList(client, state)
@@ -634,13 +637,21 @@ private fun ReconnectBanner() {
     }
 }
 
-// ---- 错误横幅 ----
+// ---- 统一连接状态错误横幅 + 错误历史 ----
 
 @Composable
-private fun ErrorBanner(message: String, more: Int, onDismiss: () -> Unit) {
+private fun ConnectionErrorBanner(
+    message: String,
+    more: Int,
+    history: List<NoticeError>,
+    onDismiss: () -> Unit,
+) {
+    var showHistory by remember { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            Modifier
+                .clickable { showHistory = true }
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("⚠️", fontSize = 13.sp)
@@ -654,6 +665,70 @@ private fun ErrorBanner(message: String, more: Int, onDismiss: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             TextButton(onClick = onDismiss) { Text("✕", color = MaterialTheme.colorScheme.onErrorContainer) }
+        }
+    }
+    if (showHistory) {
+        ErrorHistorySheet(
+            history = history,
+            onDismiss = { showHistory = false },
+            onClear = {
+                onDismiss()
+                showHistory = false
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ErrorHistorySheet(
+    history: List<NoticeError>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 28.dp),
+        ) {
+            Text("错误历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "${history.size} 条 · 连接类错误恢复后自动清除，业务类错误需手动清除",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            if (history.isEmpty()) {
+                Text("暂无错误", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                history.asReversed().forEach { e ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text(if (e.recoverable) "🔌" else "⚠️", fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            e.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            TextButton(
+                onClick = onClear,
+                modifier = Modifier.align(Alignment.End),
+            ) { Text("清空全部", color = MaterialTheme.colorScheme.error) }
         }
     }
 }
