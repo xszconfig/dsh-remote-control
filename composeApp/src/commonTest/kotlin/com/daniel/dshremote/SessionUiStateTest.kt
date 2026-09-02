@@ -50,6 +50,29 @@ class SessionUiStateTest {
         assertEquals(listOf("历史错误"), cleared.errors)
     }
 
+    // ---- 直连失败清掉 hint 设备名（状态矛盾止血） ----
+
+    @Test
+    fun clearConnectedDeviceIf_clearsMatchingDevice() {
+        val a = device("127.0.0.1")
+        val state = SessionUiState(connectedDevice = a)
+        assertNull(state.clearConnectedDeviceIf(deviceKey(a)).connectedDevice)
+    }
+
+    @Test
+    fun clearConnectedDeviceIf_keepsOtherDevice() {
+        val a = device("127.0.0.1")
+        val b = device("192.168.3.82")
+        val stateB = SessionUiState(connectedDevice = b)
+        assertEquals(b, stateB.clearConnectedDeviceIf(deviceKey(a)).connectedDevice)
+    }
+
+    @Test
+    fun clearConnectedDeviceIf_noConnectedDevice_noop() {
+        val empty = SessionUiState()
+        assertEquals(null, empty.clearConnectedDeviceIf(deviceKey(device("127.0.0.1"))).connectedDevice)
+    }
+
     // ---- 探测结果合并（applyPingResults） ----
 
     @Test

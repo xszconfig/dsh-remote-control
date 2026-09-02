@@ -172,6 +172,13 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
 )
 
 /**
+ * 直连失败时撤销 hint 阶段挂上的设备名（仅当它仍是这台设备），
+ * 让 connectedDevice 与 conn.state 同源：连接失败 → 不再标「已连接 · 当前设备」。
+ */
+internal fun SessionUiState.clearConnectedDeviceIf(key: String): SessionUiState =
+    if (connectedDevice?.let { deviceKey(it) } == key) copy(connectedDevice = null) else this
+
+/**
  * 手机端的总编排：连接策略（候选回退）、协议事件归约到 [SessionUiState]、
  * 把指令派发给 [ConnectionManager]、把设备变更派发给 [DeviceRepository]。
  * 单条连接的收发在 ConnectionManager，设备资产在 DeviceRepository。
@@ -431,11 +438,16 @@ class BridgeClient(
                 }
                 ConnLog.warn("CONNECT", "直连候选失败 ${e.host}:${e.port}: ${connection.info.value.detail}")
             }
-            if (!ok && eps.any { it.host == "127.0.0.1" }) {
-                connection.fail(
-                    connection.info.value.detail.ifBlank { "连接失败" } +
-                        "\n提示：USB 连接请先在电脑上执行 adb reverse tcp:3080 tcp:3080",
-                )
+            if (!ok) {
+                // 全部候选失败：撤销直连前 hintName 挂上的设备名，避免设备页同时出现
+                // 「连接失败」横幅（conn.state=Error）与「已连接 · 当前设备」（connectedDevice 残留）自相矛盾。
+                _session.update { it.clearConnectedDeviceIf(key) }
+                if (eps.any { it.host == "127.0.0.1" }) {
+                    connection.fail(
+                        connection.info.value.detail.ifBlank { "连接失败" } +
+                            "\n提示：USB 连接请先在电脑上执行 adb reverse tcp:3080 tcp:3080",
+                    )
+                }
             }
         }
     }
