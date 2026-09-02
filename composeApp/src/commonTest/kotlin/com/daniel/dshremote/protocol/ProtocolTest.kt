@@ -45,6 +45,21 @@ class ProtocolTest {
     }
 
     @Test
+    fun decode_hello_lspAndWork() {
+        // 对齐 TS EvHello 的 lsp/work 载荷（0.13.0 新增）：非空解析；旧版缺省 null
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"hello","version":"0.13.0","sessions":[],"agents":[],
+               "lsp":{"languages":["typescript","kotlin"]},
+               "work":{"activity":"重构 bridge","pending":["补契约测试"]}}""",
+        )
+        val hello = assertIs<ServerEvent.Hello>(ev)
+        assertEquals(listOf("typescript", "kotlin"), hello.lsp?.languages)
+        assertEquals("重构 bridge", hello.work?.activity)
+        assertEquals(listOf("补契约测试"), hello.work?.pending)
+    }
+
+    @Test
     fun decode_historyAndEvent() {
         val history = BridgeJson.decodeFromString(
             ServerEvent.serializer(),
