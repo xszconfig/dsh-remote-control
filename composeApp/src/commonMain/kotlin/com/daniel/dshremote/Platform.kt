@@ -21,6 +21,9 @@ expect fun QrScanner(onScanned: (String) -> Unit, onCancel: () -> Unit)
 /** 新审批到达的强提醒振动（中断式审批提示）。 */
 expect fun platformVibrateApproval()
 
+/** 消息转盘步进触感：力度适中（振幅受控）。boundary=true 触底/顶用稍重一档。 */
+expect fun platformVibrateTick(boundary: Boolean)
+
 /** 系统返回键拦截（Android: OnBackPressedDispatcher，后注册者优先）。 */
 @Composable
 expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)

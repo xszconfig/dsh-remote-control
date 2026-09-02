@@ -1096,6 +1096,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     LaunchedEffect(latestSeq) {
         if (followBottom && state.events.isNotEmpty()) listState.scrollToItem(0)
     }
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         if (state.events.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1612,6 +1613,13 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 SendIcon()
             }
         }
+    }
+    MessageDial(
+        state = state,
+        listState = listState,
+        onLoadOlder = { client.loadOlderPage(sessionId) },
+        modifier = Modifier.fillMaxSize(),
+    )
     }
 }
 
