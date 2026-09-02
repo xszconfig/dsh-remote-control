@@ -32,7 +32,7 @@ class SessionUiStateTest {
             currentSessionId = "s1",
             events = listOf(EventProjection(1, "user_message", text = "hi", timestamp = 1)),
             approvals = listOf(ApprovalRequestWire("a1", "s1", "bash", "why")),
-            errors = listOf("历史错误"),
+            errors = listOf(NoticeError("历史错误", recoverable = false)),
         )
         val cleared = state.clearedForDisconnect()
 
@@ -47,7 +47,7 @@ class SessionUiStateTest {
 
         // 用户偏好保留：工作区选择在重连后仍是用户上次的视图
         assertEquals("w1", cleared.selectedWorkspaceId)
-        assertEquals(listOf("历史错误"), cleared.errors)
+        assertEquals(listOf(NoticeError("历史错误", recoverable = false)), cleared.errors)
     }
 
     // ---- 探测结果合并（applyPingResults） ----

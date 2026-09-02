@@ -7,13 +7,15 @@ import com.daniel.dshremote.protocol.EventProjection
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 /**
- * 未连接状态下指令发送失败的用户可见性回归：
- * 旧实现 ws?.send 静默丢弃且无任何提示；现在必须进入 errors 状态并可被 UI 展示。
+ * 统一连接状态提示槽（ConnectionNotice）回归：
+ * 连接类错误（「连接已断开」）可自动恢复、重连中抑制、hello 到达清除；
+ * 业务类错误保留需手动清除；旧的 errors 横幅并入单一槽。
  */
 class BridgeClientTest {
 
@@ -46,7 +48,8 @@ class BridgeClientTest {
         val client = newClient(backgroundScope)
         client.openSession("s1")
         runCurrent() // 执行 scope.launch 里的 send → 未连接 → 失败
-        assertEquals(listOf("订阅会话失败（连接已断开）"), client.session.value.errors)
+        assertEquals(listOf(NoticeError("订阅会话失败（连接已断开）", recoverable = true)), client.session.value.errors)
+        assertEquals(ConnectionNotice.Error("订阅会话失败（连接已断开）"), client.notice.value)
     }
 
     @Test
@@ -60,18 +63,21 @@ class BridgeClientTest {
         }
         runCurrent()
         assertEquals(MAX_ERRORS, client.session.value.errors.size)
-        // 只保留最近的：最后一条对应审批发送失败
-        assertEquals(true, client.session.value.errors.last().contains("审批决策发送失败"))
+        // 只保留最近的：最后一条对应审批发送失败（连接类 → 可自动恢复）
+        assertEquals(true, client.session.value.errors.last().message.contains("审批决策发送失败"))
+        assertEquals(true, client.session.value.errors.last().recoverable)
     }
 
     @Test
-    fun dismissErrors_clearsList() = runTest {
+    fun dismissErrors_clearsList_andNotice() = runTest {
         val client = newClient(backgroundScope)
         client.interrupt("s1")
         runCurrent()
         assertEquals(1, client.session.value.errors.size)
+        assertEquals(ConnectionNotice.Error("中断指令发送失败（连接已断开）"), client.notice.value)
         client.dismissErrors()
         assertEquals(emptyList(), client.session.value.errors)
+        assertEquals(ConnectionNotice.Hidden, client.notice.value)
     }
 
     @Test
@@ -95,5 +101,38 @@ class BridgeClientTest {
         runCurrent()
         assertEquals(null, client.session.value.currentSessionId)
         assertEquals(0, client.session.value.errors.size)
+    }
+
+    @Test
+    fun hello_clearsRecoverableErrors_keepsBusinessErrors() {
+        assertEquals(
+            listOf(NoticeError("not_found: session not found: x", recoverable = false)),
+            reconcileErrorsOnHello(
+                listOf(
+                    NoticeError("订阅会话失败（连接已断开）", recoverable = true),
+                    NoticeError("not_found: session not found: x", recoverable = false),
+                    NoticeError("设备注册失败（连接已断开）", recoverable = true),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun connectionErrors_suppressedWhileReconnecting() = runTest {
+        val client = newClient(backgroundScope)
+        client.beginReconnectNotice(1)
+        client.openSession("s1")
+        runCurrent()
+        // 重连中：连接类错误被抑制（不堆积、不覆盖 Reconnecting 槽）
+        assertEquals(0, client.session.value.errors.size)
+        assertTrue(client.notice.value is ConnectionNotice.Reconnecting)
+    }
+
+    @Test
+    fun pushBusinessError_isNotRecoverable_andShown() = runTest {
+        val client = newClient(backgroundScope)
+        client.pushBusinessError("not_found: session not found: x")
+        assertEquals(listOf(NoticeError("not_found: session not found: x", recoverable = false)), client.session.value.errors)
+        assertEquals(ConnectionNotice.Error("not_found: session not found: x"), client.notice.value)
     }
 }
