@@ -68,6 +68,13 @@ _notice.value = keptErrors.lastOrNull()?.let { ConnectionNotice.Error(it.message
 - 验证：`./gradlew :composeApp:assembleDebug :composeApp:testDebugUnitTest` 全绿（含新增「hello 后清除」「重连中不堆错误」用例）。
 - 提交哈希：`1fd1ab6635a38229c40732fafd5c73e6405268d7`（本分支 `fix/connection-notice`）。
 
+### 追加修复：入口重断言与 hello 的竞态（真机反馈）
+
+- 现象：USB 隧道恢复后 hello 已到达，但横幅约 1 分钟才消失。
+- 根因：`startReconnect` 入口无条件重断言 Reconnecting，与「hello 已清槽」竞态——`onConnectionLost` 触发的入口重断言可能在成功连接后再次把槽拨回 Reconnecting，而此后若无新连接建立就不会再有 hello 来清它。
+- 修复：重断言只发生在重连循环内「真实发起新一轮尝试」时（`beginReconnectNotice` 在循环内 `open()` 前调用），`startReconnect` 入口不再重断言。连接存续期间 `open()` 阻塞、无挂起的重试定时器，故 hello 清槽后不会被再次置位。
+- 提交哈希：`06acd62a7c3d42e41d01f85b6a033e471c824293`；单测 `hello_clearsReconnectingNotice_andStaysCleared` 覆盖「成功连接后无新连接也不再置位重连状态」。
+
 ## 后续改进计划
 
 - 「设备页连接失败残留」（`connection.info.state=Error` 与 `connectedDevice` 自相矛盾）是**另一条提示面**，与本槽无关，由并行的 `fix/` 分支处理；两者合并后，可考虑把 LandingScreen 的「连接失败」卡片也纳入统一状态机。

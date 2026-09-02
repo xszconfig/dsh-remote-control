@@ -4,6 +4,7 @@ import com.daniel.dshremote.protocol.ApprovalDecision
 import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.CachedSessionSnapshot
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.ServerEvent
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -126,6 +127,19 @@ class BridgeClientTest {
         // 重连中：连接类错误被抑制（不堆积、不覆盖 Reconnecting 槽）
         assertEquals(0, client.session.value.errors.size)
         assertTrue(client.notice.value is ConnectionNotice.Reconnecting)
+    }
+
+    @Test
+    fun hello_clearsReconnectingNotice_andStaysCleared() = runTest {
+        val client = newClient(backgroundScope)
+        client.beginReconnectNotice(1)
+        assertTrue(client.notice.value is ConnectionNotice.Reconnecting)
+        // 模拟 hello 到达：清槽（成功连接后不再置位重连态）
+        client.handle(ServerEvent.Hello(version = "test", sessions = emptyList(), agents = emptyList()))
+        assertEquals(ConnectionNotice.Hidden, client.notice.value)
+        // 无新连接尝试：槽保持 Hidden（入口重断言已移除，不会在无新连接时把槽拨回 Reconnecting）
+        runCurrent()
+        assertEquals(ConnectionNotice.Hidden, client.notice.value)
     }
 
     @Test

@@ -300,19 +300,17 @@ class BridgeClient(
     }
 
     /** 指数退避自动重连；凭据失效（provider 返回 null）或鉴权错误时放弃。 */
-    /** 进入自动重连：置槽为 Reconnecting（幂等，已重连中则保留原 attempt）。internal 供单测注入重连态。 */
-    internal fun beginReconnectNotice(attempt: Int = 1) {
-        if (_notice.value !is ConnectionNotice.Reconnecting) {
-            _notice.value = ConnectionNotice.Reconnecting(attempt)
-        }
+    /** 置槽为 Reconnecting：仅由重连循环在「真实发起新一轮尝试」时调用（internal 供单测注入重连态）。 */
+    internal fun beginReconnectNotice(attempt: Int) {
+        _notice.value = ConnectionNotice.Reconnecting(attempt)
     }
 
     private fun startReconnect() {
         // 幂等：断开边沿可能多次触发，已有活跃循环时不得重启——
         // 否则新旧循环会在 ConnectionManager 里并发 open()，互相踩 ws/currentUrl 状态。
-        // 但每次进入（含循环存活期间再次触发）都必须重断言 Reconnecting：否则标志被
-        // hello 清掉后，循环存活期的重试会被 UI 误判成「首次连接」而跳整页。
-        beginReconnectNotice(1)
+        // 注意：此处【不】重断言 Reconnecting——重断言只在循环内真实发起新一轮尝试时进行，
+        // 否则 onConnectionLost 触发的入口重断言会与「hello 已清槽」竞态，导致横幅在
+        // 成功连接后仍残留（真机实测：hello 到达后横幅 ~1 分钟才消失）。
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             try {
@@ -328,7 +326,7 @@ class BridgeClient(
                         ""
                     }
                     _reconnectStatus.value = "第 $attempt 次 · ${wait / 1000}s 后重试$hint"
-                    _notice.value = ConnectionNotice.Reconnecting(attempt)
+                    beginReconnectNotice(attempt)
                     connection.markReconnecting(_reconnectStatus.value)
                     ConnLog.info("RECONNECT", "第 $attempt 次重试将在 ${wait / 1000}s 后执行$hint")
                     delay(wait)
@@ -894,7 +892,7 @@ class BridgeClient(
         }
     }
 
-    private fun handle(ev: ServerEvent) {
+    internal fun handle(ev: ServerEvent) {
         when (ev) {
             is ServerEvent.Hello -> {
                 sawHelloThisConnection = true
