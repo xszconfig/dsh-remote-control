@@ -100,6 +100,31 @@ actual fun platformVibrateApproval() {
     }
 }
 
+/** 消息转盘步进触感：单发短振 + 受控振幅（适中，明显轻于审批强提醒）。 */
+actual fun platformVibrateTick(boundary: Boolean) {
+    try {
+        val context = AppContext.context ?: return
+        val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        }
+        if (vibrator == null || !vibrator.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= 26) {
+            // createOneShot(ms, amplitude)：amplitude 1~255；适中 ≈ 96，触底/顶稍重 ≈ 128。
+            val ms = if (boundary) 30L else 15L
+            val amplitude = if (boundary) 128 else 96
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(ms, amplitude))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(if (boundary) 30L else 15L)
+        }
+    } catch (_: Exception) {
+        // 触感失败不影响转盘功能
+    }
+}
+
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
