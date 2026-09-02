@@ -1908,15 +1908,23 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
     val callFailed = e.type == "tool_call" && e.callId != null &&
         allEvents.any { it.type == "tool_result" && it.callId == e.callId && it.toolError == true }
     when (e.type) {
-        "user_message" -> Bubble(
-            text = e.text ?: "",
-            label = "你",
-            ts = e.timestamp,
-            alignEnd = true,
-            container = MaterialTheme.colorScheme.primary,
-            content = MaterialTheme.colorScheme.onPrimary,
-            labelColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
-        )
+        "user_message" -> if (isInjectedUserMessage(e.source)) {
+            // 注入的上下文/系统消息（AGENTS.md <system-reminder>、LSP 编译错误反馈、
+            // 文件变更通知、cron、技能内容、压缩检查点、session 起始提醒等）——
+            // 服务端投影已标 source=inject，渲染为弱化的「上下文」行，严禁用用户气泡
+            // （铁律 6：分类在桥侧，客户端只渲染、不推算）。
+            ContextRow(e)
+        } else {
+            Bubble(
+                text = e.text ?: "",
+                label = "你",
+                ts = e.timestamp,
+                alignEnd = true,
+                container = MaterialTheme.colorScheme.primary,
+                content = MaterialTheme.colorScheme.onPrimary,
+                labelColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
+            )
+        }
         "assistant_message" -> Bubble(
             text = e.text ?: "",
             label = "Agent",
@@ -2230,6 +2238,65 @@ private fun ThinkCard(e: EventProjection) {
                 formatClock(e.timestamp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+    }
+}
+
+/**
+ * 注入的上下文/系统消息行（AGENTS.md <system-reminder>、LSP 编译错误反馈、
+ * 文件变更通知、cron、技能内容、压缩检查点、session 起始提醒等）。
+ * 与用户消息严格区分：左侧弱化卡片 + 「上下文」标签，默认折叠单行，点击展开全文。
+ */
+@Composable
+private fun ContextRow(e: EventProjection) {
+    val text = e.text ?: ""
+    var expanded by remember(e.seq) { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
+    Card(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).combinedClickable(
+            onClick = { expanded = !expanded },
+            onLongClick = {
+                clipboard.setText(AnnotatedString(text))
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            },
+        ),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        ),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🧩", fontSize = 13.sp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "上下文",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    formatClock(e.timestamp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (expanded) "收起 ▲" else "展开 ▼",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentBlue,
+                )
+            }
+            Text(
+                text,
+                modifier = Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
