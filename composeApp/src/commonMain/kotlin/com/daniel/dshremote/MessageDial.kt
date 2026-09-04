@@ -44,11 +44,13 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 
-// 收起圆钮命中判定（相对 128dp 条宽的比例，避免在 pointerInput 里做 px 换算）：
+// 收起圆钮命中判定（绝对 dp，pointerInput 内 dp.toPx() 换算）：
 // - 命中半径：圆钮半径 22dp + 6dp 容差 = 28dp
 // - 圆钮中心距右缘：8dp 边距 + 22dp 半径 = 30dp
-private const val KNOB_HIT_RADIUS_FRACTION = 28f / 128f
-private const val KNOB_CENTER_INSET_FRACTION = 30f / 128f
+private const val KNOB_HIT_RADIUS_DP = 28f
+private const val KNOB_CENTER_INSET_DP = 30f
+/** 收起态手势表面边长（44dp 圆钮 + 8dp 右边距 = 52dp 见方）。 */
+private val DIAL_COLLAPSED_SURFACE_SIZE = 52.dp
 
 /**
  * 消息转盘：右侧中间的半透明旋钮，点击展开为 90° 扇形，单指拨动快速定位到「你发的消息」。
@@ -328,8 +330,10 @@ private fun CollapsedKnobVisual(modifier: Modifier = Modifier) {
 }
 
 /**
- * 统一转盘交互面（128dp 全高条，恒挂载）：收起态画圆钮、展开态画扇面；单一 pointerInput(Unit)
- * 不因 phase 切换而重建，保证「摁下圆钮不抬指直接滑动 → 展开并旋转」一气呵成。
+ * 统一转盘交互面：收起态 52dp 小表面（仅覆盖圆钮，不挡发送/中断等按钮）、展开态 128dp 全高条。
+ * 单一 pointerInput(Unit) 不因 phase 切换而重建，保证「摁下圆钮不抬指直接滑动 → 展开并旋转」一气呵成。
+ * 收起态命中区域外不响应也不拦截（表面本身已缩小到圆钮区，事件自然落到底层按钮/列表）；
+ * 展开态全条 + scrim 主动独占拦截是有意行为。
  */
 @Composable
 private fun DialSurface(
@@ -340,27 +344,32 @@ private fun DialSurface(
     onSteps: (Int) -> Unit,
     onFingerUp: () -> Unit,
 ) {
+    val collapsed = dial.phase == DialPhase.Collapsed
     Box(
         modifier
-            .fillMaxHeight()
-            .width(128.dp)
+            .then(if (collapsed) Modifier.size(DIAL_COLLAPSED_SURFACE_SIZE) else Modifier.fillMaxHeight().width(128.dp))
             .pointerInput(Unit) {
-                val pivot = Offset(size.width.toFloat(), size.height / 2f)
-                val knobHitRadiusPx = size.width * KNOB_HIT_RADIUS_FRACTION
-                val knobCenter = Offset(
-                    size.width - size.width * KNOB_CENTER_INSET_FRACTION,
-                    size.height / 2f,
-                )
                 awaitEachGesture {
+                    // pivot 随当前 size 现取现算：收起态 52dp → 展开态 128dp；两者右缘对齐，
+                    // 右缘中点的屏幕位置一致，故角度连续。
+                    fun pivot() = Offset(size.width.toFloat(), size.height / 2f)
+
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val collapsed = dial.phase == DialPhase.Collapsed
-                    // 收起态只在圆钮命中半径内响应；展开态全条响应。未命中则不消费，交给底层列表。
-                    val active = !collapsed || (down.position - knobCenter).getDistance() <= knobHitRadiusPx
+                    // 收起态只在圆钮命中半径内响应（表面已缩小到圆钮区，未命中自然落到底层）；展开态全条响应。
+                    val active = if (dial.phase == DialPhase.Collapsed) {
+                        val knobCenter = Offset(
+                            size.width - KNOB_CENTER_INSET_DP.dp.toPx(),
+                            size.height / 2f,
+                        )
+                        (down.position - knobCenter).getDistance() <= KNOB_HIT_RADIUS_DP.dp.toPx()
+                    } else {
+                        true
+                    }
                     if (!active) return@awaitEachGesture
 
                     down.consume()
                     var didDrag = false
-                    var lastAngle = angleDeg(down.position, pivot)
+                    var lastAngle = angleDeg(down.position, pivot())
                     var prevAccum = dial.accumDeg
 
                     val slopReached = awaitTouchSlopOrCancellation(down.id) { change, _ ->
@@ -369,8 +378,8 @@ private fun DialSurface(
                         dial.fingerDown = true
                         dial.touch()
                         onDragStart()
-                        // 角度从当前触点（超阈值处）起算
-                        lastAngle = angleDeg(change.position, pivot)
+                        // 角度从当前触点（超阈值处）起算；pivot 用当前 size 重算（展开后表面变大）
+                        lastAngle = angleDeg(change.position, pivot())
                         prevAccum = dial.accumDeg
                     }
 
@@ -389,7 +398,7 @@ private fun DialSurface(
                             break
                         }
                         change.consume()
-                        val a = angleDeg(change.position, pivot)
+                        val a = angleDeg(change.position, pivot())
                         val d = normalizeAngleDelta(a - lastAngle)
                         lastAngle = a
                         if (d != 0f) {
@@ -406,7 +415,7 @@ private fun DialSurface(
                 }
             },
     ) {
-        if (dial.phase == DialPhase.Collapsed) {
+        if (collapsed) {
             CollapsedKnobVisual(Modifier.align(Alignment.CenterEnd))
         } else {
             FanVisual(dial)
