@@ -45,7 +45,10 @@ internal fun latestMessageVisible(visibleIndexes: List<Int>, latestEventIndex: I
 @Composable
 internal fun JumpToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Button(
-        onClick = onClick,
+        onClick = {
+            ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "jump-to-bottom", 500) { "跳到底部点击" }
+            onClick()
+        },
         modifier = modifier.size(48.dp),
         shape = CircleShape,
         contentPadding = PaddingValues(0.dp),

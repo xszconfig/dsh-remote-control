@@ -228,6 +228,7 @@ private fun expandDial(
     state: SessionUiState,
     onLoadOlder: () -> Unit,
 ) {
+    ConnLog.info("ACTION", "转盘打开 refs=${refs.size} hasMore=${state.hasMore}")
     if (refs.isNotEmpty()) {
         val center = listState.firstVisibleItemIndex + (listState.layoutInfo.visibleItemsInfo.size / 2)
         dial.selectedSeq = nearestUserSeq(refs, center) ?: refs.first().seq
@@ -255,6 +256,7 @@ private fun handleSteps(
     dial.touch()
     if (dial.phase != DialPhase.Rotating && dial.phase != DialPhase.Expanded) return
     dial.phase = DialPhase.Rotating
+    ConnLog.throttled(ConnLogLevel.DEBUG, "ACTION", "dial-slide", 500) { "转盘滑动 delta=$delta" }
 
     var selectedIndex = refs.indexOfFirst { it.seq == dial.selectedSeq }
     var remaining = delta
@@ -264,6 +266,7 @@ private fun handleSteps(
             is DialStepResult.Jump -> {
                 dial.selectedSeq = r.newSeq
                 selectedIndex = refs.indexOfFirst { it.seq == r.newSeq }
+                ConnLog.info("ACTION", "转盘选中 seq=${r.newSeq} targetIndex=${r.targetIndex} 视口首行=${listState.firstVisibleItemIndex}")
                 scope.launch { listState.scrollToTop(r.targetIndex) }
                 vibrateTick(dial, boundary = false)
             }

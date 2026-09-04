@@ -327,7 +327,7 @@ private fun LandingScreen(
                         device = d,
                         status = statusOf(devicesState, d),
                         isCurrent = currentDeviceKey != null && deviceKey(d) == currentDeviceKey,
-                        onClick = { client.connectDevice(d) },
+                        onClick = { ConnLog.info("ACTION", "设备连接点击 ${d.name} (${d.host}:${d.port})"); client.connectDevice(d) },
                         onForget = { forgetTarget = d },
                     )
                 }
@@ -362,7 +362,10 @@ private fun LandingScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = { client.connectManual(host.trim(), port.toIntOrNull() ?: 3080, token.trim().ifBlank { null }) },
+                    onClick = {
+                        ConnLog.info("ACTION", "手动连接点击 host=${host.trim()} port=${port.toIntOrNull() ?: 3080}")
+                        client.connectManual(host.trim(), port.toIntOrNull() ?: 3080, token.trim().ifBlank { null })
+                    },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
@@ -373,7 +376,7 @@ private fun LandingScreen(
 
         // 底部操作
         Button(
-            onClick = { client.startScan() },
+            onClick = { ConnLog.info("ACTION", "扫码连接点击"); client.startScan() },
             modifier = Modifier.fillMaxWidth().height(52.dp),
             shape = RoundedCornerShape(16.dp),
         ) {
@@ -394,7 +397,7 @@ private fun LandingScreen(
             text = { Text("${target.name}（${target.host}:${target.port}）将从列表移除，桌面端也会撤销它的配对凭据。") },
             confirmButton = {
                 Button(
-                    onClick = { client.forgetDevice(target); forgetTarget = null },
+                    onClick = { ConnLog.info("ACTION", "忘记设备点击 ${target.name} (${target.host}:${target.port})"); client.forgetDevice(target); forgetTarget = null },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 ) { Text("忘记") }
             },
@@ -509,7 +512,7 @@ private fun ConnectingScreen(client: BridgeClient, conn: ConnectionInfo) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(24.dp))
-        OutlinedButton(onClick = { client.disconnect() }, shape = RoundedCornerShape(14.dp)) {
+        OutlinedButton(onClick = { ConnLog.info("ACTION", "断开连接点击"); client.disconnect() }, shape = RoundedCornerShape(14.dp)) {
             Text("取消")
         }
     }
@@ -895,7 +898,10 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                 if (subagents.isNotEmpty()) {
                     var subagentMenuOpen by remember { mutableStateOf(false) }
                     Box {
-                        TextButton(onClick = { subagentMenuOpen = true }) {
+                        TextButton(onClick = {
+                            ConnLog.info("ACTION", "子代理下拉打开 parentId=${session.id} 子代理数=${subagents.size}")
+                            subagentMenuOpen = true
+                        }) {
                             Text("🤖${subagents.size}", fontWeight = FontWeight.SemiBold)
                         }
                         DropdownMenu(
@@ -934,6 +940,7 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                                         },
                                         onClick = {
                                             subagentMenuOpen = false
+                                            ConnLog.info("ACTION", "子代理点击 subagentId=${sub.id} parentId=${session.id}")
                                             client.openSubagent(sub.id)
                                         },
                                     )
@@ -999,7 +1006,7 @@ private fun SessionList(client: BridgeClient, state: SessionUiState) {
                         workspaceTitle = state.workspaces.firstOrNull { it.id == s.workspaceId }?.title,
                         // 挂载的子代理数（含冷会话），与服务端 live 计数无关
                         subagentCount = state.sessions.count { it.parentSessionId == s.id },
-                        onClick = { client.openSession(s.id) },
+                        onClick = { ConnLog.info("ACTION", "会话点击 id=${s.id} 标题=${sessionName(s)}"); client.openSession(s.id) },
                         onInterrupt = { client.interrupt(s.id) },
                     )
                 }
@@ -1493,11 +1500,17 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                                         modifier = Modifier.weight(1f),
                                     )
                                     if (item.placement == "queued") {
-                                        TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "steer") }) {
+                                        TextButton(onClick = {
+                                            ConnLog.info("ACTION", "排队插队 itemId=${item.id} sessionId=$sessionId")
+                                            client.sendQueueAction(sessionId, item.id, "steer")
+                                        }) {
                                             Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
                                         }
                                     }
-                                    TextButton(onClick = { client.sendQueueAction(sessionId, item.id, "remove") }) {
+                                    TextButton(onClick = {
+                                        ConnLog.info("ACTION", "排队移除 itemId=${item.id} sessionId=$sessionId")
+                                        client.sendQueueAction(sessionId, item.id, "remove")
+                                    }) {
                                         Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
                                     }
                                 }
@@ -1639,7 +1652,14 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f).onFocusChanged { inputFocused = it.isFocused },
+                modifier = Modifier.weight(1f).onFocusChanged {
+                    inputFocused = it.isFocused
+                    if (it.isFocused) {
+                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
+                    } else {
+                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
+                    }
+                },
                 placeholder = { Text("发指令给DeepSeek Harness") },
                 shape = RoundedCornerShape(22.dp),
                 maxLines = 4,
@@ -1657,7 +1677,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 state.modelWaitingSince != null
             if (agentRunning) {
                 Button(
-                    onClick = { client.interrupt(sessionId) },
+                    onClick = { ConnLog.info("ACTION", "中断点击 sessionId=$sessionId"); client.interrupt(sessionId) },
                     modifier = Modifier.size(48.dp),
                     shape = CircleShape,
                     contentPadding = PaddingValues(0.dp),
@@ -1669,6 +1689,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
             Button(
                 onClick = {
+                    ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length}")
                     val text = input.trim()
                     if (text.isNotEmpty()) {
                         followBottom = true // 发送后重新跟随底部（要看到自己的消息与回复）
@@ -2941,27 +2962,30 @@ private fun LogScreen(client: BridgeClient, onClose: () -> Unit) {
                     onClick = {
                         loadingServer = true
                         scope.launch {
+                            val t0 = nowMillis()
                             serverLogs = client.loadServerLogs() ?: emptyList()
                             lastRefresh = nowMillis()
                             loadingServer = false
-                            ConnLog.info("LOG", "已刷新服务端日志（${serverLogs.size} 条）")
+                            ConnLog.info("LOG", "已刷新服务端日志（${serverLogs.size} 条，耗时 ${nowMillis() - t0}ms）")
                         }
                     },
                 ) { Text(if (loadingServer) "刷新中…" else "刷新") }
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(tab == 0, "本机") { tab = 0 }
+            FilterChip(tab == 0, "本机") { ConnLog.info("ACTION", "日志页切换 tab=本机"); tab = 0 }
             Spacer(Modifier.width(6.dp))
             FilterChip(tab == 1, "服务端") {
+                ConnLog.info("ACTION", "日志页切换 tab=服务端")
                 tab = 1
                 if (serverLogs.isEmpty() && !loadingServer) {
                     loadingServer = true
                     scope.launch {
+                        val t0 = nowMillis()
                         serverLogs = client.loadServerLogs() ?: emptyList()
                         lastRefresh = nowMillis()
                         loadingServer = false
-                        ConnLog.info("LOG", "已加载服务端日志（${serverLogs.size} 条）")
+                        ConnLog.info("LOG", "已加载服务端日志（${serverLogs.size} 条，耗时 ${nowMillis() - t0}ms）")
                     }
                 }
             }
@@ -3006,8 +3030,10 @@ private fun LogScreen(client: BridgeClient, onClose: () -> Unit) {
                             TextButton(onClick = {
                                 loadingServer = true
                                 scope.launch {
+                                    val t0 = nowMillis()
                                     serverLogs = client.loadServerLogs() ?: emptyList()
                                     loadingServer = false
+                                    ConnLog.info("LOG", "已拉取服务端日志（${serverLogs.size} 条，耗时 ${nowMillis() - t0}ms）")
                                 }
                             }) { Text("拉取一次") }
                         }

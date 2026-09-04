@@ -243,6 +243,10 @@ class BridgeClient(
     /** 重连候选列表（主端点在前）；null = 无凭据。 */
     private var reconnectProvider: (() -> List<Pair<String, String?>>?)? = null
     private var userDisconnect = false
+    /** openSession → 订阅 History 到达计时（sessionId -> 打开时刻 ms）。 */
+    private val sessionOpenStartAt = mutableMapOf<String, Long>()
+    /** loadOlderPage → HistoryPage 响应计时（sessionId -> 发起翻页时刻 ms）。 */
+    private val olderLoadStartAt = mutableMapOf<String, Long>()
 
     init {
         scope.launch {
@@ -366,6 +370,7 @@ class BridgeClient(
     // ---- 连接 ----
 
     fun startScan() {
+        ConnLog.info("CONNECT", "开始扫码")
         scanStartedOnce = true
         _scanning.value = true
     }
@@ -418,6 +423,7 @@ class BridgeClient(
     }
 
     fun connectDevice(device: StoredDevice) {
+        ConnLog.info("CONNECT", "连接设备 ${device.name} (${device.host}:${device.port})")
         devices.rememberLastConnected(device)
         hydrateFromSessionCache(device)
         val key = deviceKey(device)
@@ -476,12 +482,14 @@ class BridgeClient(
     }
 
     fun connectManual(host: String, port: Int, token: String?) {
+        ConnLog.info("CONNECT", "手动连接 $host:$port token=${if (token.isNullOrBlank()) "无" else "有"}")
         reconnectProvider = { listOf(Pairing.buildUrl(host, port) to token) }
         userDisconnect = false
         connect(host, port, token, null)
     }
 
     fun disconnect() {
+        ConnLog.info("CONNECT", "用户断开连接")
         userDisconnect = true
         scope.launch {
             connectJob?.cancel()
@@ -541,6 +549,8 @@ class BridgeClient(
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return
+        ConnLog.info("CMD", "打开会话 sessionId=$sessionId 前会话=${_session.value.currentSessionId}")
+        sessionOpenStartAt[sessionId] = nowMillis()
         // 关键：切换会话必须清空全部会话级状态（Deep Diving/思考流/诊断/目标/调试/队列/分页），
         // 否则上个会话的指示条/诊断/目标/调试状态会串到新会话里展示。
         _session.update {
@@ -681,6 +691,7 @@ class BridgeClient(
      * 在 handle() 里按 sessionId 过滤丢弃，无需通知服务端。
      */
     fun closeSession() {
+        ConnLog.info("CMD", "关闭会话 current=${_session.value.currentSessionId} returnTo=${_session.value.subagentReturnTo}")
         // 子代理视图的关闭 = 回到主会话（返回键与 ← 按钮共用此路径）
         val returnTo = _session.value.subagentReturnTo
         if (returnTo != null) {
@@ -695,15 +706,26 @@ class BridgeClient(
     fun openSubagent(subagentId: String) {
         val parentId = _session.value.currentSessionId ?: return
         if (parentId == subagentId) return
+        ConnLog.info("CMD", "打开子代理 subagentId=$subagentId parentId=$parentId")
         _session.update { it.copy(subagentReturnTo = parentId) }
         openSession(subagentId)
     }
 
     fun sendMessage(text: String) {
-        val sid = _session.value.currentSessionId ?: return
+        val sid = _session.value.currentSessionId
+        if (sid == null) {
+            // 关键排查点：当前无会话时发送被静默丢弃，必须显式记录
+            ConnLog.warn("CMD", "发送消息丢弃：无当前会话（sessionId=null）textLen=${text.length} 首20字=\"${text.take(20)}\"")
+            return
+        }
         // 乐观入队：会话运行中时新消息必然进服务端队列——立即在面板显示，
         // 不等 spliced 回环广播（服务端 session_queue 到达后自然替换）。
         val running = _session.value.sessions.any { it.id == sid && it.status == "running" }
+        ConnLog.info(
+            "CMD",
+            "发送消息 sessionId=$sid textLen=${text.length} 首20字=\"${text.take(20)}\" " +
+                "running=$running ws=${connection.info.value.state}",
+        )
         if (running) {
             val opt = QueueItemWire(id = "local-${nowMillis()}", placement = "queued", text = text)
             _session.update { s ->
@@ -712,6 +734,7 @@ class BridgeClient(
         }
         scope.launch {
             if (!connection.send(ClientCommand.SendMessage(sid, text))) {
+                ConnLog.error("CMD", "发送消息失败 sessionId=$sid textLen=${text.length} ws=${connection.info.value.state}")
                 pushConnectionError("「${text.take(20)}」未发送：连接已断开")
                 // 发送失败：回滚乐观项
                 _session.update { s ->
@@ -722,6 +745,9 @@ class BridgeClient(
     }
 
     fun interrupt(sessionId: String) {
+        val s = _session.value
+        val status = s.sessions.firstOrNull { it.id == sessionId }?.status
+        ConnLog.info("CMD", "中断会话 sessionId=$sessionId status=$status modelWaitingSince=${s.modelWaitingSince}")
         scope.launch {
             if (!connection.send(ClientCommand.Interrupt(sessionId))) pushConnectionError("中断指令发送失败（连接已断开）")
         }
@@ -733,6 +759,8 @@ class BridgeClient(
         val s = _session.value
         if (s.currentSessionId != sessionId || s.loadingOlder || !s.hasMore) return
         val beforeSeq = s.events.minOfOrNull { it.seq } ?: return
+        ConnLog.info("CMD", "翻页加载 sessionId=$sessionId beforeSeq=$beforeSeq 窗口=${s.events.size}")
+        olderLoadStartAt[sessionId] = nowMillis()
         _session.update { it.copy(loadingOlder = true) }
         scope.launch {
             if (!connection.send(ClientCommand.HistoryPage(sessionId, beforeSeq, 300))) {
@@ -743,6 +771,7 @@ class BridgeClient(
     }
 
     fun sendQueueAction(sessionId: String, itemId: String, action: String) {
+        ConnLog.info("CMD", "排队操作 sessionId=$sessionId itemId=$itemId action=$action")
         scope.launch {
             if (!connection.send(ClientCommand.QueueAction(sessionId, itemId, action))) {
                 pushConnectionError("排队操作发送失败（连接已断开）")
@@ -752,6 +781,7 @@ class BridgeClient(
 
     /** 调试控制：resume / step / step_out / stop / variables（带引用）。 */
     fun sendDebugCommand(sessionId: String, action: String, variablesReference: String? = null) {
+        ConnLog.info("CMD", "调试指令 sessionId=$sessionId action=$action variablesReference=$variablesReference")
         scope.launch {
             if (!connection.send(ClientCommand.DebugCommand(sessionId, action, variablesReference))) {
                 pushConnectionError("调试指令发送失败（连接已断开）")
@@ -837,6 +867,7 @@ class BridgeClient(
     // ---- 设备管理 ----
 
     fun forgetDevice(device: StoredDevice) {
+        ConnLog.info("CONNECT", "忘记设备 ${device.name} (${device.host}:${device.port})")
         val key = deviceKey(device)
         scope.launch {
             devices.remove(key)
@@ -964,6 +995,7 @@ class BridgeClient(
                 }
             }
             is ServerEvent.History -> {
+                val wasLoadingOlder = _session.value.loadingOlder && ev.sessionId == _session.value.currentSessionId
                 _session.update { s ->
                     if (ev.sessionId != s.currentSessionId) {
                         s
@@ -991,6 +1023,17 @@ class BridgeClient(
                             todos = ev.todos ?: emptyList(),
                             commands = ev.commands,
                         )
+                    }
+                }
+                if (ev.sessionId == _session.value.currentSessionId) {
+                    if (wasLoadingOlder) {
+                        val start = olderLoadStartAt.remove(ev.sessionId)
+                        val elapsed = start?.let { nowMillis() - it }
+                        ConnLog.info("CMD", "翻页返回 sessionId=${ev.sessionId} 新增=${ev.events.size} 条 hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
+                    } else {
+                        val start = sessionOpenStartAt.remove(ev.sessionId)
+                        val elapsed = start?.let { nowMillis() - it }
+                        ConnLog.info("CMD", "会话历史到达 sessionId=${ev.sessionId} 条数=${ev.events.size} hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
                     }
                 }
                 lastCacheSaveAt = 0
