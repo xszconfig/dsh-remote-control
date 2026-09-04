@@ -99,6 +99,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -2112,6 +2113,11 @@ private fun Bubble(
                         linkText = AccentBlue,
                         tableText = content,
                         dividerColor = content.copy(alpha = 0.35f),
+                    ),
+                    // 表格用自定义组件：宽表格按真实内容宽度测量 + 横向滑动，
+                    // 替换库默认的固定列宽 + 省略号截断（见 MarkdownTableScroll.kt）。
+                    components = markdownComponents(
+                        table = { model -> ScrollableMarkdownTable(model) },
                     ),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                 )
