@@ -1246,6 +1246,14 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     },
                     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
                 )
+                // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方），
+                // 排队消息/任务/Goal 面板把 Deep Diving 上推时，圆钮随之上下移动。
+                MessageDial(
+                    state = state,
+                    listState = listState,
+                    onLoadOlder = { client.loadOlderPage(sessionId) },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
         // Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）；
@@ -1711,12 +1719,6 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             }
         }
     }
-    MessageDial(
-        state = state,
-        listState = listState,
-        onLoadOlder = { client.loadOlderPage(sessionId) },
-        modifier = Modifier.fillMaxSize(),
-    )
     }
 }
 
