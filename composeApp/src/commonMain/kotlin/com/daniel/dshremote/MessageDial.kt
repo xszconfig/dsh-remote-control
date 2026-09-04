@@ -3,7 +3,10 @@ package com.daniel.dshremote
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -40,6 +43,12 @@ import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+
+// 收起圆钮命中判定（相对 128dp 条宽的比例，避免在 pointerInput 里做 px 换算）：
+// - 命中半径：圆钮半径 22dp + 6dp 容差 = 28dp
+// - 圆钮中心距右缘：8dp 边距 + 22dp 半径 = 30dp
+private const val KNOB_HIT_RADIUS_FRACTION = 28f / 128f
+private const val KNOB_CENTER_INSET_FRACTION = 30f / 128f
 
 /**
  * 消息转盘：右侧中间的半透明旋钮，点击展开为 90° 扇形，单指拨动快速定位到「你发的消息」。
@@ -79,6 +88,18 @@ class MessageDialState {
 /** 单指绕 pivot 的角度（度，atan2，[-180,180]，屏幕坐标 y 向下）。 */
 private fun angleDeg(pos: Offset, pivot: Offset): Float =
     (atan2((pos.y - pivot.y).toDouble(), (pos.x - pivot.x).toDouble()) * 180.0 / PI).toFloat()
+
+/**
+ * 直接定位到目标行并把它顶到「屏幕顶部」（reverseLayout 下 scrollToItem 落底部，再向上补偿）。
+ * 补偿量见 [scrollDeltaToTop]；目标行为最新一条（其下无更新内容）时 scrollBy 会被可滚动范围钳制，
+ * 行会尽量靠近顶部（物理上无法越过底部最新边界）。
+ */
+private suspend fun LazyListState.scrollToTop(index: Int) {
+    scrollToItem(index)
+    val info = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportH = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+    scrollBy(scrollDeltaToTop(viewportH, info.size).toFloat())
+}
 
 @Composable
 fun MessageDial(
@@ -121,7 +142,7 @@ fun MessageDial(
             is SeekOutcome.SnapToOldest -> {
                 dial.selectedSeq = o.seq
                 dial.phase = DialPhase.Expanded
-                scope.launch { listState.scrollToItem(o.rowIndex) }
+                scope.launch { listState.scrollToTop(o.rowIndex) }
                 vibrateTick(dial, boundary = true)
             }
             SeekOutcome.NothingFound -> dial.phase = DialPhase.Expanded
@@ -162,27 +183,30 @@ fun MessageDial(
             )
         }
 
-        if (dial.phase == DialPhase.Collapsed) {
-            CollapsedKnob(
-                modifier = Modifier.align(Alignment.CenterEnd),
-                onClick = {
+        DialSurface(
+            modifier = Modifier.align(Alignment.CenterEnd),
+            dial = dial,
+            onDragStart = {
+                dial.touch()
+                if (dial.phase == DialPhase.Collapsed) {
+                    expandDial(dial, currentRefs, listState, currentState, onLoadOlder)
+                }
+                if (dial.phase == DialPhase.Expanded) dial.phase = DialPhase.Rotating
+            },
+            onTap = {
+                if (dial.phase == DialPhase.Collapsed) {
                     dial.touch()
-                    expandDial(dial, refs, listState, state, onLoadOlder)
-                },
-            )
-        } else {
-            ExpandedFan(
-                modifier = Modifier.align(Alignment.CenterEnd),
-                dial = dial,
-                onSteps = { delta ->
-                    handleSteps(dial, currentRefs, listState, scope, currentState, onLoadOlder, delta)
-                },
-                onFingerUp = {
-                    dial.fingerDown = false
-                    if (dial.phase == DialPhase.Rotating) dial.phase = DialPhase.Expanded
-                },
-            )
-        }
+                    expandDial(dial, currentRefs, listState, currentState, onLoadOlder)
+                }
+            },
+            onSteps = { delta ->
+                handleSteps(dial, currentRefs, listState, scope, currentState, onLoadOlder, delta)
+            },
+            onFingerUp = {
+                dial.fingerDown = false
+                if (dial.phase == DialPhase.Rotating) dial.phase = DialPhase.Expanded
+            },
+        )
 
         if (dial.phase == DialPhase.WaitingOlder) {
             CircularProgressIndicator(
@@ -240,7 +264,7 @@ private fun handleSteps(
             is DialStepResult.Jump -> {
                 dial.selectedSeq = r.newSeq
                 selectedIndex = refs.indexOfFirst { it.seq == r.newSeq }
-                scope.launch { listState.scrollToItem(r.targetIndex) }
+                scope.launch { listState.scrollToTop(r.targetIndex) }
                 vibrateTick(dial, boundary = false)
             }
             DialStepResult.NeedOlderPage -> {
@@ -271,9 +295,9 @@ private fun vibrateTick(dial: MessageDialState, boundary: Boolean) {
     platformVibrateTick(boundary)
 }
 
-/** 收起圆钮：44dp 半透明，3 根刻度 + 中间红基准线提示。 */
+/** 收起圆钮视觉（纯绘制，无手势）：44dp 半透明，刻度 + 红基准线放大更清晰；透明度保持不变。 */
 @Composable
-private fun CollapsedKnob(modifier: Modifier, onClick: () -> Unit) {
+private fun CollapsedKnobVisual(modifier: Modifier = Modifier) {
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
     val red = MaterialTheme.colorScheme.error
     Box(
@@ -281,60 +305,87 @@ private fun CollapsedKnob(modifier: Modifier, onClick: () -> Unit) {
             .padding(end = 8.dp)
             .size(44.dp)
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = DIAL_COLLAPSED_ALPHA))
-            .clickable { onClick() },
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = DIAL_COLLAPSED_ALPHA)),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.fillMaxSize().padding(12.dp)) {
+        Canvas(Modifier.fillMaxSize().padding(7.dp)) {
             val c = this.center
             val outer = this.size.minDimension / 2f
-            val inner = outer * 0.45f
+            val inner = outer * 0.35f
             for (deg in listOf(160f, 200f)) {
                 val a = deg * PI.toFloat() / 180f
                 val dir = Offset(cos(a), sin(a))
-                drawLine(tickColor, c + dir * inner, c + dir * outer, strokeWidth = 1.6.dp.toPx())
+                drawLine(tickColor, c + dir * inner, c + dir * outer, strokeWidth = 2.4.dp.toPx())
             }
             val ra = 180f * PI.toFloat() / 180f
             val rdir = Offset(cos(ra), sin(ra))
-            drawLine(red, c + rdir * inner, c + rdir * outer, strokeWidth = 2.dp.toPx())
+            drawLine(red, c + rdir * inner, c + rdir * outer, strokeWidth = 3.dp.toPx())
         }
     }
 }
 
 /**
- * 展开扇形：静态层画 90° 扇面（开口向左）+ 固定红基准线（180° 角平分线）；
- * 旋转层只画刻度，graphicsLayer 绕右缘中点（扇面枢轴）旋转，读 accumDeg 不触发重组。
+ * 统一转盘交互面（128dp 全高条，恒挂载）：收起态画圆钮、展开态画扇面；单一 pointerInput(Unit)
+ * 不因 phase 切换而重建，保证「摁下圆钮不抬指直接滑动 → 展开并旋转」一气呵成。
  */
 @Composable
-private fun ExpandedFan(
+private fun DialSurface(
     modifier: Modifier,
     dial: MessageDialState,
+    onDragStart: () -> Unit,
+    onTap: () -> Unit,
     onSteps: (Int) -> Unit,
     onFingerUp: () -> Unit,
 ) {
-    val fanColor = MaterialTheme.colorScheme.primary.copy(alpha = DIAL_FAN_ALPHA)
-    val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val red = MaterialTheme.colorScheme.error
-
     Box(
         modifier
             .fillMaxHeight()
             .width(128.dp)
             .pointerInput(Unit) {
                 val pivot = Offset(size.width.toFloat(), size.height / 2f)
-                var lastAngle = 0f
-                var prevAccum = 0f
-                detectDragGestures(
-                    onDragStart = { start ->
+                val knobHitRadiusPx = size.width * KNOB_HIT_RADIUS_FRACTION
+                val knobCenter = Offset(
+                    size.width - size.width * KNOB_CENTER_INSET_FRACTION,
+                    size.height / 2f,
+                )
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val collapsed = dial.phase == DialPhase.Collapsed
+                    // 收起态只在圆钮命中半径内响应；展开态全条响应。未命中则不消费，交给底层列表。
+                    val active = !collapsed || (down.position - knobCenter).getDistance() <= knobHitRadiusPx
+                    if (!active) return@awaitEachGesture
+
+                    down.consume()
+                    var didDrag = false
+                    var lastAngle = angleDeg(down.position, pivot)
+                    var prevAccum = dial.accumDeg
+
+                    val slopReached = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                        change.consume()
+                        didDrag = true
                         dial.fingerDown = true
                         dial.touch()
-                        if (dial.phase == DialPhase.Expanded) dial.phase = DialPhase.Rotating
-                        lastAngle = angleDeg(start, pivot)
+                        onDragStart()
+                        // 角度从当前触点（超阈值处）起算
+                        lastAngle = angleDeg(change.position, pivot)
                         prevAccum = dial.accumDeg
-                    },
-                    onDragEnd = { onFingerUp() },
-                    onDragCancel = { onFingerUp() },
-                    onDrag = { change, _ ->
+                    }
+
+                    if (slopReached == null) {
+                        // 未超阈值即抬起 → 轻点
+                        dial.fingerDown = false
+                        onTap()
+                        return@awaitEachGesture
+                    }
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) {
+                            change.consume()
+                            break
+                        }
+                        change.consume()
                         val a = angleDeg(change.position, pivot)
                         val d = normalizeAngleDelta(a - lastAngle)
                         lastAngle = a
@@ -347,10 +398,30 @@ private fun ExpandedFan(
                                 onSteps(crossed)
                             }
                         }
-                    },
-                )
+                    }
+                    onFingerUp()
+                }
             },
     ) {
+        if (dial.phase == DialPhase.Collapsed) {
+            CollapsedKnobVisual(Modifier.align(Alignment.CenterEnd))
+        } else {
+            FanVisual(dial)
+        }
+    }
+}
+
+/**
+ * 展开扇形视觉（纯绘制，无手势）：静态层画 90° 扇面（开口向左）+ 固定红基准线（180° 角平分线）；
+ * 旋转层只画刻度，graphicsLayer 绕右缘中点（扇面枢轴）旋转，读 accumDeg 不触发重组。
+ */
+@Composable
+private fun FanVisual(dial: MessageDialState) {
+    val fanColor = MaterialTheme.colorScheme.primary.copy(alpha = DIAL_FAN_ALPHA)
+    val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val red = MaterialTheme.colorScheme.error
+
+    Box(Modifier.fillMaxSize()) {
         // 静态层：扇面 + 红线（固定，不随刻度旋转）。
         Canvas(Modifier.fillMaxSize()) {
             val pivot = Offset(size.width, size.height / 2f)

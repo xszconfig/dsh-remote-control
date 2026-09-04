@@ -44,6 +44,10 @@ data class UserMsgRef(val seq: Long, val rowIndex: Int)
 /**
  * 计算已加载窗口内所有「用户消息」的 LazyColumn 行号，按「最老在前」排序。
  *
+ * 只收「真实用户输入」：type == user_message 且 source 非注入（source == null 旧桥兼容
+ * 或 source == "user"）；注入/上下文（source="inject" 等）由 [isInjectedUserMessage] 排除，
+ * 转盘只服务「用户找自己发的消息」，绝不把注入消息当成定位目标。
+ *
  * 行号映射（reverseLayout=true，App.kt 的 LazyColumn 行序）：
  * - index 0 = 底部最新；DSL 顺序 = [liveThink?] + events.asReversed()。
  * - events 旧→新（下标 j=0 最老），events[j] 的行号 = (events.size - 1 - j) + (liveThink 占位的偏移)。
@@ -58,8 +62,9 @@ fun userMessageRefs(events: List<EventProjection>, hasLiveThink: Boolean): List<
     val size = events.size
     val refs = ArrayList<UserMsgRef>()
     for (j in events.indices) {
-        if (events[j].type == "user_message") {
-            refs.add(UserMsgRef(events[j].seq, (size - 1 - j) + offset))
+        val e = events[j]
+        if (e.type == "user_message" && !isInjectedUserMessage(e.source)) {
+            refs.add(UserMsgRef(e.seq, (size - 1 - j) + offset))
         }
     }
     return refs
@@ -160,3 +165,12 @@ fun nearestUserSeq(refs: List<UserMsgRef>, viewportCenterRow: Int): Long? =
 /** 震动节流判定：距上次震动不足最小间隔则跳过。 */
 fun shouldVibrate(lastTickMs: Long, nowMs: Long, minIntervalMs: Long = DIAL_HAPTIC_MIN_INTERVAL_MS): Boolean =
     lastTickMs <= 0L || nowMs - lastTickMs >= minIntervalMs
+
+/**
+ * reverseLayout 下把目标行从底部推到顶部所需的 scrollBy 增量（像素）。
+ *
+ * 推导：scrollToItem(index) 把目标行放到 reverseLayout 起始端 = 屏幕底部；随后 scrollBy
+ * 负向（向后滚 = 内容上移）把它顶到视口顶部。目标行顶边对齐视口顶所需位移
+ * = -(视口高 - 行高) = 行高 - 视口高。行高 > 视口高时（超长消息）为正，向下对齐顶部。
+ */
+fun scrollDeltaToTop(viewportHeightPx: Int, itemHeightPx: Int): Int = itemHeightPx - viewportHeightPx

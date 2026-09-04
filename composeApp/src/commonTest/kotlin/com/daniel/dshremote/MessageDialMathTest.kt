@@ -9,7 +9,8 @@ import kotlin.test.assertTrue
 
 class MessageDialMathTest {
 
-    private fun ev(seq: Long, type: String) = EventProjection(seq, type, timestamp = seq)
+    private fun ev(seq: Long, type: String, source: String? = null) =
+        EventProjection(seq, type, source = source, timestamp = seq)
 
     // ---- userMessageRefs：索引映射（reverseLayout + liveThink 偏移）----
 
@@ -51,6 +52,29 @@ class MessageDialMathTest {
     fun userMessageRefs_empty() {
         assertTrue(userMessageRefs(emptyList(), hasLiveThink = false).isEmpty())
         assertTrue(userMessageRefs(listOf(ev(1, "assistant_message")), hasLiveThink = true).isEmpty())
+    }
+
+    @Test
+    fun userMessageRefs_excludesInjectedSource() {
+        val events = listOf(
+            ev(1, "user_message", source = "user"),    // 真实用户 → 收
+            ev(2, "user_message", source = "inject"),  // 注入 → 排除
+            ev(3, "user_message"),                     // 旧桥无 source(null) → 兼容收
+            ev(4, "user_message", source = "user"),
+        )
+        val refs = userMessageRefs(events, hasLiveThink = false)
+        assertEquals(listOf(1L, 3L, 4L), refs.map { it.seq })
+    }
+
+    @Test
+    fun userMessageRefs_unknownSourceExcluded() {
+        // 前向安全：未来新 source（如 context/recall）不得混入用户定位目标
+        val events = listOf(
+            ev(1, "user_message", source = "context"),
+            ev(2, "user_message", source = "user"),
+        )
+        val refs = userMessageRefs(events, hasLiveThink = false)
+        assertEquals(listOf(2L), refs.map { it.seq })
     }
 
     // ---- normalizeAngleDelta：跨 ±180° 回绕 ----
@@ -169,5 +193,14 @@ class MessageDialMathTest {
         assertTrue(shouldVibrate(lastTickMs = 0, nowMs = 100))
         assertFalse(shouldVibrate(lastTickMs = 100, nowMs = 140)) // 40ms < 60ms
         assertTrue(shouldVibrate(lastTickMs = 100, nowMs = 160))  // 60ms 边界
+    }
+
+    // ---- scrollDeltaToTop：reverseLayout 顶部定位补偿 ----
+
+    @Test
+    fun scrollDeltaToTop_signAndMagnitude() {
+        assertEquals(-920, scrollDeltaToTop(viewportHeightPx = 1000, itemHeightPx = 80))  // 行短于视口 → 负（向上）
+        assertEquals(0, scrollDeltaToTop(viewportHeightPx = 1000, itemHeightPx = 1000))   // 行=视口 → 不动
+        assertEquals(200, scrollDeltaToTop(viewportHeightPx = 1000, itemHeightPx = 1200)) // 超长行 → 正（向下对齐顶部）
     }
 }
