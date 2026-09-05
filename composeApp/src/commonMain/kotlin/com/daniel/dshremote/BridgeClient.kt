@@ -925,370 +925,464 @@ class BridgeClient(
 
     internal fun handle(ev: ServerEvent) {
         when (ev) {
-            is ServerEvent.Hello -> {
-                sawHelloThisConnection = true
-                // hello = 连接已建立且完全同步的权威信号：重连成功后由这里清横幅，
-                // 不依赖重连循环里「open 返回时 hello 是否恰好已到达」的竞态判断。
-                val wasReconnecting = _notice.value is ConnectionNotice.Reconnecting
-                // 错误对账：清掉「连接类」（可自动恢复）错误，业务错误保留（手动清除）
-                val keptErrors = reconcileErrorsOnHello(_session.value.errors)
-                _session.update { it.copy(errors = keptErrors) }
-                // 槽收敛：重连/瞬断恢复后静默（不弹「已重新连接」）；若有业务错误则展示最新一条
-                _notice.value = keptErrors.lastOrNull()?.let { ConnectionNotice.Error(it.message) }
-                    ?: ConnectionNotice.Hidden
-                if (wasReconnecting) {
-                    _reconnectStatus.value = ""
-                    ConnLog.info("RECONNECT", "hello 到达，重连完成，横幅清除")
-                }
-                val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
-                    .distinctBy { it.approvalId }
-                // 增量对账：服务端快照是唯一事实源，与当前列表 diff 出增/改/删
-                val prev = _session.value
-                val added = ev.sessions.count { n -> prev.sessions.none { it.id == n.id } }
-                val updated = ev.sessions.count { n -> prev.sessions.any { it.id == n.id && it != n } }
-                val removed = prev.sessions.count { o -> ev.sessions.none { it.id == o.id } }
-                if (added + updated + removed > 0) {
-                    ConnLog.info("SYNC", "会话对账 新增=$added 更新=$updated 删除=$removed（共 ${ev.sessions.size} 条）")
-                }
-                ConnLog.info(
-                    "EVENT",
-                    "收到 hello: sessions=${ev.sessions.size} workspaces=${ev.workspaces.size} " +
-                        "pendingApprovals=${allApprovals.size} pendingQuestions=${ev.pendingQuestions.size}",
-                )
-                _session.update {
-                    it.copy(
-                        sessions = ev.sessions,
-                        agents = ev.agents,
-                        workspaces = ev.workspaces,
-                        // 服务端持有中的审批/提问是唯一事实源（重连/新连接后据此重建队列）
-                        approvals = allApprovals,
-                        decidingApprovalId = allApprovals
-                            .any { a -> a.approvalId == it.decidingApprovalId }
-                            .let { still -> if (still) it.decidingApprovalId else null },
-                        questions = ev.pendingQuestions,
-                        decidingQuestionRpcId = ev.pendingQuestions
-                            .any { q -> q.rpcId == it.decidingQuestionRpcId }
-                            .let { still -> if (still) it.decidingQuestionRpcId else null },
-                        selectedWorkspaceId = it.selectedWorkspaceId
-                            ?.takeIf { sel -> sel == UNGROUPED_KEY || ev.workspaces.any { w -> w.id == sel } },
-                        // 打开中的会话已被删除 → 关闭视图，避免停留幽灵会话
-                        currentSessionId = it.currentSessionId
-                            ?.takeIf { cid -> ev.sessions.any { s -> s.id == cid } },
-                        // 子代理返回目标同样以服务端快照为准校验
-                        subagentReturnTo = it.subagentReturnTo
-                            ?.takeIf { p -> ev.sessions.any { s -> s.id == p } },
-                        events = it.currentSessionId
-                            ?.takeIf { cid -> ev.sessions.none { s -> s.id == cid } }
-                            ?.let { emptyList() } ?: it.events,
-                    )
-                }
-                if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
-                scheduleSessionCacheSave()
-                // 重连/新连接后若停留在会话页：重新订阅以服务端历史为准（补齐断线期间事件）
-                val sid = _session.value.currentSessionId
-                if (sid != null) {
-                    scope.launch {
-                        if (!connection.send(ClientCommand.Subscribe(sid))) {
-                            pushConnectionError("订阅会话失败（连接已断开）")
-                        }
-                    }
-                }
-            }
-            is ServerEvent.History -> {
-                val wasLoadingOlder = _session.value.loadingOlder && ev.sessionId == _session.value.currentSessionId
-                _session.update { s ->
-                    if (ev.sessionId != s.currentSessionId) {
-                        s
-                    } else if (s.loadingOlder) {
-                        // 翻页响应：往前插入更早的一页（按 seq+type 去重——
-                        // think/正文同 seq，纯 seq 去重会丢行）
-                        val merged = (ev.events + s.events).distinctBy { "${it.seq}-${it.type}" }
-                        s.copy(
-                            events = merged,
-                            hasMore = ev.hasMore,
-                            historyTotal = ev.total,
-                            loadingOlder = false,
-                        )
-                    } else {
-                        // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）。
-                        // 轮次起点优先用服务端 turnSince（中途切入也能显示标签），回退模型等待起点。
-                        s.copy(
-                            events = ev.events.bounded(),
-                            queueItems = ev.queue,
-                            hasMore = ev.hasMore,
-                            historyTotal = ev.total,
-                            modelWaitingSince = ev.modelWaitingSince,
-                            divingTurnStart = ev.turnSince ?: ev.modelWaitingSince,
-                            goal = ev.goal,
-                            todos = ev.todos ?: emptyList(),
-                            commands = ev.commands,
-                        )
-                    }
-                }
-                if (ev.sessionId == _session.value.currentSessionId) {
-                    if (wasLoadingOlder) {
-                        val start = olderLoadStartAt.remove(ev.sessionId)
-                        val elapsed = start?.let { nowMillis() - it }
-                        ConnLog.info("CMD", "翻页返回 sessionId=${ev.sessionId} 新增=${ev.events.size} 条 hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
-                    } else {
-                        val start = sessionOpenStartAt.remove(ev.sessionId)
-                        val elapsed = start?.let { nowMillis() - it }
-                        ConnLog.info("CMD", "会话历史到达 sessionId=${ev.sessionId} 条数=${ev.events.size} hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
-                    }
-                }
-                lastCacheSaveAt = 0
-                scope.launch { eventCache.save(eventCacheKey(ev.sessionId), _session.value.events.takeLast(MAX_EVENTS)) }
-                ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史窗口 ${_session.value.events.size} 条（排队 ${ev.queue.size}）")
-            }
-            is ServerEvent.Event -> {
-                _session.update { s ->
-                    if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
-                }
-                if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
-            }
-            is ServerEvent.SessionQueue -> _session.update { s ->
-                if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
-            }
-            is ServerEvent.ModelWaiting -> _session.update { st ->
-                // Deep Diving 本轮计时：首轮模型请求记录本轮起点，后续请求沿用（不重置）
-                if (ev.sessionId == st.currentSessionId) {
-                    st.copy(
-                        modelWaitingSince = ev.startedAt,
-                        divingTurnStart = st.divingTurnStart ?: ev.startedAt,
-                    )
-                } else {
-                    st
+            is ServerEvent.Hello -> handleHello(ev)
+            is ServerEvent.History -> handleHistory(ev)
+            is ServerEvent.Event -> handleEvent(ev)
+            is ServerEvent.SessionQueue -> handleSessionQueue(ev)
+            is ServerEvent.ModelWaiting -> handleModelWaiting(ev)
+            is ServerEvent.ModelWaitingDone -> handleModelWaitingDone(ev)
+            is ServerEvent.DeepDivingTick -> handleDeepDivingTick(ev)
+            is ServerEvent.TurnStatus -> handleTurnStatus(ev)
+            is ServerEvent.ThinkDelta -> handleThinkDelta(ev)
+            is ServerEvent.Diagnostics -> handleDiagnostics(ev)
+            is ServerEvent.GoalUpdate -> handleGoalUpdate(ev)
+            is ServerEvent.TodosUpdate -> handleTodosUpdate(ev)
+            is ServerEvent.CommandsUpdate -> handleCommandsUpdate(ev)
+            is ServerEvent.DebugState -> handleDebugState(ev)
+            is ServerEvent.DebugOutput -> handleDebugOutput(ev)
+            is ServerEvent.DebugVariables -> handleDebugVariables(ev)
+            is ServerEvent.ServerBoot -> handleServerBoot(ev)
+            is ServerEvent.LogsRequest -> handleLogsRequest(ev)
+            is ServerEvent.AgentStatus -> handleAgentStatus(ev)
+            is ServerEvent.SessionTitle -> handleSessionTitle(ev)
+            is ServerEvent.SessionUpsert -> handleSessionUpsert(ev)
+            is ServerEvent.ApprovalRequest -> handleApprovalRequest(ev)
+            is ServerEvent.ApprovalResolved -> handleApprovalResolved(ev)
+            is ServerEvent.ApprovalSettledLegacy -> handleApprovalSettledLegacy(ev)
+            is ServerEvent.QuestionRequest -> handleQuestionRequest(ev)
+            is ServerEvent.QuestionResolved -> handleQuestionResolved(ev)
+            is ServerEvent.DeviceRegistered -> handleDeviceRegistered(ev)
+            is ServerEvent.DeviceRevoked -> handleDeviceRevoked(ev)
+            is ServerEvent.Error -> handleError(ev)
+        }
+    }
+
+    private fun handleHello(ev: ServerEvent.Hello) {
+        sawHelloThisConnection = true
+        // hello = 连接已建立且完全同步的权威信号：重连成功后由这里清横幅，
+        // 不依赖重连循环里「open 返回时 hello 是否恰好已到达」的竞态判断。
+        val wasReconnecting = _notice.value is ConnectionNotice.Reconnecting
+        // 错误对账：清掉「连接类」（可自动恢复）错误，业务错误保留（手动清除）
+        val keptErrors = reconcileErrorsOnHello(_session.value.errors)
+        _session.update { it.copy(errors = keptErrors) }
+        // 槽收敛：重连/瞬断恢复后静默（不弹「已重新连接」）；若有业务错误则展示最新一条
+        _notice.value = keptErrors.lastOrNull()?.let { ConnectionNotice.Error(it.message) }
+            ?: ConnectionNotice.Hidden
+        if (wasReconnecting) {
+            _reconnectStatus.value = ""
+            ConnLog.info("RECONNECT", "hello 到达，重连完成，横幅清除")
+        }
+        val allApprovals = (ev.pendingApprovals + ev.pendingRemoteApprovals)
+            .distinctBy { it.approvalId }
+        // 增量对账：服务端快照是唯一事实源，与当前列表 diff 出增/改/删
+        val prev = _session.value
+        val added = ev.sessions.count { n -> prev.sessions.none { it.id == n.id } }
+        val updated = ev.sessions.count { n -> prev.sessions.any { it.id == n.id && it != n } }
+        val removed = prev.sessions.count { o -> ev.sessions.none { it.id == o.id } }
+        if (added + updated + removed > 0) {
+            ConnLog.info("SYNC", "会话对账 新增=$added 更新=$updated 删除=$removed（共 ${ev.sessions.size} 条）")
+        }
+        ConnLog.info(
+            "EVENT",
+            "收到 hello: sessions=${ev.sessions.size} workspaces=${ev.workspaces.size} " +
+                "pendingApprovals=${allApprovals.size} pendingQuestions=${ev.pendingQuestions.size}",
+        )
+        _session.update {
+            it.copy(
+                sessions = ev.sessions,
+                agents = ev.agents,
+                workspaces = ev.workspaces,
+                // 服务端持有中的审批/提问是唯一事实源（重连/新连接后据此重建队列）
+                approvals = allApprovals,
+                decidingApprovalId = allApprovals
+                    .any { a -> a.approvalId == it.decidingApprovalId }
+                    .let { still -> if (still) it.decidingApprovalId else null },
+                questions = ev.pendingQuestions,
+                decidingQuestionRpcId = ev.pendingQuestions
+                    .any { q -> q.rpcId == it.decidingQuestionRpcId }
+                    .let { still -> if (still) it.decidingQuestionRpcId else null },
+                selectedWorkspaceId = it.selectedWorkspaceId
+                    ?.takeIf { sel -> sel == UNGROUPED_KEY || ev.workspaces.any { w -> w.id == sel } },
+                // 打开中的会话已被删除 → 关闭视图，避免停留幽灵会话
+                currentSessionId = it.currentSessionId
+                    ?.takeIf { cid -> ev.sessions.any { s -> s.id == cid } },
+                // 子代理返回目标同样以服务端快照为准校验
+                subagentReturnTo = it.subagentReturnTo
+                    ?.takeIf { p -> ev.sessions.any { s -> s.id == p } },
+                events = it.currentSessionId
+                    ?.takeIf { cid -> ev.sessions.none { s -> s.id == cid } }
+                    ?.let { emptyList() } ?: it.events,
+            )
+        }
+        if (ev.serverId != null) registerIfNeeded(ev.serverId, ev.hostname)
+        scheduleSessionCacheSave()
+        // 重连/新连接后若停留在会话页：重新订阅以服务端历史为准（补齐断线期间事件）
+        val sid = _session.value.currentSessionId
+        if (sid != null) {
+            scope.launch {
+                if (!connection.send(ClientCommand.Subscribe(sid))) {
+                    pushConnectionError("订阅会话失败（连接已断开）")
                 }
             }
-            is ServerEvent.ModelWaitingDone -> _session.update { st ->
-                // 只清「等待模型」指示；Deep Diving 时钟是轮次级状态（锚定轮次起点），
-                // 一轮中可能有多次模型调用，每次完成都会广播一次 model_waiting_done——
-                // 若在这里清 deepDivingElapsed，时钟会在下一个 tick（≤1s）前短暂消失，
-                // 正是用户看到的「计时器闪烁」。轮次级时钟只在 turn_status(closed) 清除。
-                if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
-                    st.copy(modelWaitingSince = null)
-                } else {
-                    st
-                }
-            }
-            is ServerEvent.DeepDivingTick -> _session.update { st ->
-                // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
-                if (ev.sessionId == st.currentSessionId) st.copy(deepDivingElapsed = ev.elapsedSeconds) else st
-            }
-            is ServerEvent.TurnStatus -> _session.update { st ->
-                // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
-                // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
-                if (ev.sessionId != st.currentSessionId) {
-                    st
-                } else if (ev.open) {
-                    st.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
-                } else {
-                    st.copy(divingTurnStart = null, deepDivingElapsed = null)
-                }
-            }
-            is ServerEvent.ThinkDelta -> _session.update { st ->
-                if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
-            }
-            is ServerEvent.Diagnostics -> _session.update { st ->
-                // 会话隔离：诊断只归属触发它的会话；文件级替换（空集合 = 该文件已无问题）
-                if (ev.sessionId != st.currentSessionId) {
-                    st
-                } else {
-                    val rest = st.diagnostics.filterNot { it.path == ev.path }
-                    st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
-                }
-            }
-            is ServerEvent.GoalUpdate -> _session.update { st ->
-                // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
-                if (ev.sessionId == st.currentSessionId) st.copy(goal = ev.goal) else st
-            }
-            is ServerEvent.TodosUpdate -> _session.update { st ->
-                // 会话隔离：任务列表只归属对应会话（每会话一份）
-                if (ev.sessionId == st.currentSessionId) st.copy(todos = ev.todos) else st
-            }
-            is ServerEvent.CommandsUpdate -> _session.update { st ->
-                // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
-                if (ev.sessionId == st.currentSessionId) st.copy(commands = ev.commands) else st
-            }
-            is ServerEvent.DebugState -> _session.update { st ->
-                // 会话隔离；离开 paused 时清空变量缓存（objectId 已失效）
-                if (ev.sessionId != st.currentSessionId) {
-                    st
-                } else {
-                    st.copy(
-                        debug = ev.debug,
-                        debugVars = if (ev.debug.state == "paused") st.debugVars else emptyMap(),
-                    )
-                }
-            }
-            is ServerEvent.DebugOutput -> _session.update { st ->
-                if (ev.sessionId == st.currentSessionId) {
-                    st.copy(debugOutput = (st.debugOutput + ev.line).takeLast(200))
-                } else {
-                    st
-                }
-            }
-            is ServerEvent.DebugVariables -> _session.update { st ->
-                if (ev.sessionId == st.currentSessionId) {
-                    st.copy(debugVars = st.debugVars + (ev.variablesReference to ev.variables))
-                } else {
-                    st
-                }
-            }
-            is ServerEvent.ServerBoot -> {
-                // 「一个版本提示一次」：本地已读版本与服务端版本一致 → 不弹（保持隐藏）；
-                // 版本变化（服务端升级）→ 重新展示。按服务端标识 key 隔离，不同电脑互不吞提示。
-                val device = _session.value.connectedDevice
-                val key = device?.let { bootNoticeKey(it) } ?: "unknown"
-                scope.launch {
-                    val seen = bootNoticeCache.load(key)
-                    _session.update { st ->
-                        if (seen == ev.version) st.copy(serverBoot = null) else st.copy(serverBoot = ev)
-                    }
-                }
-            }
-            is ServerEvent.LogsRequest -> {
-                // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）
-                val entries = ConnLog.snapshot().takeLast(500).map {
-                    LogEntryWire(ts = it.ts, level = it.level.label, tag = it.tag, message = it.message)
-                }
-                ConnLog.info("LOG", "桌面端请求手机日志 → 回传 ${entries.size} 条 (request=${ev.requestId.take(8)})")
-                scope.launch {
-                    if (!connection.send(ClientCommand.UploadLogs(ev.requestId, entries))) {
-                        ConnLog.warn("LOG", "手机日志回传失败（连接已断开）")
-                    }
-                }
-            }
-            is ServerEvent.AgentStatus -> {
-                _session.update { s ->
-                    s.copy(
-                        sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
-                        agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
-                        // 轮次生命周期由服务端 turn_status 事件管理（本地不再推断轮次边界）
-                    )
-                }
-                scheduleSessionCacheSave()
-            }
-            is ServerEvent.SessionTitle -> {
-                _session.update { s ->
-                    s.copy(
-                        sessions = s.sessions.map {
-                            if (it.id == ev.sessionId) it.copy(name = ev.title) else it
-                        },
-                    )
-                }
-                scheduleSessionCacheSave()
-            }
-            is ServerEvent.SessionUpsert -> {
-                // 列表增量：同 id 替换行，再按 updatedAt 倒序归位
-                _session.update { s ->
-                    val rows = (s.sessions.filterNot { it.id == ev.session.id } + ev.session)
-                        .sortedByDescending { it.updatedAt }
-                    s.copy(sessions = rows)
-                }
-                scheduleSessionCacheSave()
-            }
-            is ServerEvent.ApprovalRequest -> _session.update { s ->
-                val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
-                ConnLog.info(
-                    "APPROVAL",
-                    "收到审批 approval=${ev.approval.approvalId.take(8)} tool=${ev.approval.toolName} " +
-                        "rpc=${ev.approval.rpcId?.take(8) ?: "bridge-held"}${if (known) "（重复，忽略）" else ""}",
-                )
-                if (!known) platformVibrateApproval()
-                s.copy(approvals = if (known) s.approvals else s.approvals + ev.approval)
-            }
-            is ServerEvent.ApprovalResolved -> _session.update { s ->
-                ConnLog.info("APPROVAL", "审批已解决 approval=${ev.approvalId.take(8)} outcome=${ev.outcome}")
+        }
+    }
+
+    private fun handleHistory(ev: ServerEvent.History) {
+        val wasLoadingOlder = _session.value.loadingOlder && ev.sessionId == _session.value.currentSessionId
+        _session.update { s ->
+            if (ev.sessionId != s.currentSessionId) {
+                s
+            } else if (s.loadingOlder) {
+                // 翻页响应：往前插入更早的一页（按 seq+type 去重——
+                // think/正文同 seq，纯 seq 去重会丢行）
+                val merged = (ev.events + s.events).distinctBy { "${it.seq}-${it.type}" }
                 s.copy(
-                    approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
-                    decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+                    events = merged,
+                    hasMore = ev.hasMore,
+                    historyTotal = ev.total,
+                    loadingOlder = false,
                 )
-            }
-            is ServerEvent.ApprovalSettledLegacy -> _session.update { s ->
-                ConnLog.info("APPROVAL", "审批已解决（旧版事件）approval=${ev.approvalId.take(8)}")
+            } else {
+                // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）。
+                // 轮次起点优先用服务端 turnSince（中途切入也能显示标签），回退模型等待起点。
                 s.copy(
-                    approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
-                    decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+                    events = ev.events.bounded(),
+                    queueItems = ev.queue,
+                    hasMore = ev.hasMore,
+                    historyTotal = ev.total,
+                    modelWaitingSince = ev.modelWaitingSince,
+                    divingTurnStart = ev.turnSince ?: ev.modelWaitingSince,
+                    goal = ev.goal,
+                    todos = ev.todos ?: emptyList(),
+                    commands = ev.commands,
                 )
             }
-            is ServerEvent.QuestionRequest -> _session.update { s ->
-                val known = s.questions.any { it.rpcId == ev.question.rpcId }
-                ConnLog.info(
-                    "QUESTION",
-                    "收到提问 rpc=${ev.question.rpcId.take(8)} questions=${ev.question.questions.size}${if (known) "（重复，忽略）" else ""}",
-                )
-                if (!known) platformVibrateApproval()
-                s.copy(questions = if (known) s.questions else s.questions + ev.question)
+        }
+        if (ev.sessionId == _session.value.currentSessionId) {
+            if (wasLoadingOlder) {
+                val start = olderLoadStartAt.remove(ev.sessionId)
+                val elapsed = start?.let { nowMillis() - it }
+                ConnLog.info("CMD", "翻页返回 sessionId=${ev.sessionId} 新增=${ev.events.size} 条 hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
+            } else {
+                val start = sessionOpenStartAt.remove(ev.sessionId)
+                val elapsed = start?.let { nowMillis() - it }
+                ConnLog.info("CMD", "会话历史到达 sessionId=${ev.sessionId} 条数=${ev.events.size} hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
             }
-            is ServerEvent.QuestionResolved -> _session.update { s ->
-                ConnLog.info("QUESTION", "提问已解决 rpc=${ev.rpcId.take(8)} outcome=${ev.outcome}")
+        }
+        lastCacheSaveAt = 0
+        scope.launch { eventCache.save(eventCacheKey(ev.sessionId), _session.value.events.takeLast(MAX_EVENTS)) }
+        ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史窗口 ${_session.value.events.size} 条（排队 ${ev.queue.size}）")
+    }
+
+    private fun handleEvent(ev: ServerEvent.Event) {
+        _session.update { s ->
+            if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
+        }
+        if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
+    }
+
+    private fun handleSessionQueue(ev: ServerEvent.SessionQueue) {
+        _session.update { s ->
+            if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
+        }
+    }
+
+    private fun handleModelWaiting(ev: ServerEvent.ModelWaiting) {
+        _session.update { st ->
+            // Deep Diving 本轮计时：首轮模型请求记录本轮起点，后续请求沿用（不重置）
+            if (ev.sessionId == st.currentSessionId) {
+                st.copy(
+                    modelWaitingSince = ev.startedAt,
+                    divingTurnStart = st.divingTurnStart ?: ev.startedAt,
+                )
+            } else {
+                st
+            }
+        }
+    }
+
+    private fun handleModelWaitingDone(ev: ServerEvent.ModelWaitingDone) {
+        _session.update { st ->
+            // 只清「等待模型」指示；Deep Diving 时钟是轮次级状态（锚定轮次起点），
+            // 一轮中可能有多次模型调用，每次完成都会广播一次 model_waiting_done——
+            // 若在这里清 deepDivingElapsed，时钟会在下一个 tick（≤1s）前短暂消失，
+            // 正是用户看到的「计时器闪烁」。轮次级时钟只在 turn_status(closed) 清除。
+            if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
+                st.copy(modelWaitingSince = null)
+            } else {
+                st
+            }
+        }
+    }
+
+    private fun handleDeepDivingTick(ev: ServerEvent.DeepDivingTick) {
+        _session.update { st ->
+            // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
+            if (ev.sessionId == st.currentSessionId) st.copy(deepDivingElapsed = ev.elapsedSeconds) else st
+        }
+    }
+
+    private fun handleTurnStatus(ev: ServerEvent.TurnStatus) {
+        _session.update { st ->
+            // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
+            // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
+            if (ev.sessionId != st.currentSessionId) {
+                st
+            } else if (ev.open) {
+                st.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
+            } else {
+                st.copy(divingTurnStart = null, deepDivingElapsed = null)
+            }
+        }
+    }
+
+    private fun handleThinkDelta(ev: ServerEvent.ThinkDelta) {
+        _session.update { st ->
+            if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
+        }
+    }
+
+    private fun handleDiagnostics(ev: ServerEvent.Diagnostics) {
+        _session.update { st ->
+            // 会话隔离：诊断只归属触发它的会话；文件级替换（空集合 = 该文件已无问题）
+            if (ev.sessionId != st.currentSessionId) {
+                st
+            } else {
+                val rest = st.diagnostics.filterNot { it.path == ev.path }
+                st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
+            }
+        }
+    }
+
+    private fun handleGoalUpdate(ev: ServerEvent.GoalUpdate) {
+        _session.update { st ->
+            // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
+            if (ev.sessionId == st.currentSessionId) st.copy(goal = ev.goal) else st
+        }
+    }
+
+    private fun handleTodosUpdate(ev: ServerEvent.TodosUpdate) {
+        _session.update { st ->
+            // 会话隔离：任务列表只归属对应会话（每会话一份）
+            if (ev.sessionId == st.currentSessionId) st.copy(todos = ev.todos) else st
+        }
+    }
+
+    private fun handleCommandsUpdate(ev: ServerEvent.CommandsUpdate) {
+        _session.update { st ->
+            // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
+            if (ev.sessionId == st.currentSessionId) st.copy(commands = ev.commands) else st
+        }
+    }
+
+    private fun handleDebugState(ev: ServerEvent.DebugState) {
+        _session.update { st ->
+            // 会话隔离；离开 paused 时清空变量缓存（objectId 已失效）
+            if (ev.sessionId != st.currentSessionId) {
+                st
+            } else {
+                st.copy(
+                    debug = ev.debug,
+                    debugVars = if (ev.debug.state == "paused") st.debugVars else emptyMap(),
+                )
+            }
+        }
+    }
+
+    private fun handleDebugOutput(ev: ServerEvent.DebugOutput) {
+        _session.update { st ->
+            if (ev.sessionId == st.currentSessionId) {
+                st.copy(debugOutput = (st.debugOutput + ev.line).takeLast(200))
+            } else {
+                st
+            }
+        }
+    }
+
+    private fun handleDebugVariables(ev: ServerEvent.DebugVariables) {
+        _session.update { st ->
+            if (ev.sessionId == st.currentSessionId) {
+                st.copy(debugVars = st.debugVars + (ev.variablesReference to ev.variables))
+            } else {
+                st
+            }
+        }
+    }
+
+    private fun handleServerBoot(ev: ServerEvent.ServerBoot) {
+        // 「一个版本提示一次」：本地已读版本与服务端版本一致 → 不弹（保持隐藏）；
+        // 版本变化（服务端升级）→ 重新展示。按服务端标识 key 隔离，不同电脑互不吞提示。
+        val device = _session.value.connectedDevice
+        val key = device?.let { bootNoticeKey(it) } ?: "unknown"
+        scope.launch {
+            val seen = bootNoticeCache.load(key)
+            _session.update { st ->
+                if (seen == ev.version) st.copy(serverBoot = null) else st.copy(serverBoot = ev)
+            }
+        }
+    }
+
+    private fun handleLogsRequest(ev: ServerEvent.LogsRequest) {
+        // 桌面端要手机端日志：回传本地 ConnLog 环形缓冲（最近 500 条）
+        val entries = ConnLog.snapshot().takeLast(500).map {
+            LogEntryWire(ts = it.ts, level = it.level.label, tag = it.tag, message = it.message)
+        }
+        ConnLog.info("LOG", "桌面端请求手机日志 → 回传 ${entries.size} 条 (request=${ev.requestId.take(8)})")
+        scope.launch {
+            if (!connection.send(ClientCommand.UploadLogs(ev.requestId, entries))) {
+                ConnLog.warn("LOG", "手机日志回传失败（连接已断开）")
+            }
+        }
+    }
+
+    private fun handleAgentStatus(ev: ServerEvent.AgentStatus) {
+        _session.update { s ->
+            s.copy(
+                sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
+                agents = s.agents.map { if (it.sessionId == ev.sessionId) it.copy(status = ev.status) else it },
+                // 轮次生命周期由服务端 turn_status 事件管理（本地不再推断轮次边界）
+            )
+        }
+        scheduleSessionCacheSave()
+    }
+
+    private fun handleSessionTitle(ev: ServerEvent.SessionTitle) {
+        _session.update { s ->
+            s.copy(
+                sessions = s.sessions.map {
+                    if (it.id == ev.sessionId) it.copy(name = ev.title) else it
+                },
+            )
+        }
+        scheduleSessionCacheSave()
+    }
+
+    private fun handleSessionUpsert(ev: ServerEvent.SessionUpsert) {
+        // 列表增量：同 id 替换行，再按 updatedAt 倒序归位
+        _session.update { s ->
+            val rows = (s.sessions.filterNot { it.id == ev.session.id } + ev.session)
+                .sortedByDescending { it.updatedAt }
+            s.copy(sessions = rows)
+        }
+        scheduleSessionCacheSave()
+    }
+
+    private fun handleApprovalRequest(ev: ServerEvent.ApprovalRequest) {
+        _session.update { s ->
+            val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
+            ConnLog.info(
+                "APPROVAL",
+                "收到审批 approval=${ev.approval.approvalId.take(8)} tool=${ev.approval.toolName} " +
+                    "rpc=${ev.approval.rpcId?.take(8) ?: "bridge-held"}${if (known) "（重复，忽略）" else ""}",
+            )
+            if (!known) platformVibrateApproval()
+            s.copy(approvals = if (known) s.approvals else s.approvals + ev.approval)
+        }
+    }
+
+    private fun handleApprovalResolved(ev: ServerEvent.ApprovalResolved) {
+        _session.update { s ->
+            ConnLog.info("APPROVAL", "审批已解决 approval=${ev.approvalId.take(8)} outcome=${ev.outcome}")
+            s.copy(
+                approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
+                decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+            )
+        }
+    }
+
+    private fun handleApprovalSettledLegacy(ev: ServerEvent.ApprovalSettledLegacy) {
+        _session.update { s ->
+            ConnLog.info("APPROVAL", "审批已解决（旧版事件）approval=${ev.approvalId.take(8)}")
+            s.copy(
+                approvals = s.approvals.filterNot { a -> a.approvalId == ev.approvalId },
+                decidingApprovalId = s.decidingApprovalId.takeIf { it != ev.approvalId },
+            )
+        }
+    }
+
+    private fun handleQuestionRequest(ev: ServerEvent.QuestionRequest) {
+        _session.update { s ->
+            val known = s.questions.any { it.rpcId == ev.question.rpcId }
+            ConnLog.info(
+                "QUESTION",
+                "收到提问 rpc=${ev.question.rpcId.take(8)} questions=${ev.question.questions.size}${if (known) "（重复，忽略）" else ""}",
+            )
+            if (!known) platformVibrateApproval()
+            s.copy(questions = if (known) s.questions else s.questions + ev.question)
+        }
+    }
+
+    private fun handleQuestionResolved(ev: ServerEvent.QuestionResolved) {
+        _session.update { s ->
+            ConnLog.info("QUESTION", "提问已解决 rpc=${ev.rpcId.take(8)} outcome=${ev.outcome}")
+            s.copy(
+                questions = s.questions.filterNot { q -> q.rpcId == ev.rpcId },
+                decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != ev.rpcId },
+            )
+        }
+    }
+
+    private fun handleDeviceRegistered(ev: ServerEvent.DeviceRegistered) {
+        val url = connection.currentUrl ?: return
+        val ep = Pairing.endpointOf(url)
+        val now = nowMillis()
+        val existing = _session.value.connectedDevice
+        val device = StoredDevice(
+            deviceId = ev.deviceId,
+            name = existing?.name?.takeIf { it.isNotBlank() } ?: ev.hostname.ifBlank { ep.host },
+            host = ep.host,
+            port = ep.port,
+            token = ev.deviceToken,
+            serverId = ev.serverId,
+            hostname = ev.hostname,
+            createdAt = existing?.createdAt ?: now,
+            lastSeenAt = now,
+            endpoints = mergeEndpoints(ep, ev.endpoints),
+        )
+        _session.update { it.copy(connectedDevice = device) }
+        val key = deviceKey(device)
+        // 注册成功拿到长期 token：此后断线都可自动重连（含扫码配对路径）
+        reconnectProvider = {
+            val stored = devices.state.value.devices.firstOrNull { deviceKey(it) == key }
+            if (stored == null) null
+            else {
+                val eps = stored.endpoints.ifEmpty { listOf(StoredEndpoint(stored.host, stored.port)) }
+                eps.map { Pairing.buildUrl(it.host, it.port) to stored.token }
+            }
+        }
+        scope.launch { devices.upsert(device) }
+    }
+
+    private fun handleDeviceRevoked(ev: ServerEvent.DeviceRevoked) {
+        scope.launch { devices.removeByDeviceId(ev.deviceId) }
+    }
+
+    private fun handleError(ev: ServerEvent.Error) {
+        ConnLog.warn("EVENT", "服务端错误 ${ev.code}: ${ev.message}")
+        pushBusinessError("${ev.code}: ${ev.message}")
+        // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
+        if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {
+            val gone = Regex("approval not found: (\\S+)").find(ev.message)?.groupValues?.get(1)
+            _session.update { s ->
                 s.copy(
-                    questions = s.questions.filterNot { q -> q.rpcId == ev.rpcId },
-                    decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != ev.rpcId },
+                    approvals = s.approvals.filterNot { a -> a.approvalId == gone },
+                    decidingApprovalId = s.decidingApprovalId.takeIf { it != gone },
                 )
             }
-            is ServerEvent.DeviceRegistered -> {
-                val url = connection.currentUrl ?: return
-                val ep = Pairing.endpointOf(url)
-                val now = nowMillis()
-                val existing = _session.value.connectedDevice
-                val device = StoredDevice(
-                    deviceId = ev.deviceId,
-                    name = existing?.name?.takeIf { it.isNotBlank() } ?: ev.hostname.ifBlank { ep.host },
-                    host = ep.host,
-                    port = ep.port,
-                    token = ev.deviceToken,
-                    serverId = ev.serverId,
-                    hostname = ev.hostname,
-                    createdAt = existing?.createdAt ?: now,
-                    lastSeenAt = now,
-                    endpoints = mergeEndpoints(ep, ev.endpoints),
+        }
+        // 提问已被其他终端回答或回答被拒：本地同步清理
+        if (ev.code == "not_found" && ev.message.startsWith("question ")) {
+            val gone = Regex("question (?:not pending|answer rejected): (\\S+)").find(ev.message)?.groupValues?.get(1)
+            _session.update { s ->
+                s.copy(
+                    questions = s.questions.filterNot { q -> q.rpcId == gone },
+                    decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != gone },
                 )
-                _session.update { it.copy(connectedDevice = device) }
-                val key = deviceKey(device)
-                // 注册成功拿到长期 token：此后断线都可自动重连（含扫码配对路径）
-                reconnectProvider = {
-                    val stored = devices.state.value.devices.firstOrNull { deviceKey(it) == key }
-                    if (stored == null) null
-                    else {
-                        val eps = stored.endpoints.ifEmpty { listOf(StoredEndpoint(stored.host, stored.port)) }
-                        eps.map { Pairing.buildUrl(it.host, it.port) to stored.token }
-                    }
-                }
-                scope.launch { devices.upsert(device) }
             }
-            is ServerEvent.DeviceRevoked -> {
-                scope.launch { devices.removeByDeviceId(ev.deviceId) }
-            }
-            is ServerEvent.Error -> {
-                ConnLog.warn("EVENT", "服务端错误 ${ev.code}: ${ev.message}")
-                pushBusinessError("${ev.code}: ${ev.message}")
-                // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
-                if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {
-                    val gone = Regex("approval not found: (\\S+)").find(ev.message)?.groupValues?.get(1)
-                    _session.update { s ->
-                        s.copy(
-                            approvals = s.approvals.filterNot { a -> a.approvalId == gone },
-                            decidingApprovalId = s.decidingApprovalId.takeIf { it != gone },
-                        )
-                    }
-                }
-                // 提问已被其他终端回答或回答被拒：本地同步清理
-                if (ev.code == "not_found" && ev.message.startsWith("question ")) {
-                    val gone = Regex("question (?:not pending|answer rejected): (\\S+)").find(ev.message)?.groupValues?.get(1)
-                    _session.update { s ->
-                        s.copy(
-                            questions = s.questions.filterNot { q -> q.rpcId == gone },
-                            decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != gone },
-                        )
-                    }
-                }
-                // 鉴权类错误重连无意义（token 失效/被撤销），熔断重连循环
-                if (ev.code.lowercase() in AUTH_FATAL_CODES) {
-                    reconnectProvider = null
-                }
-            }
+        }
+        // 鉴权类错误重连无意义（token 失效/被撤销），熔断重连循环
+        if (ev.code.lowercase() in AUTH_FATAL_CODES) {
+            reconnectProvider = null
         }
     }
 }
