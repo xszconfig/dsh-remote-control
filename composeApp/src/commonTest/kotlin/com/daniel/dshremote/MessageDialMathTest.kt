@@ -113,17 +113,19 @@ class MessageDialMathTest {
 
     @Test
     fun stepResult_jumpToAdjacent() {
-        // 从中间(下标1)逆时针一格 → 更老的 seq10
-        assertEquals(DialStepResult.Jump(30, 10), stepResult(refs3, 1, -1, hasMore = false))
-        // 从中间顺时针一格 → 更新的 seq30
-        assertEquals(DialStepResult.Jump(10, 30), stepResult(refs3, 1, 1, hasMore = false))
+        // 从中间(下标1)顺时针一格(delta=+1) → 更老的 seq10
+        assertEquals(DialStepResult.Jump(30, 10), stepResult(refs3, 1, 1, hasMore = false))
+        // 从中间逆时针一格(delta=-1) → 更新的 seq30
+        assertEquals(DialStepResult.Jump(10, 30), stepResult(refs3, 1, -1, hasMore = false))
     }
 
     @Test
     fun stepResult_boundaryAndPaging() {
-        assertEquals(DialStepResult.AtOlderBoundary, stepResult(refs3, 0, -1, hasMore = false))
-        assertEquals(DialStepResult.NeedOlderPage, stepResult(refs3, 0, -1, hasMore = true))
-        assertEquals(DialStepResult.AtNewerBoundary, stepResult(refs3, 2, 1, hasMore = true))
+        // delta=+1(顺时针)=更老：下标 0 再往更老 → 触底/需翻页
+        assertEquals(DialStepResult.AtOlderBoundary, stepResult(refs3, 0, 1, hasMore = false))
+        assertEquals(DialStepResult.NeedOlderPage, stepResult(refs3, 0, 1, hasMore = true))
+        // delta=-1(逆时针)=更新：下标 2 再往更新 → 触顶
+        assertEquals(DialStepResult.AtNewerBoundary, stepResult(refs3, 2, -1, hasMore = true))
     }
 
     @Test

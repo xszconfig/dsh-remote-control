@@ -59,7 +59,7 @@ private val DIAL_COLLAPSED_SURFACE_SIZE = 56.dp
  */
 class MessageDialState {
     var phase by mutableStateOf(DialPhase.Collapsed)
-    /** 扇面刻度累计旋转角（度）；正 = 顺时针 = 更新。graphicsLayer 读它，不触发重组。 */
+    /** 扇面刻度累计旋转角（度）；正 = 顺时针 = 更老。graphicsLayer 读它，不触发重组。 */
     var accumDeg by mutableFloatStateOf(0f)
     /** 当前锚定的用户消息 seq（跨投影重锚；null = 未选中）。 */
     var selectedSeq by mutableStateOf<Long?>(null)
@@ -383,7 +383,8 @@ private fun DialSurface(
                     // pivot = 左缘中点，随当前 size 现取现算（收起 56dp → 展开 128dp，均左缘对齐）。
                     // 角度符号推导：angleDeg = atan2(Δy, Δx)，屏幕坐标 y 向下，故 atan2 角度随触点
                     // 顺时针移动而增大（右 0°→下 +90°→左 ±180°→上 -90°），normalizeAngleDelta 正值=顺时针，
-                    // accumDeg 正=顺时针=更新。左/右缘镜像只改 pivot 位置、不改该符号。
+                    // accumDeg 正=顺时针。方向语义：顺时针=看更老（stepResult delta +1 走更老，refs 下标递减），
+                    // 逆时针=看更新。左/右缘镜像只改 pivot 位置、不改该符号。
                     // 注：收起态表面在 BottomStart、展开态在 CenterStart，按压直滑展开瞬间左缘中点的屏幕 y
                     // 有纵向跳变，属已知待真机验证项（方向/步进语义不受影响）。
                     fun pivot() = Offset(0f, size.height / 2f)

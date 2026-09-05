@@ -107,13 +107,13 @@ sealed interface DialStepResult {
  *
  * @param refs 用户消息（最老在前）。
  * @param selectedIndex 当前选中下标（<0 视为未初始化）。
- * @param delta 步进方向：+1 更新 / -1 更老。
+ * @param delta 步进方向：+1 更老（对应顺时针）/ -1 更新（对应逆时针）。
  * @param hasMore 服务端是否还有更早历史。
  */
 fun stepResult(refs: List<UserMsgRef>, selectedIndex: Int, delta: Int, hasMore: Boolean): DialStepResult {
     val n = refs.size
     if (n == 0) return if (hasMore) DialStepResult.NeedOlderPage else DialStepResult.AtOlderBoundary
-    val target = selectedIndex + delta
+    val target = selectedIndex - delta
     return when {
         target < 0 -> if (hasMore) DialStepResult.NeedOlderPage else DialStepResult.AtOlderBoundary
         target >= n -> DialStepResult.AtNewerBoundary
