@@ -113,10 +113,6 @@ fun MessageDial(
     val dial = remember(state.currentSessionId) { MessageDialState() }
     val hasLiveThink = state.liveThink != null
     val refs = remember(state.events, hasLiveThink) { userMessageRefs(state.events, hasLiveThink) }
-    // 手势 pointerInput(Unit) 不随重组重启：用 rememberUpdatedState 让 onSteps 读到最新 refs/state，
-    // 否则翻页完成（events 变化）后手指仍按住继续转时，会用旧 refs 误判边界。
-    val currentRefs by rememberUpdatedState(refs)
-    val currentState by rememberUpdatedState(state)
 
     // 完全没有用户消息、也没有更早历史 → 不渲染。
     if (refs.isEmpty() && !state.hasMore) return
@@ -170,6 +166,33 @@ fun MessageDial(
             dial.phase = if (dial.fingerDown) DialPhase.Rotating else DialPhase.Expanded
         }
     }
+
+    DialOverlay(
+        dial = dial,
+        refs = refs,
+        state = state,
+        listState = listState,
+        scope = scope,
+        onLoadOlder = onLoadOlder,
+        modifier = modifier,
+    )
+}
+
+/** 转盘交互面：展开 scrim + DialSurface + 狩猎进度指示，统一挂在一个 Box 里。 */
+@Composable
+private fun DialOverlay(
+    dial: MessageDialState,
+    refs: List<UserMsgRef>,
+    state: SessionUiState,
+    listState: LazyListState,
+    scope: CoroutineScope,
+    onLoadOlder: () -> Unit,
+    modifier: Modifier,
+) {
+    // 手势 pointerInput(Unit) 不随重组重启：用 rememberUpdatedState 让 onSteps 读到最新 refs/state，
+    // 否则翻页完成（events 变化）后手指仍按住继续转时，会用旧 refs 误判边界。
+    val currentRefs by rememberUpdatedState(refs)
+    val currentState by rememberUpdatedState(state)
 
     Box(modifier) {
         // 展开时全屏透明 scrim：点外部收起；down 命中 scrim 后底层列表收不到拖拽 → 不误触滚动。
