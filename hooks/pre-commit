@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# pre-commit hook —— P0 lint 闸门（dsh-remote-control / App）
+#
+# 每次 commit 前强制跑 P0 lint（超大函数/类/超长参数列表等高风险规则）。
+# P0 未清零（lint.sh p0 退出码非 0）即禁止 commit。
+#
+# 仅在极特殊场景（如紧急热修复、且违规已单独登记跟踪）允许跳过：
+#   git commit --no-verify
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "[pre-commit] 不在 git 仓库内，跳过 P0 闸门" >&2
+  exit 0
+fi
+
+if [ ! -x "$REPO_ROOT/scripts/lint.sh" ]; then
+  echo "[pre-commit] 未找到 scripts/lint.sh，跳过 P0 闸门（不拦截）" >&2
+  exit 0
+fi
+
+echo "[pre-commit] 运行 P0 lint 闸门（scripts/lint.sh p0）..."
+rc=0
+"$REPO_ROOT/scripts/lint.sh" p0 || rc=$?
+
+if [ "$rc" -ne 0 ]; then
+  echo ""
+  echo "⛔ [pre-commit] P0 lint 未通过，本次 commit 已被拦截。" >&2
+  echo "   请先修复上面的 P0 问题（超大函数/类/超长参数列表等高风险项）。" >&2
+  echo "   仅在极特殊场景允许跳过：git commit --no-verify" >&2
+  exit "$rc"
+fi
+
+echo "[pre-commit] P0 lint 通过 ✓"
+exit 0

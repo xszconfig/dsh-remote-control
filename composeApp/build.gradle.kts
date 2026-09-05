@@ -1,3 +1,5 @@
+import io.gitlab.arturbosch.detekt.Detekt
+import org.gradle.api.tasks.TaskProvider
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -7,6 +9,7 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinxSerialization)
+    alias(libs.plugins.detekt)
 }
 
 kotlin {
@@ -81,4 +84,59 @@ android {
 
 dependencies {
     debugImplementation(compose.uiTooling)
+}
+
+// ── lint（detekt）────────────────────────────────────────────────────────────
+// 全量 detekt 与 P0 闸门都只做「显式任务」，不接入 check 生命周期：
+// 存量代码存在大量风格级告警，接入 check 会阻塞日常构建（详见 AGENTS.md）。
+// P0 阈值起步宽松（LongMethod 200 / LargeClass 1200 / LongParameterList 8/10），
+// 收紧路径见 docs/lint-rules.md。
+detekt {
+    config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    buildUponDefaultConfig = false
+    source.setFrom(fileTree("src") { include("**/*.kt") })
+}
+
+// 全量 detekt 输出 txt 报告（逐条问题），供 scripts/lint.sh 打印
+tasks.named<Detekt>("detekt") {
+    reports {
+        txt.required.set(true)
+        txt.outputLocation.set(rootProject.layout.buildDirectory.file("reports/detekt/detekt.txt"))
+        xml.required.set(false)
+        html.required.set(false)
+        sarif.required.set(false)
+        md.required.set(false)
+    }
+}
+
+// P0 闸门任务：只跑超大函数/类/参数列表等高风险规则，任何命中即失败（exit != 0）
+tasks.register<Detekt>("detektP0") {
+    description = "只跑 P0 高风险规则（LongMethod/LargeClass/LongParameterList），命中即失败"
+    group = "verification"
+    config.setFrom(rootProject.files("config/detekt/detekt-p0.yml"))
+    buildUponDefaultConfig = false
+    setSource(fileTree("src") { include("**/*.kt") })
+    reports {
+        txt.required.set(true)
+        txt.outputLocation.set(rootProject.layout.buildDirectory.file("reports/detekt/detektP0.txt"))
+        xml.required.set(false)
+        html.required.set(false)
+        sarif.required.set(false)
+        md.required.set(false)
+    }
+}
+
+// detekt 全量不进 check 生命周期：避免存量风格告警阻塞构建；P0 闸门由 pre-commit hook 强制
+tasks.named("check").configure {
+    setDependsOn(
+        dependsOn.filterNot { dep ->
+            val name = when (dep) {
+                is TaskProvider<*> -> dep.name
+                is org.gradle.api.Task -> dep.name
+                is String -> dep.substringAfterLast(':')
+                else -> ""
+            }
+            name == "detekt"
+        }
+    )
 }

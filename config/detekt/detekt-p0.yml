@@ -1,0 +1,49 @@
+# P0 规则子集配置（起步版）—— 只启用「超大函数/类/超长参数列表」三项高风险规则。
+#
+# 设计约束：
+#   1. buildUponDefaultConfig = false：本文件即完整配置，不叠加官方默认配置，
+#      因此未在此声明的规则一律 inactive（detekt 规则默认 active=false）。
+#   2. 阈值刻意放宽（存量代码告警不阻塞 commit）：
+#        - LongMethod     200 行（目标收紧到 60）
+#        - LargeClass     1200 行（目标收紧到 600）
+#        - LongParameterList  函数 8 / 构造器 10（目标收紧到 6 / 7）
+#      收紧路径与动机见 docs/lint-rules.md。
+#   3. 任何 P0 命中即导致 detekt 退出码非 0（build.maxIssues: 0），pre-commit 据此拦截。
+
+build:
+  maxIssues: 0
+
+config:
+  validation: true
+
+console-reports:
+  active: true
+  exclude:
+    - 'ProjectStatisticsReport'
+    - 'ComplexityReport'
+    - 'NotificationReport'
+    - 'FileBasedFindingsReport'
+    - 'LiteFindingsReport'
+
+output-reports:
+  active: true
+  exclude:
+    - 'XmlOutputReport'
+    - 'HtmlOutputReport'
+    - 'MdOutputReport'
+    - 'SarifOutputReport'
+
+complexity:
+  LargeClass:
+    active: true
+    threshold: 1200
+  LongMethod:
+    active: true
+    threshold: 200
+  LongParameterList:
+    active: true
+    functionThreshold: 10
+    constructorThreshold: 10
+    ignoreDefaultParameters: false
+    ignoreDataClasses: true
+    ignoreAnnotatedParameter: []

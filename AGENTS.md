@@ -20,3 +20,32 @@
 - 调试后端：当前用 **CDP（Node Inspector）直连**，零依赖但仅 Node；`DebugManager` 回调接口已预留 DAP 平替 seam。**未来若扩语言（Python/Go/Rust）必须先问用户**再实施 DAP 后端。
 - 语言服务器：TS/JS/Python/Rust/C/C++ + 官方 JetBrains kotlin-lsp（pull 诊断 + 项目导入）。
 - 自动续跑：持续重试 + 指纹幂等 + work.json sessionId 归属（根治版）。
+
+## 代码质量闸门（lint）
+
+**强制流程：每次代码变更完成 → lint P0 → 清零 → commit；pre-commit hook 兜底拦截。**
+
+### 工具与用法
+- Kotlin lint 用 **detekt**（gradle 插件 `io.gitlab.arturbosch.detekt` 1.23.8）。
+  - 全量：`./gradlew :composeApp:detekt`（或 `scripts/lint.sh`）
+  - P0 闸门：`./gradlew :composeApp:detektP0`（或 `scripts/lint.sh p0`）
+- 配置：`config/detekt/detekt.yml`（全量）、`config/detekt/detekt-p0.yml`（P0 子集）。
+
+### P0 定义（高风险规则，命中必须清零才允许 commit）
+- `complexity/LongMethod`（超大函数，阈值 200 行）
+- `complexity/LargeClass`（类过大，阈值 1200 行）
+- `complexity/LongParameterList`（超长参数列表，函数 10 / 构造器 10）
+
+### 强制流程
+1. 代码变更完成后、commit 前，必跑 P0：`scripts/lint.sh p0`（agent 亦可用 `code-lint` skill 一键跑）。
+2. P0 命中 → **必须先修复清零**，才允许 commit。
+3. pre-commit hook 兜底：`git commit` 时自动跑 P0 闸门，未清零直接拦截。
+   - 仅极特殊场景允许 `git commit --no-verify` 跳过（须在 commit message 说明原因）。
+4. 全量 `detekt` 为建议项（存量风格告警不阻塞），但新增代码应尽量不引入新告警。
+
+### 规则积累
+- 新增/收紧规则与动机登记在 `docs/lint-rules.md`；阈值只收紧不放宽。
+- 收紧路径：拆分 `BridgeClient` 等大类、长函数 → 逐步把 P0 阈值降到 detekt 默认（LongMethod 60 / LargeClass 600 / LongParameterList 6/7）。
+
+### 安装 hook（首次 / 重新 clone 后）
+- 运行 `scripts/install-hooks.sh`（把 `hooks/pre-commit` 装进 `.git/hooks/`）。
