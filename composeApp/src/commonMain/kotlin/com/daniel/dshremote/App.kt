@@ -90,6 +90,7 @@ import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.QuestionAnswerItemWire
+import com.daniel.dshremote.protocol.QuestionItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
@@ -236,36 +237,7 @@ private fun LandingScreen(
         Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(20.dp))
-        if (onBack != null) {
-            // 设备页头部（连接态从侧边栏进入）
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("← 返回", fontWeight = FontWeight.SemiBold) }
-                Text("设备", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onOpenLogs) { Text("📋 日志") }
-            }
-        } else {
-            // 品牌头部
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
-                        .background(MaterialTheme.colorScheme.primary),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("dsh", fontWeight = FontWeight.Black, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("dsh Remote Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        "手机遥控桌面端 DeepSeek Harness",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(onClick = onOpenLogs) { Text("📋 日志") }
-            }
-        }
+        LandingHeader(onBack = onBack, onOpenLogs = onOpenLogs)
 
         // 连接错误提示
         if (conn.state == ConnectionState.Error) {
@@ -297,82 +269,25 @@ private fun LandingScreen(
         }
         Spacer(Modifier.height(8.dp))
 
-        // 设备列表
-        if (devicesState.devices.isEmpty()) {
-            Card(
-                Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("📱", fontSize = 28.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text("还没有连接过的设备", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "扫码或手动连接一次，之后就会出现在这里",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            val sorted = remember(devicesState.devices, devicesState.deviceStatuses) {
-                devicesState.devices.sortedWith(
-                    compareByDescending<StoredDevice> { statusOf(devicesState, it) == DeviceStatus.Online }
-                        .thenByDescending { it.lastSeenAt },
-                )
-            }
-            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(sorted, key = { deviceKey(it) }) { d ->
-                    DeviceCard(
-                        device = d,
-                        status = statusOf(devicesState, d),
-                        isCurrent = currentDeviceKey != null && deviceKey(d) == currentDeviceKey,
-                        onClick = { ConnLog.info("ACTION", "设备连接点击 ${d.name} (${d.host}:${d.port})"); client.connectDevice(d) },
-                        onForget = { forgetTarget = d },
-                    )
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-        }
+        DeviceListSection(
+            client = client,
+            devicesState = devicesState,
+            currentDeviceKey = currentDeviceKey,
+            onForget = { forgetTarget = it },
+            listModifier = Modifier.weight(1f).fillMaxWidth(),
+        )
 
         // 手动连接表单
         AnimatedVisibility(visible = showManual) {
-            Column(Modifier.padding(bottom = 8.dp)) {
-                OutlinedTextField(
-                    value = host, onValueChange = { host = it },
-                    label = { Text("Host") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row {
-                    OutlinedTextField(
-                        value = port, onValueChange = { port = it },
-                        label = { Text("Port") },
-                        modifier = Modifier.width(120.dp),
-                        shape = RoundedCornerShape(12.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedTextField(
-                        value = token, onValueChange = { token = it },
-                        label = { Text("Token（可选）") },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        ConnLog.info("ACTION", "手动连接点击 host=${host.trim()} port=${port.toIntOrNull() ?: 3080}")
-                        client.connectManual(host.trim(), port.toIntOrNull() ?: 3080, token.trim().ifBlank { null })
-                    },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text("连接", fontWeight = FontWeight.SemiBold)
-                }
-            }
+            ManualConnectForm(
+                client = client,
+                host = host,
+                port = port,
+                token = token,
+                onHostChange = { host = it },
+                onPortChange = { port = it },
+                onTokenChange = { token = it },
+            )
         }
 
         // 底部操作
@@ -404,6 +319,137 @@ private fun LandingScreen(
             },
             dismissButton = { TextButton(onClick = { forgetTarget = null }) { Text("取消") } },
         )
+    }
+}
+
+/** 落地页/设备页头部：连接态带「返回」，冷启动展示品牌头。 */
+@Composable
+private fun LandingHeader(onBack: (() -> Unit)?, onOpenLogs: () -> Unit) {
+    if (onBack != null) {
+        // 设备页头部（连接态从侧边栏进入）
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("← 返回", fontWeight = FontWeight.SemiBold) }
+            Text("设备", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenLogs) { Text("📋 日志") }
+        }
+    } else {
+        // 品牌头部
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("dsh", fontWeight = FontWeight.Black, fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("dsh Remote Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "手机遥控桌面端 DeepSeek Harness",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onOpenLogs) { Text("📋 日志") }
+        }
+    }
+}
+
+/** 设备列表：空态提示或已记录设备卡片（连接 / 标记当前 / 忘记）。 */
+@Composable
+private fun DeviceListSection(
+    client: BridgeClient,
+    devicesState: DevicesUiState,
+    currentDeviceKey: String?,
+    onForget: (StoredDevice) -> Unit,
+    listModifier: Modifier,
+) {
+    if (devicesState.devices.isEmpty()) {
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("📱", fontSize = 28.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("还没有连接过的设备", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "扫码或手动连接一次，之后就会出现在这里",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    } else {
+        val sorted = remember(devicesState.devices, devicesState.deviceStatuses) {
+            devicesState.devices.sortedWith(
+                compareByDescending<StoredDevice> { statusOf(devicesState, it) == DeviceStatus.Online }
+                    .thenByDescending { it.lastSeenAt },
+            )
+        }
+        LazyColumn(listModifier) {
+            items(sorted, key = { deviceKey(it) }) { d ->
+                DeviceCard(
+                    device = d,
+                    status = statusOf(devicesState, d),
+                    isCurrent = currentDeviceKey != null && deviceKey(d) == currentDeviceKey,
+                    onClick = { ConnLog.info("ACTION", "设备连接点击 ${d.name} (${d.host}:${d.port})"); client.connectDevice(d) },
+                    onForget = { onForget(d) },
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+/** 手动连接表单：Host / Port / Token + 连接按钮。 */
+@Composable
+private fun ManualConnectForm(
+    client: BridgeClient,
+    host: String,
+    port: String,
+    token: String,
+    onHostChange: (String) -> Unit,
+    onPortChange: (String) -> Unit,
+    onTokenChange: (String) -> Unit,
+) {
+    Column(Modifier.padding(bottom = 8.dp)) {
+        OutlinedTextField(
+            value = host, onValueChange = onHostChange,
+            label = { Text("Host") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Row {
+            OutlinedTextField(
+                value = port, onValueChange = onPortChange,
+                label = { Text("Port") },
+                modifier = Modifier.width(120.dp),
+                shape = RoundedCornerShape(12.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            OutlinedTextField(
+                value = token, onValueChange = onTokenChange,
+                label = { Text("Token（可选）") },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                ConnLog.info("ACTION", "手动连接点击 host=${host.trim()} port=${port.toIntOrNull() ?: 3080}")
+                client.connectManual(host.trim(), port.toIntOrNull() ?: 3080, token.trim().ifBlank { null })
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Text("连接", fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -1939,71 +1985,25 @@ private fun PausedDebugSection(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        // 调用栈（最多 6 帧）
-        if (paused.frames.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("调用栈", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            paused.frames.take(6).forEach { frame ->
-                val isSelected = frame.id == selectedFrame?.id
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            if (frame.id != selectedFrameId) {
-                                selectedFrameId = frame.id
-                                // 切换帧：自动拉取该帧每个 scope（跳过全局）的变量
-                                frame.scopes.filter { it.name != "全局" }.forEach { scope ->
-                                    client.sendDebugCommand(sessionId, "variables", scope.variablesReference)
-                                }
-                            }
-                        }
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        if (isSelected) "▸ " else "　",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "${frame.name} · ${frame.path.substringAfterLast('/')}:${frame.line}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-        // 变量：选中帧的 scopes（跳过全局，不展示不预拉）
-        val scopes = selectedFrame?.scopes?.filter { it.name != "全局" }.orEmpty()
-        if (scopes.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text("变量", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            scopes.forEach { scope ->
-                val loaded = debugVars.containsKey(scope.variablesReference)
-                Text(
-                    (if (loaded) "▾ " else "▸ ") + scope.name,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = AccentBlue,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { client.sendDebugCommand(sessionId, "variables", scope.variablesReference) }
-                        .padding(vertical = 4.dp),
-                )
-                if (loaded) {
-                    debugVars[scope.variablesReference].orEmpty().forEach { v ->
-                        VariableNode(
-                            v = v,
-                            depth = 0,
-                            vars = debugVars,
-                            onExpand = { ref -> client.sendDebugCommand(sessionId, "variables", ref) },
-                        )
+        DebugCallStack(
+            frames = paused.frames,
+            selectedFrame = selectedFrame,
+            onSelectFrame = { frame ->
+                if (frame.id != selectedFrameId) {
+                    selectedFrameId = frame.id
+                    // 切换帧：自动拉取该帧每个 scope（跳过全局）的变量
+                    frame.scopes.filter { it.name != "全局" }.forEach { scope ->
+                        client.sendDebugCommand(sessionId, "variables", scope.variablesReference)
                     }
                 }
-            }
-        }
+            },
+        )
+        DebugScopesVariables(
+            selectedFrame = selectedFrame,
+            debugVars = debugVars,
+            client = client,
+            sessionId = sessionId,
+        )
         // 操作按钮：继续 / 单步 / 跳出 / 停止
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2034,6 +2034,80 @@ private fun PausedDebugSection(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("停止调试", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/** 暂停态调用栈（最多 6 帧），点击帧切换并预拉变量。 */
+@Composable
+private fun DebugCallStack(
+    frames: List<ServerEvent.DebugFrameWire>,
+    selectedFrame: ServerEvent.DebugFrameWire?,
+    onSelectFrame: (ServerEvent.DebugFrameWire) -> Unit,
+) {
+    if (frames.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("调用栈", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        frames.take(6).forEach { frame ->
+            val isSelected = frame.id == selectedFrame?.id
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelectFrame(frame) }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (isSelected) "▸ " else "　",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "${frame.name} · ${frame.path.substringAfterLast('/')}:${frame.line}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSelected) AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** 暂停态变量：选中帧的 scopes（跳过全局），可展开变量节点。 */
+@Composable
+private fun DebugScopesVariables(
+    selectedFrame: ServerEvent.DebugFrameWire?,
+    debugVars: Map<String, List<ServerEvent.DebugVariableWire>>,
+    client: BridgeClient,
+    sessionId: String,
+) {
+    val scopes = selectedFrame?.scopes?.filter { it.name != "全局" }.orEmpty()
+    if (scopes.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("变量", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        scopes.forEach { scope ->
+            val loaded = debugVars.containsKey(scope.variablesReference)
+            Text(
+                (if (loaded) "▾ " else "▸ ") + scope.name,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = AccentBlue,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { client.sendDebugCommand(sessionId, "variables", scope.variablesReference) }
+                    .padding(vertical = 4.dp),
+            )
+            if (loaded) {
+                debugVars[scope.variablesReference].orEmpty().forEach { v ->
+                    VariableNode(
+                        v = v,
+                        depth = 0,
+                        vars = debugVars,
+                        onExpand = { ref -> client.sendDebugCommand(sessionId, "variables", ref) },
+                    )
+                }
+            }
         }
     }
 }
@@ -2693,123 +2767,142 @@ private fun ApprovalSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         scrimColor = Color.Black.copy(alpha = 0.72f),
-        dragHandle = {
-            // 警示条（镜像桌面端「等待审批」strip）
-            Row(
-                Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier.size(9.dp).clip(CircleShape).background(StatusAmber),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "等待审批",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = StatusAmber,
-                    modifier = Modifier.weight(1f),
-                )
-                if (queueCount > 1) {
-                    Text(
-                        "还有 ${queueCount - 1} 个待审批",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StatusAmber,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(StatusAmber.copy(alpha = 0.18f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
-                }
-            }
-        },
+        dragHandle = { ApprovalDragHandle(queueCount) },
     ) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp),
-        ) {
-            // 会话上下文（若可见）
-            if (!sessionTitle.isNullOrBlank()) {
-                Text(
-                    "来自会话「$sessionTitle」",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
-            }
-            // 主文案：reason 优先，否则桌面端同款模板（透传语义与桌面端一致）
+        ApprovalSheetContent(
+            approval = approval,
+            sessionTitle = sessionTitle,
+            deciding = deciding,
+            onDecide = onDecide,
+        )
+    }
+}
+
+/** 审批弹窗警示条（镜像桌面端「等待审批」strip）。 */
+@Composable
+private fun ApprovalDragHandle(queueCount: Int) {
+    Row(
+        Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(9.dp).clip(CircleShape).background(StatusAmber),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "等待审批",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = StatusAmber,
+            modifier = Modifier.weight(1f),
+        )
+        if (queueCount > 1) {
             Text(
-                approval.reason?.takeIf { it.isNotBlank() }
-                    ?: "工具 ${approval.toolName} 请求越权执行",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(10.dp))
-            // 工具名徽章
-            Text(
-                "🛠 ${approval.toolName}",
-                style = MaterialTheme.typography.labelMedium,
-                color = AccentBlue,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            )
-            // 透传的命令文本（关联工具调用时）
-            if (!approval.command.isNullOrBlank()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "请求执行的命令",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.35f))
-                        .padding(12.dp),
-                ) {
-                    Text(
-                        approval.command,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFFB8E6B8),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                    )
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            // 裁决按钮（镜像桌面端：拒绝 outline / 允许一次 primary）
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = { onDecide(ApprovalDecision.Rejected) },
-                    enabled = !deciding,
-                    modifier = Modifier.weight(1f).height(50.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) {
-                    Text(if (deciding) "处理中…" else "拒绝", fontWeight = FontWeight.SemiBold)
-                }
-                Button(
-                    onClick = { onDecide(ApprovalDecision.AllowedOnce) },
-                    enabled = !deciding,
-                    modifier = Modifier.weight(1f).height(50.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text(if (deciding) "处理中…" else "允许一次", fontWeight = FontWeight.SemiBold)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "此操作需你在手机上确认，桌面端将等待你的裁决",
+                "还有 ${queueCount - 1} 个待审批",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth(),
+                color = StatusAmber,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(StatusAmber.copy(alpha = 0.18f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
+    }
+}
+
+/** 审批弹窗正文：会话上下文 / 主文案 / 工具徽章 / 命令文本 / 裁决按钮。 */
+@Composable
+private fun ApprovalSheetContent(
+    approval: ApprovalRequestWire,
+    sessionTitle: String?,
+    deciding: Boolean,
+    onDecide: (ApprovalDecision) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp),
+    ) {
+        // 会话上下文（若可见）
+        if (!sessionTitle.isNullOrBlank()) {
+            Text(
+                "来自会话「$sessionTitle」",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+        // 主文案：reason 优先，否则桌面端同款模板（透传语义与桌面端一致）
+        Text(
+            approval.reason?.takeIf { it.isNotBlank() }
+                ?: "工具 ${approval.toolName} 请求越权执行",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(10.dp))
+        // 工具名徽章
+        Text(
+            "🛠 ${approval.toolName}",
+            style = MaterialTheme.typography.labelMedium,
+            color = AccentBlue,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+        // 透传的命令文本（关联工具调用时）
+        if (!approval.command.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "请求执行的命令",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .padding(12.dp),
+            ) {
+                Text(
+                    approval.command,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0xFFB8E6B8),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                )
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        // 裁决按钮（镜像桌面端：拒绝 outline / 允许一次 primary）
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(
+                onClick = { onDecide(ApprovalDecision.Rejected) },
+                enabled = !deciding,
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text(if (deciding) "处理中…" else "拒绝", fontWeight = FontWeight.SemiBold)
+            }
+            Button(
+                onClick = { onDecide(ApprovalDecision.AllowedOnce) },
+                enabled = !deciding,
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text(if (deciding) "处理中…" else "允许一次", fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "此操作需你在手机上确认，桌面端将等待你的裁决",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -2844,33 +2937,7 @@ private fun QuestionSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         scrimColor = Color.Black.copy(alpha = 0.72f),
-        dragHandle = {
-            Row(
-                Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("💬", fontSize = 14.sp)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "等待回答",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = StatusAmber,
-                    modifier = Modifier.weight(1f),
-                )
-                if (queueCount > 1) {
-                    Text(
-                        "还有 ${queueCount - 1} 个待回答",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StatusAmber,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(StatusAmber.copy(alpha = 0.18f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
-                }
-            }
-        },
+        dragHandle = { QuestionDragHandle(queueCount) },
     ) {
         Column(
             Modifier
@@ -2888,86 +2955,22 @@ private fun QuestionSheet(
                 Spacer(Modifier.height(10.dp))
             }
             question.questions.forEach { item ->
-                // 透传：header / question / detail / options（label + description）
-                if (!item.header.isNullOrBlank()) {
-                    Text(
-                        item.header,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = AccentBlue,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                }
-                Text(
-                    item.question,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                if (!item.detail.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        item.detail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                if (item.options.isNotEmpty()) {
-                    item.options.forEach { option ->
-                        val selected = selections[item.id].orEmpty().contains(option.label)
-                        val clickable = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                val cur = selections[item.id].orEmpty().toMutableSet()
-                                if (item.multiSelect) {
-                                    if (selected) cur.remove(option.label) else cur.add(option.label)
-                                } else {
-                                    cur.clear()
-                                    cur.add(option.label)
-                                }
-                                selections = selections + (item.id to cur)
-                            }
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                else MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                            .padding(12.dp)
-                        Row(clickable, verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                if (item.multiSelect) (if (selected) "☑" else "☐") else (if (selected) "◉" else "○"),
-                                fontSize = 15.sp,
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    option.label,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                )
-                                if (!option.description.isNullOrBlank()) {
-                                    Text(
-                                        option.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
+                QuestionItemView(
+                    item = item,
+                    selectedLabels = selections[item.id].orEmpty(),
+                    customText = customs[item.id].orEmpty(),
+                    onToggleOption = { label ->
+                        val cur = selections[item.id].orEmpty().toMutableSet()
+                        if (item.multiSelect) {
+                            if (label in cur) cur.remove(label) else cur.add(label)
+                        } else {
+                            cur.clear()
+                            cur.add(label)
                         }
-                        Spacer(Modifier.height(6.dp))
-                    }
-                } else {
-                    // 无选项 → 自由文本输入
-                    OutlinedTextField(
-                        value = customs[item.id].orEmpty(),
-                        onValueChange = { customs = customs + (item.id to it) },
-                        placeholder = { Text("输入你的回答…") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                    )
-                }
-                Spacer(Modifier.height(14.dp))
+                        selections = selections + (item.id to cur)
+                    },
+                    onCustomChange = { text -> customs = customs + (item.id to text) },
+                )
             }
             Button(
                 onClick = {
@@ -2996,6 +2999,117 @@ private fun QuestionSheet(
             )
         }
     }
+}
+
+/** 提问弹窗警示条（镜像审批「等待审批」strip）。 */
+@Composable
+private fun QuestionDragHandle(queueCount: Int) {
+    Row(
+        Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("💬", fontSize = 14.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "等待回答",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = StatusAmber,
+            modifier = Modifier.weight(1f),
+        )
+        if (queueCount > 1) {
+            Text(
+                "还有 ${queueCount - 1} 个待回答",
+                style = MaterialTheme.typography.labelSmall,
+                color = StatusAmber,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(StatusAmber.copy(alpha = 0.18f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+    }
+}
+
+/** 单个提问：header / question / detail / options（label + description）或自由文本输入。 */
+@Composable
+private fun QuestionItemView(
+    item: QuestionItemWire,
+    selectedLabels: Set<String>,
+    customText: String,
+    onToggleOption: (String) -> Unit,
+    onCustomChange: (String) -> Unit,
+) {
+    if (!item.header.isNullOrBlank()) {
+        Text(
+            item.header,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = AccentBlue,
+        )
+        Spacer(Modifier.height(6.dp))
+    }
+    Text(
+        item.question,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    if (!item.detail.isNullOrBlank()) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            item.detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    if (item.options.isNotEmpty()) {
+        item.options.forEach { option ->
+            val selected = selectedLabels.contains(option.label)
+            val clickable = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { onToggleOption(option.label) }
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                )
+                .padding(12.dp)
+            Row(clickable, verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (item.multiSelect) (if (selected) "☑" else "☐") else (if (selected) "◉" else "○"),
+                    fontSize = 15.sp,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        option.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    if (!option.description.isNullOrBlank()) {
+                        Text(
+                            option.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+    } else {
+        // 无选项 → 自由文本输入
+        OutlinedTextField(
+            value = customText,
+            onValueChange = onCustomChange,
+            placeholder = { Text("输入你的回答…") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+        )
+    }
+    Spacer(Modifier.height(14.dp))
 }
 
 // ================= 连接日志页（诊断基础组件） =================
@@ -3077,58 +3191,80 @@ private fun LogScreen(client: BridgeClient, onClose: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (tab == 0) {
-            if (shownLocal.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("暂无本地日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
-                    items(shownLocal.asReversed(), key = { "l${it.seq}" }) { e ->
-                        LogRow(
-                            time = formatClock(e.ts),
-                            level = e.level.label,
-                            levelColor = levelColor(e.level),
-                            tag = e.tag,
-                            message = e.message,
-                        )
+            LocalLogList(shownLocal)
+        } else {
+            ServerLogList(
+                shownServer = shownServer,
+                loadingServer = loadingServer,
+                lastRefresh = lastRefresh,
+                onLoadOnce = {
+                    loadingServer = true
+                    scope.launch {
+                        val t0 = nowMillis()
+                        serverLogs = client.loadServerLogs() ?: emptyList()
+                        loadingServer = false
+                        ConnLog.info("LOG", "已拉取服务端日志（${serverLogs.size} 条，耗时 ${nowMillis() - t0}ms）")
                     }
+                },
+            )
+        }
+    }
+}
+
+/** 本机日志列表（空态提示 / 逆序 LazyColumn）。 */
+@Composable
+private fun LocalLogList(shownLocal: List<ConnLogEntry>) {
+    if (shownLocal.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("暂无本地日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    } else {
+        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+            items(shownLocal.asReversed(), key = { "l${it.seq}" }) { e ->
+                LogRow(
+                    time = formatClock(e.ts),
+                    level = e.level.label,
+                    levelColor = levelColor(e.level),
+                    tag = e.tag,
+                    message = e.message,
+                )
+            }
+        }
+    }
+}
+
+/** 服务端日志列表（加载中 / 空态 / 逆序 LazyColumn）。 */
+@Composable
+private fun ServerLogList(
+    shownServer: List<ServerLogEntry>,
+    loadingServer: Boolean,
+    lastRefresh: Long,
+    onLoadOnce: () -> Unit,
+) {
+    if (loadingServer && shownServer.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(28.dp))
+        }
+    } else if (shownServer.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("暂无服务端日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (lastRefresh == 0L) {
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = onLoadOnce) { Text("拉取一次") }
                 }
             }
-        } else {
-            if (loadingServer && serverLogs.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(28.dp))
-                }
-            } else if (shownServer.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("暂无服务端日志", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (lastRefresh == 0L) {
-                            Spacer(Modifier.height(6.dp))
-                            TextButton(onClick = {
-                                loadingServer = true
-                                scope.launch {
-                                    val t0 = nowMillis()
-                                    serverLogs = client.loadServerLogs() ?: emptyList()
-                                    loadingServer = false
-                                    ConnLog.info("LOG", "已拉取服务端日志（${serverLogs.size} 条，耗时 ${nowMillis() - t0}ms）")
-                                }
-                            }) { Text("拉取一次") }
-                        }
-                    }
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
-                    items(shownServer.asReversed(), key = { "s${it.seq}" }) { e ->
-                        LogRow(
-                            time = formatClock(e.ts),
-                            level = e.level.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                            levelColor = levelColorOf(e.level),
-                            tag = e.tag,
-                            message = e.message,
-                        )
-                    }
-                }
+        }
+    } else {
+        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+            items(shownServer.asReversed(), key = { "s${it.seq}" }) { e ->
+                LogRow(
+                    time = formatClock(e.ts),
+                    level = e.level.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                    levelColor = levelColorOf(e.level),
+                    tag = e.tag,
+                    message = e.message,
+                )
             }
         }
     }
