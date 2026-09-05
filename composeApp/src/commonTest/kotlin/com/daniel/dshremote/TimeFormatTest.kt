@@ -35,22 +35,4 @@ class TimeFormatTest {
         assertEquals("03:00:00", formatClock(dstStart, TimeZone.of("America/New_York")))
         assertEquals("01:59:00", formatClock(dstStart - 60_000L, TimeZone.of("America/New_York")))
     }
-
-    @Test
-    fun relativeTime_buckets() {
-        val now = 1_800_000_000_000L
-        assertEquals("从未", relativeTime(0, now))
-        assertEquals("刚刚", relativeTime(now - 30_000, now))
-        assertEquals("刚刚", relativeTime(now + 60_000, now)) // 未来时间容忍为「刚刚」
-        assertEquals("5 分钟前", relativeTime(now - 5 * 60_000, now))
-        assertEquals("3 小时前", relativeTime(now - 3 * 3_600_000, now))
-        assertEquals("2 天前", relativeTime(now - 2 * 86_400_000, now))
-    }
-
-    @Test
-    fun relativeTime_overSevenDaysFallsBackToClock() {
-        val now = 1_800_000_000_000L
-        val old = now - 8 * 86_400_000L
-        assertEquals(formatClock(old, TimeZone.UTC), relativeTime(old, now, TimeZone.UTC))
-    }
 }

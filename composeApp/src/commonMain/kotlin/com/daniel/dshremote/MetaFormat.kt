@@ -1,12 +1,14 @@
 package com.daniel.dshremote
 
 import com.daniel.dshremote.protocol.SessionSummary
+import kotlinx.datetime.TimeZone
 
 /**
  * 子代理列表副标题的三段元信息格式化（纯函数，服务端投影值为唯一输入，客户端不做本地推算）。
  *
  * 格式约定（与 App 现有文案风格一致）：
- * - 最后消息时间：复用 [relativeTime] 的相对时间（"刚刚 / N 分钟前 / N 小时前 / N 天前"）；
+ * - 最后消息时间：复用 [formatTimestampCompact] 的紧凑 IM 时间规则
+ *   （今天 HH:mm / 刚刚 / 昨天 / 前天 / M月d日 / yyyy年M月d日）；
  * - 运行时长：紧凑形式 "45s / 12m / 2h / 2h 3m"（移动端小屏优先，不写 "2 小时 3 分"）；
  * - token 量：紧凑形式 "999 / 12.3k / 1.2M"（k/M 后缀，与 🤖N 等紧凑计数风格一致）。
  */
@@ -42,11 +44,12 @@ private fun compactToken(n: Long, div: Long, suffix: String): String {
  * 最后消息时间 / 总运行时长 / 总 token。缺失或为 0 的段跳过（旧版 bridge 无这些字段时优雅降级）。
  *
  * @param now 当前时间（由调用方传入，保证纯函数可测）。
+ * @param timeZone 时区（默认系统时区；测试传 TimeZone.UTC 保证确定性）。
  */
-fun subagentMetaSegments(s: SessionSummary, now: Long): List<String> {
+fun subagentMetaSegments(s: SessionSummary, now: Long, timeZone: TimeZone = TimeZone.currentSystemDefault()): List<String> {
     val out = mutableListOf<String>()
     val ts = s.lastMessageAt ?: s.updatedAt
-    if (ts > 0) out.add(relativeTime(ts, now))
+    if (ts > 0) out.add(formatTimestampCompact(ts, now, timeZone))
     s.runDurationMs?.takeIf { it > 0 }?.let { out.add(formatDuration(it)) }
     s.totalTokens?.takeIf { it > 0 }?.let { out.add(formatTokens(it)) }
     return out

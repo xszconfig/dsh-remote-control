@@ -439,7 +439,7 @@ private fun DeviceCard(
             Column(Modifier.weight(1f)) {
                 Text(device.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${device.host}:${device.port} · ${relativeTime(device.lastSeenAt)}",
+                    "${device.host}:${device.port} · ${formatTimestampCompact(device.lastSeenAt)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1060,7 +1060,7 @@ private fun SessionCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    relativeTime(s.updatedAt),
+                    formatTimestampCompact(s.updatedAt),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2151,13 +2151,13 @@ private fun Bubble(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (alignEnd) {
-                Text(formatClock(ts), style = MaterialTheme.typography.labelSmall, color = labelColor)
+                Text(formatTimestamp(ts), style = MaterialTheme.typography.labelSmall, color = labelColor)
                 Spacer(Modifier.width(6.dp))
                 Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = labelColor)
             } else {
                 Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = labelColor)
                 Spacer(Modifier.width(6.dp))
-                Text(formatClock(ts), style = MaterialTheme.typography.labelSmall, color = labelColor)
+                Text(formatTimestamp(ts), style = MaterialTheme.typography.labelSmall, color = labelColor)
             }
         }
         Spacer(Modifier.height(3.dp))
@@ -2306,7 +2306,7 @@ private fun ToolCallCard(e: EventProjection, isError: Boolean) {
                 // Description 与时间戳之间留出空隙（不再用 weight 挤到最右）
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    formatClock(e.timestamp),
+                    formatTimestamp(e.timestamp),
                     style = MaterialTheme.typography.labelSmall,
                     color = (if (isError) MaterialTheme.colorScheme.onErrorContainer
                     else MaterialTheme.colorScheme.onSecondaryContainer).copy(alpha = 0.7f),
@@ -2423,7 +2423,7 @@ private fun ThinkCard(e: EventProjection) {
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                formatClock(e.timestamp),
+                formatTimestamp(e.timestamp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
@@ -2467,7 +2467,7 @@ private fun ContextRow(e: EventProjection) {
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    formatClock(e.timestamp),
+                    formatTimestamp(e.timestamp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 )
@@ -2600,7 +2600,7 @@ private fun CommandRow(e: EventProjection, allEvents: List<EventProjection>) {
                 } else {
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        formatClock(e.timestamp),
+                        formatTimestamp(e.timestamp),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     )
@@ -2646,7 +2646,7 @@ private fun ToolResultCard(e: EventProjection) {
                 Text(if (isError) "⚠️ 出错" else "✓ 结果", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    formatClock(e.timestamp),
+                    formatTimestamp(e.timestamp),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isError) MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
                     else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3177,7 +3177,8 @@ private fun levelColorOf(level: String): Color = when (level) {
 }
 
 // ================= 工具 =================
-// 时间格式化（formatClock / relativeTime）与 nowMillis 见 TimeFormat.kt
+// 时间格式化：formatTimestamp / formatTimestampCompact 见 TimestampFormat.kt；
+// 绝对时间戳 formatClock（日志页）与 nowMillis 见 TimeFormat.kt
 
 /** Deep Diving 等待时长文案（服务端时钟秒数透传）。 */
 private fun formatDivingDuration(seconds: Long): String {
