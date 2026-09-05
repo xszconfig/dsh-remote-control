@@ -485,7 +485,7 @@ private fun DeviceCard(
             Column(Modifier.weight(1f)) {
                 Text(device.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${device.host}:${device.port} · ${formatTimestampCompact(device.lastSeenAt)}",
+                    "${device.host}:${device.port} · ${formatTimestamp(device.lastSeenAt)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1106,7 +1106,7 @@ private fun SessionCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    formatTimestampCompact(s.updatedAt),
+                    formatTimestamp(s.updatedAt),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3313,7 +3313,7 @@ private fun levelColorOf(level: String): Color = when (level) {
 }
 
 // ================= 工具 =================
-// 时间格式化：formatTimestamp / formatTimestampCompact 见 TimestampFormat.kt；
+// 时间格式化：formatTimestamp 见 TimestampFormat.kt；
 // 绝对时间戳 formatClock（日志页）与 nowMillis 见 TimeFormat.kt
 
 /** Deep Diving 等待时长文案（服务端时钟秒数透传）。 */

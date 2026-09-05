@@ -63,14 +63,14 @@ class MetaFormatTest {
             runDurationMs = 7_380_000,
             totalTokens = 12_300,
         )
-        assertEquals(listOf("07:57", "2h 3m", "12.3k"), subagentMetaSegments(s, now, TimeZone.UTC))
+        assertEquals(listOf("今天 07:57", "2h 3m", "12.3k"), subagentMetaSegments(s, now, TimeZone.UTC))
     }
 
     @Test
     fun subagentMetaSegments_missingDurationAndTokens() {
         val now = 1_800_000_000_000L
         val s = session(updatedAt = now - 60_000, lastMessageAt = now - 60_000)
-        assertEquals(listOf("07:59"), subagentMetaSegments(s, now, TimeZone.UTC))
+        assertEquals(listOf("今天 07:59"), subagentMetaSegments(s, now, TimeZone.UTC))
     }
 
     @Test
@@ -85,6 +85,6 @@ class MetaFormatTest {
         val now = 1_800_000_000_000L
         // 旧版 bridge（0.12.0）无 lastMessageAt：回退 updatedAt
         val s = session(updatedAt = now - 5 * 60_000, lastMessageAt = null)
-        assertEquals(listOf("07:55"), subagentMetaSegments(s, now, TimeZone.UTC))
+        assertEquals(listOf("今天 07:55"), subagentMetaSegments(s, now, TimeZone.UTC))
     }
 }
