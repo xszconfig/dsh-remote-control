@@ -104,13 +104,13 @@ private suspend fun LazyListState.scrollToTop(index: Int) {
 
 @Composable
 fun MessageDial(
+    dial: MessageDialState,
     state: SessionUiState,
     listState: LazyListState,
     onLoadOlder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    val dial = remember(state.currentSessionId) { MessageDialState() }
     val hasLiveThink = state.liveThink != null
     val refs = remember(state.events, hasLiveThink) { userMessageRefs(state.events, hasLiveThink) }
 

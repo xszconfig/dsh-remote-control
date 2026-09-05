@@ -1197,6 +1197,8 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     PlatformBackHandler(enabled = true) { client.closeSession() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // 转盘状态提升到 Conversation：滚底 effect 需读 phase 判断是否抑制强制滚底（新消息不打断转盘交互）。
+    val dialState = remember(state.currentSessionId) { MessageDialState() }
     val latestSeq = state.events.lastOrNull()?.seq
     // 自动跟随底部状态机：
     // - 默认跟随（新消息到达 → 滚到底部；切会话重置为跟随）
@@ -1222,7 +1224,10 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     // reverseLayout 下 index 0 = 底部最新；以最后事件 seq 为键，
     // 列表达 MAX_EVENTS 上限后 size 不再增长也能继续触发。
     LaunchedEffect(latestSeq) {
-        if (followBottom && state.events.isNotEmpty()) listState.scrollToItem(0)
+        // 转盘处于任何非收起态时挂起强制滚底，避免新消息打断转盘交互；收起后恢复跟随。
+        if (followBottom && state.events.isNotEmpty() && dialState.phase == DialPhase.Collapsed) {
+            listState.scrollToItem(0)
+        }
     }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -1232,6 +1237,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                 state = state,
                 sessionId = sessionId,
                 listState = listState,
+                dialState = dialState,
                 onJumpToBottom = {
                     followBottom = true
                     scope.launch { listState.scrollToItem(0) }
@@ -1262,6 +1268,7 @@ private fun ConversationMessageList(
     state: SessionUiState,
     sessionId: String,
     listState: LazyListState,
+    dialState: MessageDialState,
     onJumpToBottom: () -> Unit,
 ) {
     if (state.events.isEmpty()) {
@@ -1329,6 +1336,7 @@ private fun ConversationMessageList(
             // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方），
             // 排队消息/任务/Goal 面板把 Deep Diving 上推时，圆钮随之上下移动。
             MessageDial(
+                dial = dialState,
                 state = state,
                 listState = listState,
                 onLoadOlder = { client.loadOlderPage(sessionId) },
