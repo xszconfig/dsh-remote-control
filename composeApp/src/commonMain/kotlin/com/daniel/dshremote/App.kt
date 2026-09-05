@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -1137,8 +1138,6 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     var input by remember { mutableStateOf("") }
     // 输入框焦点：斜杠命令候选弹窗只在聚焦时出现（草稿载入不误弹）
     var inputFocused by remember { mutableStateOf(false) }
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val focusManager = LocalFocusManager.current
     // 草稿：进入会话时从磁盘载入未发送文本；输入变化防抖落盘。
     // 断线/重连、切会话、App 重启都不丢用户打字。
     LaunchedEffect(sessionId) {
@@ -1180,545 +1179,622 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
         if (followBottom && state.events.isNotEmpty()) listState.scrollToItem(0)
     }
     Box(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize()) {
-        if (state.events.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("💬", fontSize = 30.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text("暂无事件，发条指令试试", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+        Column(Modifier.fillMaxSize()) {
+            ConversationMessageList(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                client = client,
+                state = state,
+                sessionId = sessionId,
+                listState = listState,
+                onJumpToBottom = {
+                    followBottom = true
+                    scope.launch { listState.scrollToItem(0) }
+                },
+            )
+            ConversationPanels(state = state, client = client, sessionId = sessionId)
+            ConversationDevPanel(state = state, client = client, sessionId = sessionId)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            ConversationComposer(
+                client = client,
+                state = state,
+                sessionId = sessionId,
+                input = input,
+                onInputChange = { input = it },
+                inputFocused = inputFocused,
+                onInputFocusedChange = { inputFocused = it },
+                onFollowBottom = { followBottom = true },
+            )
+        }
+    }
+}
+
+/** 消息列表区：空态提示，或 LazyColumn + 回到底部悬浮按钮 + 消息转盘（转盘必须挂载在列表 Box 内）。 */
+@Composable
+private fun ConversationMessageList(
+    modifier: Modifier,
+    client: BridgeClient,
+    state: SessionUiState,
+    sessionId: String,
+    listState: LazyListState,
+    onJumpToBottom: () -> Unit,
+) {
+    if (state.events.isEmpty()) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("💬", fontSize = 30.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("暂无事件，发条指令试试", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        } else {
-            // 上滑到最早一条附近时自动加载更早的历史页（reverseLayout 下最高 index = 最早）
-            val shouldLoadOlder by remember {
-                derivedStateOf {
-                    val info = listState.layoutInfo
-                    val topIndex = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                    topIndex >= info.totalItemsCount - 3
-                }
+        }
+    } else {
+        // 上滑到最早一条附近时自动加载更早的历史页（reverseLayout 下最高 index = 最早）
+        val shouldLoadOlder by remember {
+            derivedStateOf {
+                val info = listState.layoutInfo
+                val topIndex = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                topIndex >= info.totalItemsCount - 3
             }
-            LaunchedEffect(shouldLoadOlder, state.hasMore, state.loadingOlder) {
-                if (shouldLoadOlder && state.hasMore && !state.loadingOlder) {
-                    client.loadOlderPage(sessionId)
-                }
+        }
+        LaunchedEffect(shouldLoadOlder, state.hasMore, state.loadingOlder) {
+            if (shouldLoadOlder && state.hasMore && !state.loadingOlder) {
+                client.loadOlderPage(sessionId)
             }
-            // 「回到底部」按钮显隐：最新一条消息不在可见区（且列表已布局）→ 显示。
-            // liveThink 流式行占 index 0 时最新消息在 index 1，否则在 index 0。
-            val latestIndex = latestEventIndex(state.liveThink != null)
-            val showJumpToBottom by remember(latestIndex, listState) {
-                derivedStateOf {
-                    val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
-                    visible.isNotEmpty() && !latestMessageVisible(visible, latestIndex)
-                }
+        }
+        // 「回到底部」按钮显隐：最新一条消息不在可见区（且列表已布局）→ 显示。
+        // liveThink 流式行占 index 0 时最新消息在 index 1，否则在 index 0。
+        val latestIndex = latestEventIndex(state.liveThink != null)
+        val showJumpToBottom by remember(latestIndex, listState) {
+            derivedStateOf {
+                val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
+                visible.isNotEmpty() && !latestMessageVisible(visible, latestIndex)
             }
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                    reverseLayout = true,
-                ) {
-                    // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
-                    state.liveThink?.let { lt ->
-                        item(key = "live-think") { LiveThinkRow(lt) }
-                    }
-                    items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
-                        EventBubble(e, state.events)
-                    }
-                    if (state.loadingOlder) {
-                        item(key = "loading-older") {
-                            Box(
-                                Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                            }
+        }
+        Box(modifier) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                reverseLayout = true,
+            ) {
+                // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
+                state.liveThink?.let { lt ->
+                    item(key = "live-think") { LiveThinkRow(lt) }
+                }
+                items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
+                    EventBubble(e, state.events)
+                }
+                if (state.loadingOlder) {
+                    item(key = "loading-older") {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         }
                     }
                 }
-                // 「回到底部」悬浮按钮：位于 Deep Diving 上方、右对齐（bottomEnd 即消息列表右下角）。
-                // 淡入淡出（不做位移动画，避免突兀）；点击瞬间 scrollToItem(0) + 置回跟随态。
-                JumpToBottomOverlay(
-                    visible = showJumpToBottom,
-                    onClick = {
-                        followBottom = true
-                        scope.launch { listState.scrollToItem(0) }
-                    },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
-                )
-                // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方），
-                // 排队消息/任务/Goal 面板把 Deep Diving 上推时，圆钮随之上下移动。
-                MessageDial(
-                    state = state,
-                    listState = listState,
-                    onLoadOlder = { client.loadOlderPage(sessionId) },
-                    modifier = Modifier.fillMaxSize(),
-                )
             }
+            // 「回到底部」悬浮按钮：位于 Deep Diving 上方、右对齐（bottomEnd 即消息列表右下角）。
+            // 淡入淡出（不做位移动画，避免突兀）；点击瞬间 scrollToItem(0) + 置回跟随态。
+            JumpToBottomOverlay(
+                visible = showJumpToBottom,
+                onClick = onJumpToBottom,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
+            )
+            // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方），
+            // 排队消息/任务/Goal 面板把 Deep Diving 上推时，圆钮随之上下移动。
+            MessageDial(
+                state = state,
+                listState = listState,
+                onLoadOlder = { client.loadOlderPage(sessionId) },
+                modifier = Modifier.fillMaxSize(),
+            )
         }
-        // Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）；
-        // 深 Seek 品牌蓝；标签在整个轮次期间显示（服务端 turn_status），时钟在 ≥15s 后出现
-        // （DSH Web showClock 阈值），时长只显示服务端推送的 deepDivingElapsed（不本地计时）。
-        val divingVisible = state.divingTurnStart != null || state.modelWaitingSince != null
-        if (divingVisible) {
-            val elapsed = state.deepDivingElapsed ?: 0
-            val showClock = elapsed >= 15
-            Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("🤿", fontSize = 13.sp)
+    }
+}
+
+/** 面板区：Deep Diving 条 + 任务列表 + Goal + 排队消息（按上到下顺序，位于消息列表下方）。 */
+@Composable
+private fun ConversationPanels(state: SessionUiState, client: BridgeClient, sessionId: String) {
+    DeepDivingBar(state)
+    TodoPanel(state)
+    GoalPanel(state)
+    QueuePanel(state, client, sessionId)
+}
+
+/** Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）。 */
+@Composable
+private fun DeepDivingBar(state: SessionUiState) {
+    // 深 Seek 品牌蓝；标签在整个轮次期间显示（服务端 turn_status），时钟在 ≥15s 后出现
+    // （DSH Web showClock 阈值），时长只显示服务端推送的 deepDivingElapsed（不本地计时）。
+    val divingVisible = state.divingTurnStart != null || state.modelWaitingSince != null
+    if (divingVisible) {
+        val elapsed = state.deepDivingElapsed ?: 0
+        val showClock = elapsed >= 15
+        Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("🤿", fontSize = 13.sp)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Deep Diving",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = DeepSeekBlue,
+                )
+                if (showClock) {
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Deep Diving",
+                        "·",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DeepSeekBlue.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        formatDivingDuration(elapsed),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = DeepSeekBlue.copy(alpha = 0.85f),
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+/** 任务列表条：DSH 的 todo_write 清单（每会话一份），位于 Deep Diving 下方、Goal 上方。 */
+@Composable
+private fun TodoPanel(state: SessionUiState) {
+    if (state.todos.isNotEmpty()) {
+        var todosExpanded by remember { mutableStateOf(true) }
+        // 与服务端 DSH Web progressLabel 完全对齐：已完成 → 进行中 → 待处理，
+        // 零计数的段省略（"·" 连接）。
+        val doneCount = state.todos.count { it.status == "completed" }
+        val activeCount = state.todos.count { it.status == "in_progress" }
+        val pendingCount = state.todos.size - doneCount - activeCount
+        val progressSegments = buildList {
+            if (doneCount > 0) add("$doneCount 已完成")
+            if (activeCount > 0) add("$activeCount 进行中")
+            if (pendingCount > 0) add("$pendingCount 待处理")
+        }.joinToString(" · ")
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+            Column {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { todosExpanded = !todosExpanded }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "📋 任务（${state.todos.size}）",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = DeepSeekBlue,
                     )
-                    if (showClock) {
-                        Spacer(Modifier.width(6.dp))
+                    if (progressSegments.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            "·",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = DeepSeekBlue.copy(alpha = 0.7f),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            formatDivingDuration(elapsed),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = DeepSeekBlue.copy(alpha = 0.85f),
+                            progressSegments,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
                     } else {
                         Spacer(Modifier.weight(1f))
                     }
-                }
-            }
-        }
-        // 任务列表条：DSH 的 todo_write 清单（每会话一份），位于 Deep Diving 下方、Goal 上方。
-        if (state.todos.isNotEmpty()) {
-            var todosExpanded by remember { mutableStateOf(true) }
-            // 与服务端 DSH Web progressLabel 完全对齐：已完成 → 进行中 → 待处理，
-            // 零计数的段省略（"·" 连接）。
-            val doneCount = state.todos.count { it.status == "completed" }
-            val activeCount = state.todos.count { it.status == "in_progress" }
-            val pendingCount = state.todos.size - doneCount - activeCount
-            val progressSegments = buildList {
-                if (doneCount > 0) add("$doneCount 已完成")
-                if (activeCount > 0) add("$activeCount 进行中")
-                if (pendingCount > 0) add("$pendingCount 待处理")
-            }.joinToString(" · ")
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
-                Column {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { todosExpanded = !todosExpanded }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "📋 任务（${state.todos.size}）",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        if (progressSegments.isNotEmpty()) {
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                progressSegments,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
-                        Text(
-                            if (todosExpanded) "收起 ▲" else "展开 ▼",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AccentBlue,
-                        )
-                    }
-                    if (todosExpanded) {
-                        // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 行高）并支持纵向滚动
-                        val scrollState = rememberScrollState()
-                        Column(
-                            Modifier.fillMaxWidth().then(
-                                if (state.todos.size > 3) Modifier.height(112.dp).verticalScroll(scrollState)
-                                else Modifier
-                            ),
-                        ) {
-                            state.todos.forEach { todo ->
-                                Row(
-                                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        when (todo.status) {
-                                            "completed" -> "✅"
-                                            "in_progress" -> "▶️"
-                                            else -> "⏳"
-                                        },
-                                        fontSize = 13.sp,
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        todo.content,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = if (todo.status == "completed") {
-                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。
-        // 位置：任务列表下方、排队消息上方；会话级状态（切会话重置，不串扰）。
-        state.goal?.let { goal ->
-            var goalExpanded by remember { mutableStateOf(false) }
-            val phaseColor = when (goal.phase) {
-                "active" -> StatusGreen
-                "paused" -> StatusAmber
-                "blocked" -> MaterialTheme.colorScheme.error
-                else -> StatusGray
-            }
-            val phaseLabel = when (goal.phase) {
-                "active" -> "进行中"
-                "paused" -> "已暂停"
-                "blocked" -> "已阻塞"
-                else -> "已完成"
-            }
-            Surface(color = phaseColor.copy(alpha = 0.10f)) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { goalExpanded = !goalExpanded }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🎯", fontSize = 13.sp)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "Goal",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = phaseColor,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            phaseLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = phaseColor,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        if (goal.maxGoalRounds > 0) {
-                            Text(
-                                "第 ${goal.roundsStarted}/${goal.maxGoalRounds} 轮",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = phaseColor.copy(alpha = 0.85f),
-                            )
-                        }
-                    }
                     Text(
-                        goal.objective,
-                        style = MaterialTheme.typography.bodySmall,
-                        // 小屏空间预算：折叠态只占一行，点开看全文
-                        maxLines = if (goalExpanded) Int.MAX_VALUE else 1,
-                        overflow = TextOverflow.Ellipsis,
+                        if (todosExpanded) "收起 ▲" else "展开 ▼",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AccentBlue,
                     )
-                    if (goal.phase == "blocked" && !goal.blockedMessage.isNullOrBlank()) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "⛔ ${goal.blockedMessage}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
                 }
-            }
-        }
-        // 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除
-        if (state.queueItems.isNotEmpty()) {
-            var queueExpanded by remember { mutableStateOf(true) }
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
-                Column {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { queueExpanded = !queueExpanded }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                if (todosExpanded) {
+                    // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 行高）并支持纵向滚动
+                    val scrollState = rememberScrollState()
+                    Column(
+                        Modifier.fillMaxWidth().then(
+                            if (state.todos.size > 3) Modifier.height(112.dp).verticalScroll(scrollState)
+                            else Modifier
+                        ),
                     ) {
-                        Text(
-                            "⏳ 排队中的消息（${state.queueItems.size}）",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            if (queueExpanded) "收起 ▲" else "展开 ▼",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AccentBlue,
-                        )
-                    }
-                    if (queueExpanded) {
-                        // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 条行高）并支持纵向滚动；
-                        // 收起/展开逻辑不变（展开时才渲染列表区）。
-                        val queueItems = state.queueItems
-                        val scrollState = rememberScrollState()
-                        Column(
-                            Modifier.fillMaxWidth().then(
-                                if (queueItems.size > 3) Modifier.height(160.dp).verticalScroll(scrollState)
-                                else Modifier
-                            ),
-                        ) {
-                            queueItems.forEach { item ->
-                                Row(
-                                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        when (item.placement) {
-                                            "steering" -> "⚡插队中"
-                                            "context" -> "🔧上下文"
-                                            else -> "排队"
-                                        },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (item.placement == "steering") StatusAmber
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        item.text,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    if (item.placement == "queued") {
-                                        TextButton(onClick = {
-                                            ConnLog.info("ACTION", "排队插队 itemId=${item.id} sessionId=$sessionId")
-                                            client.sendQueueAction(sessionId, item.id, "steer")
-                                        }) {
-                                            Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
-                                        }
-                                    }
-                                    TextButton(onClick = {
-                                        ConnLog.info("ACTION", "排队移除 itemId=${item.id} sessionId=$sessionId")
-                                        client.sendQueueAction(sessionId, item.id, "remove")
-                                    }) {
-                                        Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
+                        state.todos.forEach { todo ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    when (todo.status) {
+                                        "completed" -> "✅"
+                                        "in_progress" -> "▶️"
+                                        else -> "⏳"
+                                    },
+                                    fontSize = 13.sp,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    todo.content,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (todo.status == "completed") {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
                             }
                         }
                     }
                 }
-            }
-        }
-        // 开发状态行：LSP 诊断 + 调试状态聚合为一条细行（小屏空间预算；无信号完全不占空间）。
-        // 绝不自动弹面板：只更新徽标，用户点开才进详情。
-        var showDevPanel by remember { mutableStateOf(false) }
-        if (state.diagnostics.isNotEmpty() || state.debug != null) {
-            val errorCount = state.diagnostics.count { it.severity == 1 }
-            val warnCount = state.diagnostics.count { it.severity == 2 }
-            val debugSnap = state.debug
-            val pausedAt = debugSnap?.paused?.stoppedAt
-            val tint = when {
-                errorCount > 0 -> MaterialTheme.colorScheme.error
-                debugSnap?.state == "paused" -> StatusAmber
-                warnCount > 0 -> StatusAmber
-                debugSnap != null && debugSnap.error != null -> MaterialTheme.colorScheme.error
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
-            Surface(color = tint.copy(alpha = 0.10f)) {
-                Row(
-                    Modifier.fillMaxWidth().clickable { showDevPanel = true }.padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (state.diagnostics.isNotEmpty()) {
-                        Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            buildString {
-                                append("${state.diagnostics.size} 诊断")
-                                if (errorCount > 0) append("（$errorCount 错误）")
-                                else if (warnCount > 0) append("（$warnCount 警告）")
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
-                        )
-                    }
-                    if (state.diagnostics.isNotEmpty() && debugSnap != null) {
-                        Spacer(Modifier.width(10.dp))
-                        Text("·", style = MaterialTheme.typography.labelMedium, color = tint.copy(alpha = 0.6f))
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    if (debugSnap != null) {
-                        Text("🐛", fontSize = 13.sp)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            when (debugSnap.state) {
-                                "paused" -> "暂停中 ${pausedAt?.path?.substringAfterLast('/') ?: ""}${pausedAt?.let { ":${it.line}" } ?: ""}"
-                                "starting" -> "调试启动中…"
-                                "running" -> "调试运行中"
-                                else -> "调试已停止" + (debugSnap.error?.let { "（$it）" } ?: "")
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = tint,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Text("查看详情", style = MaterialTheme.typography.labelSmall, color = AccentBlue)
-                }
-            }
-        }
-        if (showDevPanel) {
-            var devTab by remember { mutableStateOf(0) }
-            ModalBottomSheet(
-                onDismissRequest = { showDevPanel = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = MaterialTheme.colorScheme.surface,
-            ) {
-                Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
-                ) {
-                    Text("开发面板", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(10.dp))
-                    TabRow(selectedTabIndex = devTab) {
-                        Tab(selected = devTab == 0, onClick = { devTab = 0 }, text = { Text("诊断 ${state.diagnostics.size}") })
-                        Tab(selected = devTab == 1, onClick = { devTab = 1 }, text = { Text("调试") })
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    if (devTab == 0) {
-                        if (state.diagnostics.isEmpty()) {
-                            Text("暂无诊断：Agent 编辑代码后，语言服务器的错误/警告会自动出现在这里。", style = MaterialTheme.typography.bodySmall)
-                        } else {
-                            state.diagnostics.forEach { d ->
-                                Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
-                                    Text(
-                                        when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
-                                        fontSize = 12.sp,
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(d.message, style = MaterialTheme.typography.bodySmall)
-                                        Text(
-                                            "${d.path} : ${d.line}:${d.column}" + (d.source?.let { " · $it" } ?: ""),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            }
-                        }
-                    } else {
-                        DebugPanelContent(state, client, sessionId)
-                    }
-                }
-            }
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
-        // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
-        // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
-        val slashFragment = input.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
-        if (inputFocused && slashFragment != null && state.commands.isNotEmpty()) {
-            val partial = slashFragment.removePrefix("/")
-            val candidates = state.commands.filter { it.name.startsWith(partial) }
-            if (candidates.isNotEmpty()) {
-                CommandCandidatePopup(
-                    candidates = candidates,
-                    onPick = { name -> input = "/$name " },
-                )
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                modifier = Modifier.weight(1f).onFocusChanged {
-                    inputFocused = it.isFocused
-                    if (it.isFocused) {
-                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
-                    } else {
-                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
-                    }
-                },
-                placeholder = { Text("发指令给DeepSeek Harness") },
-                shape = RoundedCornerShape(22.dp),
-                maxLines = 4,
-                // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
-                // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
-                ),
-            )
-            Spacer(Modifier.width(8.dp))
-            // 与 DSH Web 对齐：运行中「终止」与「发送」并存——点终止中断当前推理；
-            // 发送照常可用（消息进入排队队列，与桌面端行为一致）。非运行中只显示发送。
-            val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
-                state.modelWaitingSince != null
-            if (agentRunning) {
-                Button(
-                    onClick = { ConnLog.info("ACTION", "中断点击 sessionId=$sessionId"); client.interrupt(sessionId) },
-                    modifier = Modifier.size(48.dp),
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) {
-                    StopIcon()
-                }
-                Spacer(Modifier.width(8.dp))
-            }
-            Button(
-                onClick = {
-                    ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length}")
-                    val text = input.trim()
-                    if (text.isNotEmpty()) {
-                        followBottom = true // 发送后重新跟随底部（要看到自己的消息与回复）
-                        client.sendMessage(text)
-                        input = ""
-                        // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                    }
-                },
-                modifier = Modifier.size(48.dp),
-                shape = CircleShape,
-                // 48dp 圆钮配默认 24dp 水平内边距会把内容区挤成 0 宽（图标不可见），
-                // 必须归零内边距让 20dp 图标完整渲染。
-                contentPadding = PaddingValues(0.dp),
-                colors = ButtonDefaults.buttonColors(),
-            ) {
-                SendIcon()
             }
         }
     }
+}
+
+/** Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。位置：任务列表下方、排队消息上方。 */
+@Composable
+private fun GoalPanel(state: SessionUiState) {
+    state.goal?.let { goal ->
+        var goalExpanded by remember { mutableStateOf(false) }
+        val phaseColor = when (goal.phase) {
+            "active" -> StatusGreen
+            "paused" -> StatusAmber
+            "blocked" -> MaterialTheme.colorScheme.error
+            else -> StatusGray
+        }
+        val phaseLabel = when (goal.phase) {
+            "active" -> "进行中"
+            "paused" -> "已暂停"
+            "blocked" -> "已阻塞"
+            else -> "已完成"
+        }
+        Surface(color = phaseColor.copy(alpha = 0.10f)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { goalExpanded = !goalExpanded }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🎯", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Goal",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = phaseColor,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        phaseLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = phaseColor,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (goal.maxGoalRounds > 0) {
+                        Text(
+                            "第 ${goal.roundsStarted}/${goal.maxGoalRounds} 轮",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = phaseColor.copy(alpha = 0.85f),
+                        )
+                    }
+                }
+                Text(
+                    goal.objective,
+                    style = MaterialTheme.typography.bodySmall,
+                    // 小屏空间预算：折叠态只占一行，点开看全文
+                    maxLines = if (goalExpanded) Int.MAX_VALUE else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (goal.phase == "blocked" && !goal.blockedMessage.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "⛔ ${goal.blockedMessage}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除。 */
+@Composable
+private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: String) {
+    if (state.queueItems.isNotEmpty()) {
+        var queueExpanded by remember { mutableStateOf(true) }
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
+            Column {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { queueExpanded = !queueExpanded }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "⏳ 排队中的消息（${state.queueItems.size}）",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        if (queueExpanded) "收起 ▲" else "展开 ▼",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AccentBlue,
+                    )
+                }
+                if (queueExpanded) {
+                    // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 条行高）并支持纵向滚动；
+                    // 收起/展开逻辑不变（展开时才渲染列表区）。
+                    val queueItems = state.queueItems
+                    val scrollState = rememberScrollState()
+                    Column(
+                        Modifier.fillMaxWidth().then(
+                            if (queueItems.size > 3) Modifier.height(160.dp).verticalScroll(scrollState)
+                            else Modifier
+                        ),
+                    ) {
+                        queueItems.forEach { item ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    when (item.placement) {
+                                        "steering" -> "⚡插队中"
+                                        "context" -> "🔧上下文"
+                                        else -> "排队"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (item.placement == "steering") StatusAmber
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    item.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (item.placement == "queued") {
+                                    TextButton(onClick = {
+                                        ConnLog.info("ACTION", "排队插队 itemId=${item.id} sessionId=$sessionId")
+                                        client.sendQueueAction(sessionId, item.id, "steer")
+                                    }) {
+                                        Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                                TextButton(onClick = {
+                                    ConnLog.info("ACTION", "排队移除 itemId=${item.id} sessionId=$sessionId")
+                                    client.sendQueueAction(sessionId, item.id, "remove")
+                                }) {
+                                    Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 开发状态行 + 详情面板：LSP 诊断 + 调试状态聚合为一条细行，点开进 ModalBottomSheet。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, sessionId: String) {
+    // 绝不自动弹面板：只更新徽标，用户点开才进详情。
+    var showDevPanel by remember { mutableStateOf(false) }
+    if (state.diagnostics.isNotEmpty() || state.debug != null) {
+        val errorCount = state.diagnostics.count { it.severity == 1 }
+        val warnCount = state.diagnostics.count { it.severity == 2 }
+        val debugSnap = state.debug
+        val pausedAt = debugSnap?.paused?.stoppedAt
+        val tint = when {
+            errorCount > 0 -> MaterialTheme.colorScheme.error
+            debugSnap?.state == "paused" -> StatusAmber
+            warnCount > 0 -> StatusAmber
+            debugSnap != null && debugSnap.error != null -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Surface(color = tint.copy(alpha = 0.10f)) {
+            Row(
+                Modifier.fillMaxWidth().clickable { showDevPanel = true }.padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (state.diagnostics.isNotEmpty()) {
+                    Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        buildString {
+                            append("${state.diagnostics.size} 诊断")
+                            if (errorCount > 0) append("（$errorCount 错误）")
+                            else if (warnCount > 0) append("（$warnCount 警告）")
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
+                    )
+                }
+                if (state.diagnostics.isNotEmpty() && debugSnap != null) {
+                    Spacer(Modifier.width(10.dp))
+                    Text("·", style = MaterialTheme.typography.labelMedium, color = tint.copy(alpha = 0.6f))
+                    Spacer(Modifier.width(10.dp))
+                }
+                if (debugSnap != null) {
+                    Text("🐛", fontSize = 13.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        when (debugSnap.state) {
+                            "paused" -> "暂停中 ${pausedAt?.path?.substringAfterLast('/') ?: ""}${pausedAt?.let { ":${it.line}" } ?: ""}"
+                            "starting" -> "调试启动中…"
+                            "running" -> "调试运行中"
+                            else -> "调试已停止" + (debugSnap.error?.let { "（$it）" } ?: "")
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = tint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text("查看详情", style = MaterialTheme.typography.labelSmall, color = AccentBlue)
+            }
+        }
+    }
+    if (showDevPanel) {
+        var devTab by remember { mutableStateOf(0) }
+        ModalBottomSheet(
+            onDismissRequest = { showDevPanel = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
+            ) {
+                Text("开发面板", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
+                TabRow(selectedTabIndex = devTab) {
+                    Tab(selected = devTab == 0, onClick = { devTab = 0 }, text = { Text("诊断 ${state.diagnostics.size}") })
+                    Tab(selected = devTab == 1, onClick = { devTab = 1 }, text = { Text("调试") })
+                }
+                Spacer(Modifier.height(10.dp))
+                if (devTab == 0) {
+                    if (state.diagnostics.isEmpty()) {
+                        Text("暂无诊断：Agent 编辑代码后，语言服务器的错误/警告会自动出现在这里。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        state.diagnostics.forEach { d ->
+                            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                                Text(
+                                    when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
+                                    fontSize = 12.sp,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(d.message, style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "${d.path} : ${d.line}:${d.column}" + (d.source?.let { " · $it" } ?: ""),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        }
+                    }
+                } else {
+                    DebugPanelContent(state, client, sessionId)
+                }
+            }
+        }
+    }
+}
+
+/** 输入区：斜杠命令候选弹窗 + 输入框 + 中断/发送按钮。 */
+@Composable
+private fun ConversationComposer(
+    client: BridgeClient,
+    state: SessionUiState,
+    sessionId: String,
+    input: String,
+    onInputChange: (String) -> Unit,
+    inputFocused: Boolean,
+    onInputFocusedChange: (Boolean) -> Unit,
+    onFollowBottom: () -> Unit,
+) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
+    // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
+    // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
+    val slashFragment = input.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
+    if (inputFocused && slashFragment != null && state.commands.isNotEmpty()) {
+        val partial = slashFragment.removePrefix("/")
+        val candidates = state.commands.filter { it.name.startsWith(partial) }
+        if (candidates.isNotEmpty()) {
+            CommandCandidatePopup(
+                candidates = candidates,
+                onPick = { name -> onInputChange("/$name ") },
+            )
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = input,
+            onValueChange = onInputChange,
+            modifier = Modifier.weight(1f).onFocusChanged {
+                onInputFocusedChange(it.isFocused)
+                if (it.isFocused) {
+                    ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
+                } else {
+                    ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
+                }
+            },
+            placeholder = { Text("发指令给DeepSeek Harness") },
+            shape = RoundedCornerShape(22.dp),
+            maxLines = 4,
+            // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
+            // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            ),
+        )
+        Spacer(Modifier.width(8.dp))
+        // 与 DSH Web 对齐：运行中「终止」与「发送」并存——点终止中断当前推理；
+        // 发送照常可用（消息进入排队队列，与桌面端行为一致）。非运行中只显示发送。
+        val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
+            state.modelWaitingSince != null
+        if (agentRunning) {
+            Button(
+                onClick = { ConnLog.info("ACTION", "中断点击 sessionId=$sessionId"); client.interrupt(sessionId) },
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) {
+                StopIcon()
+            }
+            Spacer(Modifier.width(8.dp))
+        }
+        Button(
+            onClick = {
+                ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length}")
+                val text = input.trim()
+                if (text.isNotEmpty()) {
+                    onFollowBottom() // 发送后重新跟随底部（要看到自己的消息与回复）
+                    client.sendMessage(text)
+                    onInputChange("")
+                    // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+            },
+            modifier = Modifier.size(48.dp),
+            shape = CircleShape,
+            // 48dp 圆钮配默认 24dp 水平内边距会把内容区挤成 0 宽（图标不可见），
+            // 必须归零内边距让 20dp 图标完整渲染。
+            contentPadding = PaddingValues(0.dp),
+            colors = ButtonDefaults.buttonColors(),
+        ) {
+            SendIcon()
+        }
     }
 }
 
