@@ -36,3 +36,11 @@ P0 = 「超大函数 / 类过大 / 超长参数列表」等高风险项，**任�
 - 新增/修改规则时：在本文档登记「规则 id + 动机 + 阈值 + 影响范围」。
 - 阈值只能**收紧**（下调），不能反向放宽（除非在本文档写明理由并经 review）。
 - 全量 `detekt` 报告为建议项（不阻塞 commit），P0 报告为闸门（阻塞 commit）。
+
+## R4 DEX registers 硬门禁（构建产物层，非 detekt）
+
+- **规则**：构建期扫 APK 内所有 classes*.dex，解析本应用包每个方法的 `registers_size`——**>256 报错（构建失败）、>128 告警**。
+- **动机**：VerifyError 事故「编译通过 + LSP 干净却崩」的根因在「构建产物层」无校验（见 `docs/coding-rules/verifyerror-deep-dive.md` R4）；方法寄存器数 >256 有触发 ART 校验器窄寄存器上限的风险，是比行数规则更贴近根因的硬门禁。
+- **实现**：`composeApp/build.gradle.kts` 的 `checkDexRegisters` 任务族（随 `assemble<Variant>` 自动执行）+ buildSrc 纯函数 `DexRegistersParser`（`./gradlew -p buildSrc test`，5 例单测覆盖正常/超128/超256/多dex/解析容错）。
+- **阈值覆盖参数**：`-PdexRegistersMax`（报错阈值，默认 256）、`-PdexRegistersWarn`（告警阈值，默认 128）、`-PdexRegistersPackage`（包前缀，默认 `com/daniel/dshremote`）。
+- **只扫本包**：三方库（如 Compose Material3 的 `colors-0hiis_0` 268 寄存器方法）不在本应用控制范围，全量扫描会误报；故默认只扫 `com/daniel/dshremote`，如需全量可传 `-PdexRegistersPackage=`（空串）。

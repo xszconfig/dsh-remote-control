@@ -38,6 +38,13 @@
 - `complexity/LargeClass`（类过大，阈值 1200 行）
 - `complexity/LongParameterList`（超长参数列表，函数 10 / 构造器 10）
 
+### R4 DEX registers 硬门禁（构建期自动执行，VerifyError 根因兜底）
+- 任务：`checkDexRegisters`（全量聚合）、`checkDexRegisters<Variant>`（随 `assemble<Variant>` 自动执行，`finalizedBy` 接线，无循环依赖、每变体只跑一次）。
+- 规则：扫 APK 内所有 classes*.dex，解析本应用包（`com/daniel/dshremote`）每个方法的 `registers_size`——**>256 报错（构建失败）、>128 告警**。
+- 用法：`./gradlew :composeApp:checkDexRegisters`（全量）、`:composeApp:checkDexRegistersDebug`（单变体，会先打包再扫描）。
+- 覆盖参数：`-PdexRegistersMax=NNN`（报错阈值，默认 256，用于验证与 CI）、`-PdexRegistersWarn=NNN`（告警阈值，默认 128）、`-PdexRegistersPackage=...`（包前缀，默认 `com/daniel/dshremote`；三方库如 Compose Material3 的 268 寄存器方法会误报，故只扫本包）。
+- 解析器：buildSrc 纯函数 `DexRegistersParser`（`./gradlew -p buildSrc test`，5 例单测覆盖正常/超128/超256/多dex/解析容错）。
+
 ### 强制流程
 1. 代码变更完成后、commit 前，必跑 P0：`scripts/lint.sh p0`（agent 亦可用 `code-lint` skill 一键跑）。
 2. P0 命中 → **必须先修复清零**，才允许 commit。
@@ -48,7 +55,7 @@
 ### 规则积累
 - 新增/收紧规则与动机登记在 `docs/lint-rules.md`；阈值只收紧不放宽。
 - 收紧路径：拆分 `BridgeClient` 等大类、长函数 → 逐步把 P0 阈值降到 detekt 默认（LongMethod 60 / LargeClass 600 / LongParameterList 6/7）。
-- DEX 校验器防回归的 R1~R6 规则（含 R4「构建期扫 DEX registers_size，>128 告警 >256 报错」）已归档于 `docs/coding-rules/verifyerror-deep-dive.md`，其中 R4 待接入 lint 体系。
+- DEX 校验器防回归的 R1~R6 规则（含 R4「构建期扫 DEX registers_size，>128 告警 >256 报错」）已归档于 `docs/coding-rules/verifyerror-deep-dive.md`；其中 R4 已落地为「R4 DEX 硬门禁」（见上）。
 
 ### 安装 hook（首次 / 重新 clone 后）
 - 运行 `scripts/install-hooks.sh`（把 `hooks/pre-commit` 装进 `.git/hooks/`）。
