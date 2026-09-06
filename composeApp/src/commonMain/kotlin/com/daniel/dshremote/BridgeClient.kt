@@ -96,6 +96,22 @@ internal fun reconcileErrorsOnHello(errors: List<NoticeError>): List<NoticeError
     errors.filterNot { it.recoverable }
 
 /**
+ * 自动打开候选：当前工作区范围内（null=全部 / UNGROUPED_KEY=未分组 / 具体 id）的
+ * 主会话（parentSessionId == null），按 updatedAt 降序取最近一个；无候选返回 null。
+ * 过滤语义与 [com.daniel.dshremote.SessionList] 完全一致、排序与列表 updatedAt 倒序一致。
+ */
+internal fun pickRecentSession(sessions: List<SessionSummary>, workspaceId: String?): SessionSummary? =
+    sessions
+        .filter { s ->
+            s.parentSessionId == null && when (workspaceId) {
+                null -> true
+                UNGROUPED_KEY -> s.workspaceId == null
+                else -> s.workspaceId == workspaceId
+            }
+        }
+        .maxByOrNull { it.updatedAt }
+
+/**
  * 会话面状态：连接着哪台设备、桌面端来的会话/工作区/事件/审批。
  * （设备列表与连接生命周期分别在 DevicesUiState / ConnectionInfo。）
  */
@@ -241,6 +257,8 @@ class BridgeClient(
     private var autoConnectAttempted = false
     /** 本会话内进入过扫码流程 → 用户选择交互式配对，不再自动连接。 */
     private var scanStartedOnce = false
+    /** 本连接生命周期内用户是否手动关闭过会话（退回列表）；新连接重置，防止重连 hello 把用户拽回会话。 */
+    private var userClosedSessionThisConnection = false
 
     /**
      * 重连计划提供器：返回 (url, token) 或 null（无有效凭据，放弃重连）。
@@ -394,6 +412,7 @@ class BridgeClient(
         // 事件到达后会换成可重连的设备凭据提供器
         reconnectProvider = null
         userDisconnect = false
+        userClosedSessionThisConnection = false
         connectJob?.cancel()
         reconnectJob?.cancel()
         _notice.value = ConnectionNotice.Hidden
@@ -432,6 +451,7 @@ class BridgeClient(
 
     fun connectDevice(device: StoredDevice) {
         ConnLog.info("CONNECT", "连接设备 ${device.name} (${device.host}:${device.port})")
+        userClosedSessionThisConnection = false
         devices.rememberLastConnected(device)
         hydrateFromSessionCache(device)
         val key = deviceKey(device)
@@ -493,6 +513,7 @@ class BridgeClient(
         ConnLog.info("CONNECT", "手动连接 $host:$port token=${if (token.isNullOrBlank()) "无" else "有"}")
         reconnectProvider = { listOf(Pairing.buildUrl(host, port) to token) }
         userDisconnect = false
+        userClosedSessionThisConnection = false
         connect(host, port, token, null)
     }
 
@@ -708,6 +729,8 @@ class BridgeClient(
             openSession(returnTo)
             return
         }
+        // 真正退回列表：标记本连接生命周期内用户手动关闭过会话，抑制后续 hello 自动打开
+        userClosedSessionThisConnection = true
         _session.update { it.copy(currentSessionId = null, events = emptyList()) }
     }
 
@@ -1075,6 +1098,29 @@ class BridgeClient(
                 }
             }
         }
+        // 自动打开最近会话：hello 对账完成后、无打开会话且本连接内未手动关闭过时，
+        // 直接落进当前工作区最近一个主会话（更丝滑）。放在重订阅之后，避免重复订阅。
+        maybeAutoOpenRecentSession()
+    }
+
+    /** 连接建立后的自动打开：条件满足才打开，否则只记 INFO 埋点。 */
+    private fun maybeAutoOpenRecentSession() {
+        val st = _session.value
+        if (st.currentSessionId != null) {
+            ConnLog.info("ACTION", "自动打开最近会话：跳过（已有会话 ${st.currentSessionId}）")
+            return
+        }
+        if (userClosedSessionThisConnection) {
+            ConnLog.info("ACTION", "自动打开最近会话：跳过（本连接内用户已手动关闭会话）")
+            return
+        }
+        val candidate = pickRecentSession(st.sessions, st.selectedWorkspaceId)
+        if (candidate == null) {
+            ConnLog.info("ACTION", "自动打开最近会话：跳过（无候选）workspace=${st.selectedWorkspaceId}")
+            return
+        }
+        ConnLog.info("ACTION", "自动打开最近会话 sessionId=${candidate.id} workspace=${st.selectedWorkspaceId}")
+        openSession(candidate.id)
     }
 
     private fun handleHistory(ev: ServerEvent.History) {
