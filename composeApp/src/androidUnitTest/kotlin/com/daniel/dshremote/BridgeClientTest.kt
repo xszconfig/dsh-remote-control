@@ -5,6 +5,7 @@ import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.CachedSessionSnapshot
 import com.daniel.dshremote.protocol.EventProjection
 import com.daniel.dshremote.protocol.ServerEvent
+import com.daniel.dshremote.protocol.SessionSummary
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -148,5 +149,46 @@ class BridgeClientTest {
         client.pushBusinessError("not_found: session not found: x")
         assertEquals(listOf(NoticeError("not_found: session not found: x", recoverable = false)), client.session.value.errors)
         assertEquals(ConnectionNotice.Error("not_found: session not found: x"), client.notice.value)
+    }
+
+    @Test
+    fun sendMessage_runningSession_doesNotCreatePendingBubble() = runTest {
+        val client = newClient(backgroundScope)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "running", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        // 运行中：消息进排队队列（乐观项），不上屏 pending（避免既上屏又排队双份显示）
+        assertEquals(emptyList(), client.session.value.pendingMessages)
+        assertEquals(1, client.session.value.queueItems.size)
+        assertTrue(client.session.value.queueItems.first().id.startsWith("local-"))
+    }
+
+    @Test
+    fun sendMessage_idleSession_createsPendingBubble() = runTest {
+        val client = newClient(backgroundScope)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        // 非运行中：消息被立即消费 → 上屏 pending(Sending)
+        assertEquals(1, client.session.value.pendingMessages.size)
+        assertEquals(PendingStatus.Sending, client.session.value.pendingMessages.first().status)
+        assertEquals("hi", client.session.value.pendingMessages.first().text)
+        assertEquals(emptyList(), client.session.value.queueItems)
     }
 }

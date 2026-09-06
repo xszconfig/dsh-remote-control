@@ -741,27 +741,34 @@ class BridgeClient(
                 if (s.currentSessionId == sid) s.copy(queueItems = s.queueItems + opt) else s
             }
         }
-        // 本地待发送状态机（IM 模式）：立即乐观上屏（用户气泡 + 时间行 Loading），送达/失败再迁移。
-        val localId = "pending-${nowMillis()}-${pendingIdSeq++}"
-        val pending = PendingMessage(
-            localId = localId,
-            sessionId = sid,
-            text = text,
-            status = PendingStatus.Sending,
-            createdAt = nowMillis(),
-        )
-        _session.update { s ->
-            if (s.currentSessionId == sid) s.copy(pendingMessages = addPending(s.pendingMessages, pending)) else s
+        // 语义（用户澄清）：仅 Agent 非运行中（队列空、消息被立即消费）才走 PendingBubble 状态机
+        // （乐观上屏 + 时间行 Loading/❗）；运行中消息进排队队列，只在排队面板显示，不得上屏。
+        val localId: String? = if (!running) "pending-${nowMillis()}-${pendingIdSeq++}" else null
+        if (localId != null) {
+            val pending = PendingMessage(
+                localId = localId,
+                sessionId = sid,
+                text = text,
+                status = PendingStatus.Sending,
+                createdAt = nowMillis(),
+            )
+            _session.update { s ->
+                if (s.currentSessionId == sid) s.copy(pendingMessages = addPending(s.pendingMessages, pending)) else s
+            }
         }
         scope.launch {
             if (connection.send(ClientCommand.SendMessage(sid, text))) {
-                ConnLog.info("ACTION", "发送送达 localId=$localId（sending→sent）")
-                _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+                if (localId != null) {
+                    ConnLog.info("ACTION", "发送送达 localId=$localId（sending→sent）")
+                    _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+                }
             } else {
                 ConnLog.error("CMD", "发送消息失败 sessionId=$sid textLen=${text.length} ws=${connection.info.value.state}")
-                _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
+                if (localId != null) {
+                    _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
+                }
                 pushConnectionError("「${text.take(20)}」未发送：连接已断开")
-                // 发送失败：回滚乐观项
+                // 发送失败：回滚乐观排队项（仅运行中有；非运行中无 local- 项，filter 为 no-op）
                 _session.update { s ->
                     s.copy(queueItems = s.queueItems.filterNot { it.text == text && it.id.startsWith("local-") })
                 }
