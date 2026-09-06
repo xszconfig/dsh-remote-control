@@ -241,10 +241,12 @@ private fun DialOverlay(
         )
 
         if (dial.phase == DialPhase.WaitingOlder) {
+            // 翻页 loading 跟随扇面锚点：枢轴右侧、枢轴高度（BottomStart + start 32dp + bottom 29dp，
+            // 29 = 38(枢轴底距) - 9(半 spinner)，使 spinner 垂直居中于枢轴 Y）。收起态无 loading。
             CircularProgressIndicator(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 8.dp)
+                    .align(Alignment.BottomStart)
+                    .padding(start = 32.dp, bottom = 29.dp)
                     .size(18.dp),
                 strokeWidth = 2.dp,
             )
@@ -330,7 +332,7 @@ private fun vibrateTick(dial: MessageDialState, boundary: Boolean) {
     platformVibrateTick(boundary)
 }
 
-/** 收起圆钮视觉（纯绘制，无手势）：56dp 半透明「小半扇」——红基准线 0°（最长最粗）+ 左右各 2 根短刻度 ±22.5°/±45° + 细弧线勾勒扇面。 */
+/** 收起圆钮视觉（纯绘制，无手势）：56dp 半透明「七线半圆扇」——红基准线 0°（最长最粗）+ 左右各 3 根短刻度 ±22.5°/±45°/±67.5° + 细弧线勾勒半圆轮廓。 */
 @Composable
 private fun CollapsedKnobVisual() {
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -345,10 +347,10 @@ private fun CollapsedKnobVisual() {
         Canvas(Modifier.fillMaxSize().padding(6.dp)) {
             val c = this.center
             val outer = this.size.minDimension / 2f
-            // 短刻度：±45°/±22.5°（与展开扇面 90° 开口一致，呈小半扇）
+            // 短刻度：±67.5°/±45°/±22.5°（七线半圆扇面，与展开态形状更接近）
             val tickInner = outer * 0.45f
             val tickOuter = outer * 0.82f
-            for (deg in listOf(-45f, -22.5f, 22.5f, 45f)) {
+            for (deg in listOf(-67.5f, -45f, -22.5f, 22.5f, 45f, 67.5f)) {
                 val a = deg * PI.toFloat() / 180f
                 val dir = Offset(cos(a), sin(a))
                 drawLine(tickColor, c + dir * tickInner, c + dir * tickOuter, strokeWidth = 2.2.dp.toPx())
@@ -358,12 +360,12 @@ private fun CollapsedKnobVisual() {
             val redOuter = outer * 0.95f
             val dir = Offset(cos(0f), sin(0f))
             drawLine(red, c + dir * redInner, c + dir * redOuter, strokeWidth = 3.dp.toPx())
-            // 细弧线勾勒扇面轮廓（让图标读作「迷你展开态」）
+            // 细弧线勾勒半圆轮廓（-67.5°~+67.5°）
             val arcR = outer * 0.82f
             drawArc(
                 color = tickColor.copy(alpha = 0.5f),
-                startAngle = -45f,
-                sweepAngle = 90f,
+                startAngle = -67.5f,
+                sweepAngle = 135f,
                 useCenter = false,
                 topLeft = Offset(c.x - arcR, c.y - arcR),
                 size = Size(arcR * 2, arcR * 2),
