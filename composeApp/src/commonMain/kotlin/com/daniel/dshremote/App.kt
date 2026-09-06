@@ -1363,6 +1363,13 @@ private fun ConversationMessageList(
                 visible.isNotEmpty() && !latestMessageVisible(visible, latestIndex)
             }
         }
+        // 转盘按需显示：与「回到底部」同款显隐——最新消息不可见时才出现，回到底部隐藏。
+        // 隐藏时若转盘仍在非收起态则收起（dialState 已 hoisted，隐藏不销毁状态，避免下次显示卡在展开态）。
+        LaunchedEffect(showJumpToBottom) {
+            if (!showJumpToBottom && dialState.phase != DialPhase.Collapsed) {
+                dialState.collapse()
+            }
+        }
         Box(modifier) {
             LazyColumn(
                 state = listState,
@@ -1398,15 +1405,17 @@ private fun ConversationMessageList(
                 onClick = onJumpToBottom,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
             )
-            // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方），
-            // 排队消息/任务/Goal 面板把 Deep Diving 上推时，圆钮随之上下移动。
-            MessageDial(
-                dial = dialState,
-                state = state,
-                listState = listState,
-                onLoadOlder = { client.loadOlderPage(sessionId) },
-                modifier = Modifier.fillMaxSize(),
-            )
+            // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方）；
+            // 按需显示（上翻离开底部才出现），排队消息/任务/Goal 面板把 Deep Diving 上推时随之移动。
+            if (showJumpToBottom) {
+                MessageDial(
+                    dial = dialState,
+                    state = state,
+                    listState = listState,
+                    onLoadOlder = { client.loadOlderPage(sessionId) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
     }
 }
