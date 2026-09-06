@@ -1053,13 +1053,48 @@ private fun SessionList(client: BridgeClient, state: SessionUiState) {
                         workspaceTitle = state.workspaces.firstOrNull { it.id == s.workspaceId }?.title,
                         // 挂载的子代理数（含冷会话），与服务端 live 计数无关
                         subagentCount = state.sessions.count { it.parentSessionId == s.id },
+                        queuedCount = state.queuedCounts[s.id] ?: 0,
                         onClick = { ConnLog.info("ACTION", "会话点击 id=${s.id} 标题=${sessionName(s)}"); client.openSession(s.id) },
-                        onInterrupt = { client.interrupt(s.id) },
+                        onInterrupt = { mode -> client.interrupt(s.id, mode) },
                     )
                 }
             }
         }
     }
+}
+
+/**
+ * 中断确认弹框：仅当目标会话存在排队消息时出现。
+ * 两个动作：终止并清空排队（clear）/ 仅终止循环不清空（keep），另加取消。
+ */
+@Composable
+private fun InterruptConfirmDialog(
+    sessionId: String,
+    queuedCount: Int,
+    onClear: () -> Unit,
+    onKeep: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("中断确认") },
+        text = { Text("当前会话有 $queuedCount 条排队消息。终止当前循环时是否一并清空排队？") },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                Button(
+                    onClick = { ConnLog.info("ACTION", "中断-清空排队 sessionId=$sessionId"); onClear() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text("终止当前循环并清空排队消息") }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { ConnLog.info("ACTION", "中断-仅终止 sessionId=$sessionId"); onKeep() },
+                ) { Text("仅终止循环，不清空消息") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { ConnLog.info("ACTION", "中断-取消 sessionId=$sessionId"); onDismiss() }) { Text("取消") }
+        },
+    )
 }
 
 @Composable
@@ -1069,8 +1104,9 @@ private fun SessionCard(
     showWorkspace: Boolean,
     workspaceTitle: String?,
     subagentCount: Int,
+    queuedCount: Int,
     onClick: () -> Unit,
-    onInterrupt: () -> Unit,
+    onInterrupt: (mode: String) -> Unit,
 ) {
     // 副标题：仅「全部会话」视图显示工作区名（区分会话来源）；
     // 进入具体工作区后不再显示 cwd/工作区信息；挂载子代理时附 🤖N。
@@ -1081,6 +1117,7 @@ private fun SessionCard(
             append("🤖$subagentCount")
         }
     }
+    var showInterruptConfirm by remember { mutableStateOf(false) }
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick),
         shape = RoundedCornerShape(14.dp),
@@ -1128,7 +1165,14 @@ private fun SessionCard(
                     }
                     if (running) {
                         OutlinedButton(
-                            onClick = onInterrupt,
+                            onClick = {
+                                if (queuedCount > 0) {
+                                    ConnLog.info("ACTION", "中断确认弹框出现 sessionId=${s.id} queued=$queuedCount")
+                                    showInterruptConfirm = true
+                                } else {
+                                    onInterrupt("clear")
+                                }
+                            },
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = ButtonDefaults.ContentPadding,
                         ) {
@@ -1138,6 +1182,15 @@ private fun SessionCard(
                 }
             }
         }
+    }
+    if (showInterruptConfirm) {
+        InterruptConfirmDialog(
+            sessionId = s.id,
+            queuedCount = queuedCount,
+            onClear = { onInterrupt("clear"); showInterruptConfirm = false },
+            onKeep = { onInterrupt("keep"); showInterruptConfirm = false },
+            onDismiss = { showInterruptConfirm = false },
+        )
     }
 }
 
@@ -1229,6 +1282,13 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             listState.scrollToItem(0)
         }
     }
+    // 新 pending 上屏（刚发送）→ 跟随态滚到底部看到自己的消息（pending 不在 events 里，需单独触发）。
+    val pendingCount = state.pendingMessages.count { it.sessionId == sessionId }
+    LaunchedEffect(pendingCount) {
+        if (followBottom && dialState.phase == DialPhase.Collapsed) {
+            listState.scrollToItem(0)
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             ConversationMessageList(
@@ -1271,7 +1331,8 @@ private fun ConversationMessageList(
     dialState: MessageDialState,
     onJumpToBottom: () -> Unit,
 ) {
-    if (state.events.isEmpty()) {
+    val pendingForSession = state.pendingMessages.filter { it.sessionId == sessionId }
+    if (state.events.isEmpty() && pendingForSession.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("💬", fontSize = 30.sp)
@@ -1311,6 +1372,10 @@ private fun ConversationMessageList(
                 // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
                 state.liveThink?.let { lt ->
                     item(key = "live-think") { LiveThinkRow(lt) }
+                }
+                // 本地待发送消息：乐观上屏的用户气泡（时间行带 Loading / ❗），回显到达后移除。
+                items(pendingForSession.asReversed(), key = { "pending-${it.localId}" }) { p ->
+                    PendingBubble(p, onRetry = { client.retryMessage(p.localId) })
                 }
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
                     EventBubble(e, state.events)
@@ -1494,7 +1559,8 @@ private fun TodoPanel(state: SessionUiState) {
 /** Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。位置：任务列表下方、排队消息上方。 */
 @Composable
 private fun GoalPanel(state: SessionUiState) {
-    state.goal?.let { goal ->
+    // 对齐 DSH Web：完成态（phase=complete）目标不再展示面板；goal=null（服务端已清除）同样不渲染。
+    state.goal?.takeIf { it.phase != "complete" }?.let { goal ->
         var goalExpanded by remember { mutableStateOf(false) }
         val phaseColor = when (goal.phase) {
             "active" -> StatusGreen
@@ -1771,6 +1837,7 @@ private fun ConversationComposer(
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    var showInterruptConfirm by remember { mutableStateOf(false) }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
@@ -1816,8 +1883,17 @@ private fun ConversationComposer(
         val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
             state.modelWaitingSince != null
         if (agentRunning) {
+            val queuedCount = state.queuedCounts[sessionId] ?: 0
             Button(
-                onClick = { ConnLog.info("ACTION", "中断点击 sessionId=$sessionId"); client.interrupt(sessionId) },
+                onClick = {
+                    ConnLog.info("ACTION", "中断点击 sessionId=$sessionId queued=$queuedCount")
+                    if (queuedCount > 0) {
+                        ConnLog.info("ACTION", "中断确认弹框出现 sessionId=$sessionId queued=$queuedCount")
+                        showInterruptConfirm = true
+                    } else {
+                        client.interrupt(sessionId, "clear")
+                    }
+                },
                 modifier = Modifier.size(48.dp),
                 shape = CircleShape,
                 contentPadding = PaddingValues(0.dp),
@@ -1849,6 +1925,15 @@ private fun ConversationComposer(
         ) {
             SendIcon()
         }
+    }
+    if (showInterruptConfirm) {
+        InterruptConfirmDialog(
+            sessionId = sessionId,
+            queuedCount = state.queuedCounts[sessionId] ?: 0,
+            onClear = { client.interrupt(sessionId, "clear"); showInterruptConfirm = false },
+            onKeep = { client.interrupt(sessionId, "keep"); showInterruptConfirm = false },
+            onDismiss = { showInterruptConfirm = false },
+        )
     }
 }
 
@@ -2213,6 +2298,59 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
             content = MaterialTheme.colorScheme.onSurfaceVariant,
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/** 本地待发送消息气泡：用户气泡 + 时间行状态图标（Loading / ❗），回显到达后移除。 */
+@Composable
+private fun PendingBubble(p: PendingMessage, onRetry: () -> Unit) {
+    val labelColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.End,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(formatTimestamp(p.createdAt), style = MaterialTheme.typography.labelSmall, color = labelColor)
+            Spacer(Modifier.width(6.dp))
+            Text("你", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = labelColor)
+            if (p.status == PendingStatus.Sending || p.status == PendingStatus.Failed) {
+                Spacer(Modifier.width(6.dp))
+                PendingStatusIcon(p.status, onRetry)
+            }
+        }
+        Spacer(Modifier.height(3.dp))
+        Surface(
+            color = MaterialTheme.colorScheme.primary,
+            shape = RoundedCornerShape(
+                topStart = 16.dp, topEnd = 16.dp,
+                bottomStart = 16.dp, bottomEnd = 4.dp,
+            ),
+        ) {
+            Text(
+                p.text.ifBlank { "…" },
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+        }
+    }
+}
+
+/** 待发送消息时间行状态图标：sending = 小 spinner；failed = 红色 ❗（点击重发）；sent = 不显示。 */
+@Composable
+private fun PendingStatusIcon(status: PendingStatus, onRetry: (() -> Unit)?) {
+    when (status) {
+        PendingStatus.Sending -> CircularProgressIndicator(
+            modifier = Modifier.size(12.dp),
+            strokeWidth = 1.5.dp,
+        )
+        PendingStatus.Failed -> Text(
+            "❗",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.clickable { onRetry?.invoke() },
+        )
+        PendingStatus.Sent -> Unit
     }
 }
 

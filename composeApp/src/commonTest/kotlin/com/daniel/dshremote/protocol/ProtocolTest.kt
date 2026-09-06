@@ -157,6 +157,25 @@ class ProtocolTest {
         )
     }
 
+    @Test
+    fun encode_interrupt_mode() {
+        // 缺省 mode = clear（旧行为）；encodeDefaults=true 会把缺省值也显式编码
+        assertEquals(
+            """{"type":"interrupt","sessionId":"s1","mode":"clear"}""",
+            BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.Interrupt("s1")),
+        )
+        assertEquals(
+            """{"type":"interrupt","sessionId":"s1","mode":"keep"}""",
+            BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.Interrupt("s1", "keep")),
+        )
+        // 反向兼容：旧 wire（无 mode 字段）解码后回退 clear
+        val legacy = BridgeJson.decodeFromString(
+            ClientCommand.serializer(),
+            """{"type":"interrupt","sessionId":"s1"}""",
+        )
+        assertEquals("clear", assertIs<ClientCommand.Interrupt>(legacy).mode)
+    }
+
     // ---- 审批决策枚举 ----
 
     @Test

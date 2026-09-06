@@ -596,7 +596,7 @@ sealed interface ClientCommand {
 
     @Serializable
     @SerialName("interrupt")
-    data class Interrupt(val sessionId: String) : ClientCommand
+    data class Interrupt(val sessionId: String, val mode: String = "clear") : ClientCommand
 
     /** 排队消息操作：steer = 插队（作为 steering 注入当前轮）；remove = 移除。 */
     @Serializable

@@ -118,6 +118,10 @@ data class SessionUiState(
     val loadingOlder: Boolean = false,
     /** 当前会话排队的消息（inbox 投影；空 = 无排队）。 */
     val queueItems: List<QueueItemWire> = emptyList(),
+    /** 本地待发送消息（乐观上屏 + 送达回显去重 + 失败重发）；会话级，切会话重置。 */
+    val pendingMessages: List<PendingMessage> = emptyList(),
+    /** 各会话排队条数（placement=queued 的项数；会话级，供列表行中断确认弹框判定）。 */
+    val queuedCounts: Map<String, Int> = emptyMap(),
     /** 当前会话模型请求开始时间（null = 未在等待模型）。 */
     val modelWaitingSince: Long? = null,
     /** 本轮对话开始时间（首个模型请求时间；Deep Diving 显示本轮总耗时，跨多次模型调用不重置）。 */
@@ -170,6 +174,8 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     historyTotal = 0,
     loadingOlder = false,
     queueItems = emptyList(),
+    pendingMessages = emptyList(),
+    queuedCounts = emptyMap(),
     modelWaitingSince = null,
     divingTurnStart = null,
     deepDivingElapsed = null,
@@ -247,6 +253,8 @@ class BridgeClient(
     private val sessionOpenStartAt = mutableMapOf<String, Long>()
     /** loadOlderPage → HistoryPage 响应计时（sessionId -> 发起翻页时刻 ms）。 */
     private val olderLoadStartAt = mutableMapOf<String, Long>()
+    /** 本地待发送消息 localId 自增序号（防同一毫秒内多条冲突）。 */
+    private var pendingIdSeq = 0L
 
     init {
         scope.launch {
@@ -558,6 +566,7 @@ class BridgeClient(
                 currentSessionId = sessionId,
                 events = emptyList(),
                 queueItems = emptyList(),
+                pendingMessages = emptyList(),
                 modelWaitingSince = null,
                 divingTurnStart = null,
                 deepDivingElapsed = null,
@@ -732,9 +741,25 @@ class BridgeClient(
                 if (s.currentSessionId == sid) s.copy(queueItems = s.queueItems + opt) else s
             }
         }
+        // 本地待发送状态机（IM 模式）：立即乐观上屏（用户气泡 + 时间行 Loading），送达/失败再迁移。
+        val localId = "pending-${nowMillis()}-${pendingIdSeq++}"
+        val pending = PendingMessage(
+            localId = localId,
+            sessionId = sid,
+            text = text,
+            status = PendingStatus.Sending,
+            createdAt = nowMillis(),
+        )
+        _session.update { s ->
+            if (s.currentSessionId == sid) s.copy(pendingMessages = addPending(s.pendingMessages, pending)) else s
+        }
         scope.launch {
-            if (!connection.send(ClientCommand.SendMessage(sid, text))) {
+            if (connection.send(ClientCommand.SendMessage(sid, text))) {
+                ConnLog.info("ACTION", "发送送达 localId=$localId（sending→sent）")
+                _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+            } else {
                 ConnLog.error("CMD", "发送消息失败 sessionId=$sid textLen=${text.length} ws=${connection.info.value.state}")
+                _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
                 pushConnectionError("「${text.take(20)}」未发送：连接已断开")
                 // 发送失败：回滚乐观项
                 _session.update { s ->
@@ -744,12 +769,30 @@ class BridgeClient(
         }
     }
 
-    fun interrupt(sessionId: String) {
+    /** 重发一条失败的待发送消息：failed → sending → 重发。 */
+    fun retryMessage(localId: String) {
+        val p = _session.value.pendingMessages.firstOrNull { it.localId == localId } ?: return
+        if (p.status != PendingStatus.Failed) return
+        ConnLog.info("ACTION", "重发点击 localId=$localId sessionId=${p.sessionId} textLen=${p.text.length}")
+        _session.update { s -> s.copy(pendingMessages = markPendingSending(s.pendingMessages, localId)) }
+        scope.launch {
+            if (connection.send(ClientCommand.SendMessage(p.sessionId, p.text))) {
+                ConnLog.info("ACTION", "重发送达 localId=$localId（sending→sent）")
+                _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+            } else {
+                ConnLog.error("CMD", "重发失败 localId=$localId ws=${connection.info.value.state}")
+                _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
+                pushConnectionError("「${p.text.take(20)}」未发送：连接已断开")
+            }
+        }
+    }
+
+    fun interrupt(sessionId: String, mode: String = "clear") {
         val s = _session.value
         val status = s.sessions.firstOrNull { it.id == sessionId }?.status
-        ConnLog.info("CMD", "中断会话 sessionId=$sessionId status=$status modelWaitingSince=${s.modelWaitingSince}")
+        ConnLog.info("CMD", "中断会话 sessionId=$sessionId mode=$mode status=$status modelWaitingSince=${s.modelWaitingSince}")
         scope.launch {
-            if (!connection.send(ClientCommand.Interrupt(sessionId))) pushConnectionError("中断指令发送失败（连接已断开）")
+            if (!connection.send(ClientCommand.Interrupt(sessionId, mode))) pushConnectionError("中断指令发送失败（连接已断开）")
         }
     }
 
@@ -1075,6 +1118,20 @@ class BridgeClient(
     }
 
     private fun handleEvent(ev: ServerEvent.Event) {
+        // 服务端回显去重：真实用户消息（spliced 回显）到达 → 移除匹配的本地 pending，
+        // 由回显作为权威气泡渲染（带服务端 seq/时间戳），避免同一消息显示两份。
+        if (ev.event.type == "user_message" && !isInjectedUserMessage(ev.event.source)) {
+            val matched = matchPendingEcho(
+                _session.value.pendingMessages,
+                ev.sessionId,
+                ev.event.text ?: "",
+                ev.event.timestamp,
+            )
+            if (matched != null) {
+                ConnLog.info("ACTION", "回显去重匹配 localId=$matched sessionId=${ev.sessionId}")
+                _session.update { s -> s.copy(pendingMessages = removePending(s.pendingMessages, matched)) }
+            }
+        }
         _session.update { s ->
             if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
         }
@@ -1083,7 +1140,13 @@ class BridgeClient(
 
     private fun handleSessionQueue(ev: ServerEvent.SessionQueue) {
         _session.update { s ->
-            if (ev.sessionId == s.currentSessionId) s.copy(queueItems = ev.items) else s
+            val queued = ev.items.count { it.placement == "queued" }
+            val counts = if (queued == 0) s.queuedCounts - ev.sessionId else s.queuedCounts + (ev.sessionId to queued)
+            if (ev.sessionId == s.currentSessionId) {
+                s.copy(queueItems = ev.items, queuedCounts = counts)
+            } else {
+                s.copy(queuedCounts = counts)
+            }
         }
     }
 
