@@ -20,6 +20,7 @@
 - 调试后端：当前用 **CDP（Node Inspector）直连**，零依赖但仅 Node；`DebugManager` 回调接口已预留 DAP 平替 seam。**未来若扩语言（Python/Go/Rust）必须先问用户**再实施 DAP 后端。
 - 语言服务器：TS/JS/Python/Rust/C/C++ + 官方 JetBrains kotlin-lsp（pull 诊断 + 项目导入）。
 - 自动续跑：持续重试 + 指纹幂等 + work.json sessionId 归属（根治版）。
+- APK 瘦身（体积决策）：debug 包不 minify 保留可调试；新增 `release-in-house`（R8 + 资源裁剪 + debug 签名 + arm64-only，装机自测用，2.16MB vs debug 12.6MB）与 `release-store`（R8 + arm64-only，商店包，签名占位）；keep 规则见 `composeApp/proguard-rules.pro`（serialization / zxing / mikepenz-markdown / org.intellij.markdown 整体保留，宁可多 keep 不误删）。
 
 ## 代码质量闸门（lint）
 
