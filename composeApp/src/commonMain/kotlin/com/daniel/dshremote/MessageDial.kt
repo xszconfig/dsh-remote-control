@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
@@ -50,6 +51,8 @@ import kotlin.math.sin
 private const val KNOB_HIT_RADIUS_DP = 34f
 /** 收起态手势表面边长（与 56dp 圆钮等大）。 */
 private val DIAL_COLLAPSED_SURFACE_SIZE = 56.dp
+/** 展开扇面枢轴距列表底的距离：10dp 底边距 + 28dp 圆钮半径 = 38dp（原地展开，枢轴对齐圆钮中心 Y）。 */
+private const val DIAL_PIVOT_BOTTOM_INSET_DP = 38f
 
 /**
  * 消息转盘：右侧中间的半透明旋钮，点击展开为 90° 扇形，单指拨动快速定位到「你发的消息」。
@@ -327,7 +330,7 @@ private fun vibrateTick(dial: MessageDialState, boundary: Boolean) {
     platformVibrateTick(boundary)
 }
 
-/** 收起圆钮视觉（纯绘制，无手势）：56dp 半透明小转盘——中间红基准线(0°，略长略粗) + 左右各 2 根短刻度。 */
+/** 收起圆钮视觉（纯绘制，无手势）：56dp 半透明「小半扇」——红基准线 0°（最长最粗）+ 左右各 2 根短刻度 ±22.5°/±45° + 细弧线勾勒扇面。 */
 @Composable
 private fun CollapsedKnobVisual() {
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -342,19 +345,30 @@ private fun CollapsedKnobVisual() {
         Canvas(Modifier.fillMaxSize().padding(6.dp)) {
             val c = this.center
             val outer = this.size.minDimension / 2f
-            // 短刻度：-20°/-10°/+10°/+20°（向右开口，与展开扇面朝向一致）
-            val tickInner = outer * 0.50f
-            val tickOuter = outer * 0.85f
-            for (deg in listOf(-20f, -10f, 10f, 20f)) {
+            // 短刻度：±45°/±22.5°（与展开扇面 90° 开口一致，呈小半扇）
+            val tickInner = outer * 0.45f
+            val tickOuter = outer * 0.82f
+            for (deg in listOf(-45f, -22.5f, 22.5f, 45f)) {
                 val a = deg * PI.toFloat() / 180f
                 val dir = Offset(cos(a), sin(a))
                 drawLine(tickColor, c + dir * tickInner, c + dir * tickOuter, strokeWidth = 2.2.dp.toPx())
             }
-            // 红基准线：0°（水平向右），略长略粗
-            val redInner = outer * 0.15f
+            // 红基准线：0°（水平向右），最长最粗
+            val redInner = outer * 0.12f
             val redOuter = outer * 0.95f
             val dir = Offset(cos(0f), sin(0f))
             drawLine(red, c + dir * redInner, c + dir * redOuter, strokeWidth = 3.dp.toPx())
+            // 细弧线勾勒扇面轮廓（让图标读作「迷你展开态」）
+            val arcR = outer * 0.82f
+            drawArc(
+                color = tickColor.copy(alpha = 0.5f),
+                startAngle = -45f,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(c.x - arcR, c.y - arcR),
+                size = Size(arcR * 2, arcR * 2),
+                style = Stroke(width = 1.5.dp.toPx()),
+            )
         }
     }
 }
@@ -380,14 +394,18 @@ private fun DialSurface(
             .then(if (collapsed) Modifier.size(DIAL_COLLAPSED_SURFACE_SIZE) else Modifier.fillMaxHeight().width(128.dp))
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    // pivot = 左缘中点，随当前 size 现取现算（收起 56dp → 展开 128dp，均左缘对齐）。
+                    // pivot 屏幕位置恒定 = (列表左缘, 圆钮中心 Y)，原地展开（不在屏幕中间弹跳）。
                     // 角度符号推导：angleDeg = atan2(Δy, Δx)，屏幕坐标 y 向下，故 atan2 角度随触点
                     // 顺时针移动而增大（右 0°→下 +90°→左 ±180°→上 -90°），normalizeAngleDelta 正值=顺时针，
                     // accumDeg 正=顺时针。方向语义：顺时针=看更老（stepResult delta +1 走更老，refs 下标递减），
                     // 逆时针=看更新。左/右缘镜像只改 pivot 位置、不改该符号。
-                    // 注：收起态表面在 BottomStart、展开态在 CenterStart，按压直滑展开瞬间左缘中点的屏幕 y
-                    // 有纵向跳变，属已知待真机验证项（方向/步进语义不受影响）。
-                    fun pivot() = Offset(0f, size.height / 2f)
+                    fun pivot() = if (dial.phase == DialPhase.Collapsed) {
+                        // 收起：56dp 表面，圆钮中心 = 表面中心
+                        Offset(0f, size.height / 2f)
+                    } else {
+                        // 展开：全高条，圆钮中心 Y = 距列表底 38dp（10dp 底边距 + 28dp 半径）
+                        Offset(0f, size.height - DIAL_PIVOT_BOTTOM_INSET_DP.dp.toPx())
+                    }
 
                     val down = awaitFirstDown(requireUnconsumed = false)
                     // 收起态只在圆钮命中半径内响应（表面已缩小到圆钮区，未命中自然落到底层）；展开态全条响应。
@@ -410,10 +428,10 @@ private fun DialSurface(
                         didDrag = true
                         dial.fingerDown = true
                         dial.touch()
-                        onDragStart()
-                        // 角度从当前触点（超阈值处）起算；pivot 用当前 size 重算（展开后表面变大）
+                        // 先按收起态 pivot 记录超阈值触点角度，再展开（onDragStart 后 phase 变、surface 变大）
                         lastAngle = angleDeg(change.position, pivot())
                         prevAccum = dial.accumDeg
+                        onDragStart()
                     }
 
                     if (slopReached == null) {
@@ -458,7 +476,7 @@ private fun DialSurface(
 
 /**
  * 展开扇形视觉（纯绘制，无手势）：静态层画 90° 扇面（开口向右）+ 固定红基准线（0° 水平向右）；
- * 旋转层只画刻度，graphicsLayer 绕左缘中点（扇面枢轴）旋转，读 accumDeg 不触发重组。
+ * 旋转层只画刻度，graphicsLayer 绕左缘、圆钮中心 Y（原地展开）旋转，读 accumDeg 不触发重组。
  */
 @Composable
 private fun FanVisual(dial: MessageDialState) {
@@ -467,9 +485,9 @@ private fun FanVisual(dial: MessageDialState) {
     val red = MaterialTheme.colorScheme.error
 
     Box(Modifier.fillMaxSize()) {
-        // 静态层：扇面 + 红线（固定，不随刻度旋转）。
+        // 静态层：扇面 + 红线（固定，不随刻度旋转）。pivot = (左缘, 距列表底 38dp) = 圆钮中心 Y。
         Canvas(Modifier.fillMaxSize()) {
-            val pivot = Offset(0f, size.height / 2f)
+            val pivot = Offset(0f, size.height - DIAL_PIVOT_BOTTOM_INSET_DP.dp.toPx())
             val radius = size.width
             drawArc(
                 color = fanColor,
@@ -483,16 +501,17 @@ private fun FanVisual(dial: MessageDialState) {
             val dir = Offset(cos(0f), sin(0f))
             drawLine(red, pivot + dir * inner, pivot + dir * radius, strokeWidth = 2.5.dp.toPx())
         }
-        // 旋转层：刻度（每 18° 一根，整圈 20 根；基角 0° 与红基准线对齐）。
+        // 旋转层：刻度（每 18° 一根，整圈 20 根；基角 0° 与红基准线对齐）。绕枢轴旋转。
         Canvas(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    transformOrigin = TransformOrigin(0f, 0.5f)
+                    val inset = DIAL_PIVOT_BOTTOM_INSET_DP.dp.toPx()
+                    transformOrigin = TransformOrigin(0f, (size.height - inset) / size.height)
                     rotationZ = dial.accumDeg
                 },
         ) {
-            val pivot = Offset(0f, size.height / 2f)
+            val pivot = Offset(0f, size.height - DIAL_PIVOT_BOTTOM_INSET_DP.dp.toPx())
             val radius = size.width
             val inner = radius * 0.60f
             val outer = radius * 0.94f
