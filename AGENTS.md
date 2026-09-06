@@ -19,7 +19,7 @@
 ## 历史决策记录（供未来会话参考）
 
 - 调试后端：当前用 **CDP（Node Inspector）直连**，零依赖但仅 Node；`DebugManager` 回调接口已预留 DAP 平替 seam。**未来若扩语言（Python/Go/Rust）必须先问用户**再实施 DAP 后端。
-- 语言服务器：TS/JS/Python/Rust/C/C++ + 官方 JetBrains kotlin-lsp（pull 诊断 + 项目导入）。
+- 语言服务器：TS/JS/Python/Rust/C/C++ + 官方 JetBrains kotlin-lsp（pull 诊断 + 项目导入）。Kotlin LSP 选型（2026-09-06 用户拍板，论证见 docs/decisions/kotlin-lsp-selection.md）：维持官方（唯一语义诊断最强+KMP 方向正确+活跃；fwcd 已 deprecated、Rust 版无类型检查均不迁）；已知限制=LSP-1561 Android 导入 CCE 未发布修复（Kotlin 诊断假阴性，TS/Python/Rust/C 不受影响），监控上游发布后按 UPGRADE-NOTES 升级。
 - 自动续跑：持续重试 + 指纹幂等 + work.json sessionId 归属（根治版）。
 - APK 瘦身（体积决策）：debug 包不 minify 保留可调试；新增 `release-in-house`（R8 + 资源裁剪 + debug 签名 + arm64-only，装机自测用，2.16MB vs debug 12.6MB）与 `release-store`（R8 + arm64-only，商店包，签名占位）；keep 规则见 `composeApp/proguard-rules.pro`（serialization / zxing / mikepenz-markdown / org.intellij.markdown 整体保留，宁可多 keep 不误删）。
 - 九项决策（2026-09-05 用户拍板）：① APK 瘦身=两 release 变体+arm64-only+≤6.3MB（已实施 2.16MB）；② Jugg 无头编译服务 MVP（2-5 人日）；③ Kotlin LSP 优先稳定版（含 LSP-1561 修复）；④ 中断语义=有排队消息时弹框二选一（终止并清空 / 仅终止保留，加取消）；「仅终止保留」后队列仍有待执行消息时自动启动新一轮 Agent 循环消费；⑤ 发送状态=IM 模式（点发送立即上屏+同时间行 Loading；成功消失；失败红色❗点击重发；输入框立即清空）；⑥ 装机进度=全程可见（包大小/传输百分比/步骤/错误归类）；⑦ R4 DEX registers_size 门禁挂构建自动执行（>128 告警 >256 失败）；⑧ goal 完成态对齐 DSH Web 隐藏；⑨ GitHub 推送=暂不推（等全部验收后再说）。
