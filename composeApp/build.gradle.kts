@@ -75,6 +75,31 @@ android {
         getByName("release") {
             isMinifyEnabled = false
         }
+        // 内部测试装机包：R8 压缩 + 资源裁剪 + debug 签名（可直接 adb install），仅 arm64-v8a
+        create("release-in-house") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.getByName("debug")
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
+        }
+        // 线上商店包：R8 压缩 + 资源裁剪；签名由发布时（Play App Signing）配置，此处占位不签
+        create("release-store") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
