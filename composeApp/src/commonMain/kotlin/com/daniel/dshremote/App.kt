@@ -1838,6 +1838,9 @@ private fun ConversationComposer(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     var showInterruptConfirm by remember { mutableStateOf(false) }
+    // 点「中断」那一刻的排队数快照：弹框正文必须用它，不能渲染时再读 queuedCounts——
+    // 否则「点中断时队列非空 → 弹框出现 → 队列恰好被消费」会在正文显示「0 条」与用户所见不符。
+    var confirmQueuedCount by remember { mutableStateOf(0) }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
@@ -1889,6 +1892,7 @@ private fun ConversationComposer(
                     ConnLog.info("ACTION", "中断点击 sessionId=$sessionId queued=$queuedCount")
                     if (queuedCount > 0) {
                         ConnLog.info("ACTION", "中断确认弹框出现 sessionId=$sessionId queued=$queuedCount")
+                        confirmQueuedCount = queuedCount
                         showInterruptConfirm = true
                     } else {
                         client.interrupt(sessionId, "clear")
@@ -1929,7 +1933,7 @@ private fun ConversationComposer(
     if (showInterruptConfirm) {
         InterruptConfirmDialog(
             sessionId = sessionId,
-            queuedCount = state.queuedCounts[sessionId] ?: 0,
+            queuedCount = confirmQueuedCount,
             onClear = { client.interrupt(sessionId, "clear"); showInterruptConfirm = false },
             onKeep = { client.interrupt(sessionId, "keep"); showInterruptConfirm = false },
             onDismiss = { showInterruptConfirm = false },
