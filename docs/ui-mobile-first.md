@@ -18,6 +18,7 @@
 | 3 | 48dp 圆按钮 + 默认 24dp 内边距 → 图标被挤没 | 圆钮 contentPadding 归零 |
 | 4 | 返回键曾跳层级/丢上下文 | 逐级返回规范（A→B→C，见 ui-navigation-guidelines.md） |
 | 5 | 列表新消息强制滚底，用户上滑浏览历史被打断 | 跟随状态机：默认跟随 → 用户上滑即暂停 → 滑回底部恢复（发送消息时重新跟随） |
+| 6 | org.intellij.markdown（mikepenz 底层）的 GFM 表格**不支持打断段落**：表格前一行与表格间缺空行时，整块塌成纯文本（竖线原样显示），与 Web 端（micromark 可打断）行为不一致 | 渲染入口 `normalizeMarkdownTables` 自动为表格块前补空行（行首 `|` 且下一行为分隔行、前一行非空时插入）；生成规范：表格前后各空一行、单元格 `|` 转义（见 docs/bugs/2026-09-07-markdown-table-needs-blank-line.md） |
 
 ## 相关文档
 
