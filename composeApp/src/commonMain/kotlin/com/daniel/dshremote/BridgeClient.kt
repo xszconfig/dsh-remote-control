@@ -1025,6 +1025,8 @@ class BridgeClient(
             is ServerEvent.GoalUpdate -> handleGoalUpdate(ev)
             is ServerEvent.TodosUpdate -> handleTodosUpdate(ev)
             is ServerEvent.CommandsUpdate -> handleCommandsUpdate(ev)
+            is ServerEvent.ModelsUpdate -> ConnLog.debug("MODEL", "模型目录快照（阶段1占位，阶段3落状态）sessionId=${ev.sessionId}")
+            is ServerEvent.ContextUsage -> ConnLog.debug("CTX", "上下文占用（阶段1占位，阶段3落状态）sessionId=${ev.sessionId}")
             is ServerEvent.DebugState -> handleDebugState(ev)
             is ServerEvent.DebugOutput -> handleDebugOutput(ev)
             is ServerEvent.DebugVariables -> handleDebugVariables(ev)

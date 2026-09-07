@@ -209,4 +209,114 @@ class ProtocolTest {
         assertEquals(2, p.urls.size)
         assertTrue(p.urls[0].contains("pair=abc"))
     }
+
+    // ---- 输入区改版：模型目录 / 上下文占用 / set_model ----
+
+    @Test
+    fun decode_models_update() {
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"models_update","sessionId":"s1","models":{
+                "current":{"provider":"deepseek-official","model":"deepseek-chat"},
+                "routable":true,
+                "groups":[{"id":"deepseek-official","name":"DeepSeek","models":[
+                    {"id":"deepseek-chat","name":"DeepSeek Chat","description":"通用对话"},
+                    {"id":"deepseek-reasoner","name":"DeepSeek Reasoner",
+                     "reasoning":{"efforts":[{"id":"low","name":"低"},{"id":"high","name":"高"}],"defaultEffort":"low"}}]}],
+                "failures":[]}}""",
+        )
+        val m = assertIs<ServerEvent.ModelsUpdate>(ev)
+        assertEquals("s1", m.sessionId)
+        assertEquals("deepseek-official", m.models.current?.provider)
+        assertEquals("deepseek-chat", m.models.current?.model)
+        assertNull(m.models.current?.reasoningEffort)
+        assertEquals(true, m.models.routable)
+        assertEquals(1, m.models.groups.size)
+        assertEquals("DeepSeek", m.models.groups[0].name)
+        assertEquals(2, m.models.groups[0].models.size)
+        val reasoner = m.models.groups[0].models[1]
+        assertEquals(2, reasoner.reasoning?.efforts?.size)
+        assertEquals("low", reasoner.reasoning?.defaultEffort)
+        assertEquals("高", reasoner.reasoning?.efforts?.get(1)?.name)
+    }
+
+    @Test
+    fun decode_models_update_minimal() {
+        // 目录未加载（current/routable 为 null）→ 客户端显示占位，不崩溃
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"models_update","sessionId":"s1","models":{"current":null,"routable":null,"groups":[],"failures":[]}}""",
+        )
+        val m = assertIs<ServerEvent.ModelsUpdate>(ev)
+        assertNull(m.models.current)
+        assertNull(m.models.routable)
+        assertEquals(emptyList(), m.models.groups)
+        assertEquals(emptyList(), m.models.failures)
+    }
+
+    @Test
+    fun decode_context_usage() {
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"context_usage","sessionId":"s1","usage":{
+                "contextWindow":128000,"pressureTokens":50000,"projectedTokens":52000,"percent":41,
+                "breakdown":{"systemTokens":8000,"toolsTokens":12000,"messageTokens":32000}}}""",
+        )
+        val u = assertIs<ServerEvent.ContextUsage>(ev)
+        assertEquals(128000L, u.usage.contextWindow)
+        assertEquals(50000L, u.usage.pressureTokens)
+        assertEquals(52000L, u.usage.projectedTokens)
+        assertEquals(41, u.usage.percent)
+        assertEquals(8000L, u.usage.breakdown?.systemTokens)
+        assertEquals(12000L, u.usage.breakdown?.toolsTokens)
+        assertEquals(32000L, u.usage.breakdown?.messageTokens)
+    }
+
+    @Test
+    fun decode_context_usage_minimal() {
+        // 无 provider 上报 usage / 无 breakdown 投影 → 全缺省，客户端不渲染占用环
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"context_usage","sessionId":"s1","usage":{}}""",
+        )
+        val u = assertIs<ServerEvent.ContextUsage>(ev)
+        assertNull(u.usage.contextWindow)
+        assertNull(u.usage.pressureTokens)
+        assertNull(u.usage.projectedTokens)
+        assertNull(u.usage.percent)
+        assertNull(u.usage.breakdown)
+    }
+
+    @Test
+    fun encode_set_model_wire() {
+        assertEquals(
+            """{"type":"set_model","sessionId":"s1","provider":"deepseek-official","model":"deepseek-chat","reasoningEffort":null}""",
+            BridgeJson.encodeToString(
+                ClientCommand.serializer(),
+                ClientCommand.SetModel("s1", "deepseek-official", "deepseek-chat"),
+            ),
+        )
+        assertEquals(
+            """{"type":"set_model","sessionId":"s1","provider":"deepseek-official","model":"deepseek-reasoner","reasoningEffort":"high"}""",
+            BridgeJson.encodeToString(
+                ClientCommand.serializer(),
+                ClientCommand.SetModel("s1", "deepseek-official", "deepseek-reasoner", "high"),
+            ),
+        )
+    }
+
+    @Test
+    fun decode_set_model_legacy() {
+        // 旧 wire（无 reasoningEffort）→ 回退 null（保留 provider/model 默认行为）
+        val cmd = BridgeJson.decodeFromString(
+            ClientCommand.serializer(),
+            """{"type":"set_model","sessionId":"s1","provider":"openai","model":"gpt-4o"}""",
+        )
+        val s = assertIs<ClientCommand.SetModel>(cmd)
+        assertEquals("s1", s.sessionId)
+        assertEquals("openai", s.provider)
+        assertEquals("gpt-4o", s.model)
+        assertNull(s.reasoningEffort)
+    }
 }
+

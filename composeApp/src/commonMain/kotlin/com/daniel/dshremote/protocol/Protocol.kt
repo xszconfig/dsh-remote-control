@@ -301,6 +301,92 @@ data class LogEntryWire(
     val message: String,
 )
 
+// ---- 模型选择与上下文占用（输入区改版新增；对齐 bridge protocol.ts，全可选向后兼容）----
+
+/** 完整模型选择：provider 路由 / 模型 id / 可选 reasoning effort。 */
+@Serializable
+data class ModelSelectionWire(
+    val provider: String,
+    val model: String,
+    val reasoningEffort: String? = null,
+)
+
+/** 单个 reasoning effort 档位（adapter 持有，id 提交回 adapter）。 */
+@Serializable
+data class ModelReasoningEffortWire(
+    val id: String,
+    val name: String,
+    val description: String? = null,
+)
+
+/** 某模型的 reasoning 元数据（effort 档位 + 默认档）。 */
+@Serializable
+data class ModelReasoningWire(
+    val efforts: List<ModelReasoningEffortWire>,
+    val defaultEffort: String? = null,
+)
+
+/** 目录内单个模型（含可选 reasoning 元数据）。 */
+@Serializable
+data class ModelCatalogModelWire(
+    val id: String,
+    val name: String,
+    val description: String? = null,
+    val reasoning: ModelReasoningWire? = null,
+)
+
+/** 一个 provider 分组及其成功列出的模型。 */
+@Serializable
+data class ModelProviderGroupWire(
+    val id: String,
+    val name: String,
+    val models: List<ModelCatalogModelWire>,
+)
+
+/** 目录加载失败的 provider（id/name/失败原因）。 */
+@Serializable
+data class ModelCatalogFailureWire(
+    val id: String,
+    val name: String,
+    val message: String,
+)
+
+/**
+ * 每会话模型目录快照（对齐 DSH Web `SessionModels`）：
+ * current=下一步组装的选择（null=未加载）；routable=当前 provider 是否有 adapter 服务（null=未加载）；
+ * groups=成功列出的 provider 分组；failures=目录加载失败的 provider。
+ */
+@Serializable
+data class SessionModelsWire(
+    val current: ModelSelectionWire? = null,
+    val routable: Boolean? = null,
+    val groups: List<ModelProviderGroupWire> = emptyList(),
+    val failures: List<ModelCatalogFailureWire> = emptyList(),
+)
+
+/** 上下文启发式组成（系统提示 / 工具 schema / 对话 surface；近似值，不等于占用分子）。 */
+@Serializable
+data class ContextBreakdownWire(
+    val systemTokens: Long,
+    val toolsTokens: Long,
+    val messageTokens: Long,
+)
+
+/**
+ * 上下文窗口占用（对齐 DSH Web `contextPressure` + `contextBreakdown`）：
+ * contextWindow=容量（缺省=无 adapter 上报）；pressureTokens=最近请求 prompt 用量；
+ * projectedTokens=占用分子（下一次请求成本）；percent=服务端算好的占用百分比（clamp 0-100，客户端只渲染）；
+ * breakdown=分类近似组成（缺省=无 breakdown 投影）。
+ */
+@Serializable
+data class ContextUsageWire(
+    val contextWindow: Long? = null,
+    val pressureTokens: Long? = null,
+    val projectedTokens: Long? = null,
+    val percent: Int? = null,
+    val breakdown: ContextBreakdownWire? = null,
+)
+
 // ---- 服务端事件（sealed 多态，type 字段判别）----
 
 @Serializable
@@ -443,6 +529,16 @@ sealed interface ServerEvent {
     /** 斜杠命令注册表变更（DSH commands/change）：重读该会话命令清单（客户端候选弹窗数据源）。 */
     @SerialName("commands_update")
     data class CommandsUpdate(val sessionId: String, val commands: List<CommandWire> = emptyList()) : ServerEvent
+
+    /** 模型目录快照推送（当前选择 + provider 分组 + routable；订阅/切会话/目录变更时下发）。 */
+    @Serializable
+    @SerialName("models_update")
+    data class ModelsUpdate(val sessionId: String, val models: SessionModelsWire) : ServerEvent
+
+    /** 上下文窗口占用推送（总量 + 分类近似组成；投影变更时推送，客户端只渲染不推算）。 */
+    @Serializable
+    @SerialName("context_usage")
+    data class ContextUsage(val sessionId: String, val usage: ContextUsageWire) : ServerEvent
 
     /** 调试断点（1-based 行号）。 */
     @Serializable
@@ -588,6 +684,16 @@ sealed interface ClientCommand {
     @Serializable
     @SerialName("send_message")
     data class SendMessage(val sessionId: String, val text: String) : ClientCommand
+
+    /** 切换当前会话模型（下一步 prompt 组装边界生效，不打断当前推理；reasoningEffort 可选）。 */
+    @Serializable
+    @SerialName("set_model")
+    data class SetModel(
+        val sessionId: String,
+        val provider: String,
+        val model: String,
+        val reasoningEffort: String? = null,
+    ) : ClientCommand
 
     /** 历史分页：拉取 seq < beforeSeq 的最近一页（最多 limit 条）。 */
     @Serializable
