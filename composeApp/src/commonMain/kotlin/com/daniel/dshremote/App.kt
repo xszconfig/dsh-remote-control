@@ -2418,7 +2418,9 @@ private fun Bubble(
                 // 字号：移动端档位显式映射（库默认 H1~H3 用 display 级 57/45/36sp，那是桌面大屏
                 // 展示字号，手机上巨大——我们做的是手机 App，逐元素定号，不依赖库默认值）。
                 Markdown(
-                    content = text,
+                    // 表格前补空行：org.intellij.markdown 的 GFM 表格不支持打断段落，
+                    // 缺空行会把表格塌成纯文本（见 MarkdownTableScroll.kt 的 normalizeMarkdownTables）。
+                    content = normalizeMarkdownTables(text),
                     typography = markdownTypography(
                         h1 = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.Bold),
                         h2 = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold),

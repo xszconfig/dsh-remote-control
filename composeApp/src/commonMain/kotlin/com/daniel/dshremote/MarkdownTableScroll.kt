@@ -166,3 +166,53 @@ private fun TableCellsRow(
         }
     }
 }
+
+/**
+ * 渲染前轻量归一化：为 Markdown 表格块前补空行。
+ *
+ * 根因：App 端底层解析器 org.intellij.markdown（mikepenz 0.28 依赖）的 GFM 表格
+ * **不支持打断段落**——表格紧跟前一行且中间无空行时，整块被塌成一段纯文本（竖线原样
+ * 显示，即用户看到的「解析失败」）；两个连续表格之间若无空行也会被合并成一个表格。
+ * Web 端（micromark ≥2.1）通过 dynamic-interrupt 支持打断段落，故无此限制。
+ *
+ * 做法：识别「表格表头行」（行首 `|` 且下一行是 GFM 分隔行），若其前一行非空行则
+ * 在表头前插入一个空行；其余内容原样保留（幂等、不触碰表格内部行）。
+ * 详见 docs/bugs/2026-09-07-markdown-table-needs-blank-line.md。
+ */
+internal fun normalizeMarkdownTables(input: String): String {
+    val lines = input.split('\n')
+    if (lines.size < 2) return input
+    val out = ArrayList<String>(lines.size + 4)
+    for (i in lines.indices) {
+        val line = lines[i]
+        if (isTableHeaderStart(lines, i)) {
+            val prev = out.lastOrNull()
+            if (prev != null && prev.isNotBlank()) {
+                out.add("")
+            }
+        }
+        out.add(line)
+    }
+    return out.joinToString("\n")
+}
+
+/** 当前行是否是一张表格的表头行：行首 `|` 且下一行是 GFM 分隔行。 */
+private fun isTableHeaderStart(lines: List<String>, i: Int): Boolean {
+    if (i + 1 >= lines.size) return false
+    if (!lines[i].trimStart().startsWith("|")) return false
+    return isTableDelimiterRow(lines[i + 1])
+}
+
+/** 是否为 GFM 表格分隔行（如 `|---|---|---|` 或 `| --- | :---: |`）。 */
+private fun isTableDelimiterRow(line: String): Boolean {
+    var s = line.trim()
+    if (s.isEmpty()) return false
+    if (s.startsWith("|")) s = s.substring(1)
+    if (s.endsWith("|")) s = s.dropLast(1)
+    val cells = s.split('|')
+    if (cells.isEmpty()) return false
+    return cells.all { cell ->
+        val c = cell.trim()
+        c.isNotEmpty() && c.all { it == '-' || it == ':' } && c.any { it == '-' }
+    }
+}
