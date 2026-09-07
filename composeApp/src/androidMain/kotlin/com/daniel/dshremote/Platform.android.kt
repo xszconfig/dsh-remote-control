@@ -1,6 +1,10 @@
 package com.daniel.dshremote
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,8 +39,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.ResultPoint
@@ -123,6 +130,138 @@ actual fun platformVibrateTick(boundary: Boolean) {
     } catch (_: Exception) {
         // 触感失败不影响转盘功能
     }
+}
+
+// ---- 前台/后台状态跟踪（ProcessLifecycleOwner）+ 主动通知发送 ----
+
+/** 应用前台状态：onStart 起算为前台，onStop 为后台/锁屏（ProcessLifecycleOwner 观测）。 */
+internal object AppForeground {
+    @Volatile
+    private var foreground = false
+    @Volatile
+    private var registered = false
+
+    private fun ensureRegistered() {
+        if (registered) return
+        synchronized(this) {
+            if (registered) return
+            registered = true
+            try {
+                ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+                    override fun onStart(owner: LifecycleOwner) { foreground = true }
+                    override fun onStop(owner: LifecycleOwner) { foreground = false }
+                })
+            } catch (_: Exception) {
+                // 观测失败不阻塞通知流程；保守按后台处理（宁可发通知也不漏）
+            }
+        }
+    }
+
+    fun isForeground(): Boolean {
+        ensureRegistered()
+        return foreground
+    }
+}
+
+internal actual fun platformIsAppForeground(): Boolean = AppForeground.isForeground()
+
+/** 通知渠道 + 发送/撤销（平台 Notification.Builder 直用，零 androidx.core 依赖）。 */
+internal object NotificationPoster {
+    private const val CHANNEL_APPROVAL = "dsh_approval"
+    private const val CHANNEL_DELIVERY = "dsh_delivery"
+    private const val CHANNEL_DELIVERY_SILENT = "dsh_delivery_silent"
+
+    private fun ensureChannels(nm: NotificationManager) {
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_APPROVAL, "审批与提问", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "需要你及时响应的审批与提问"
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_DELIVERY, "结果交付", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "异步会话的结果交付提醒"
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_DELIVERY_SILENT, "结果交付（夜间静默）", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "夜间勿扰时段的结果交付提醒（无声音振动）"
+                setSound(null, null)
+                enableVibration(false)
+            }
+        )
+    }
+
+    private fun channelIdFor(spec: NotificationSpec): String = when (spec.kind) {
+        NotificationKind.APPROVAL, NotificationKind.QUESTION -> CHANNEL_APPROVAL
+        NotificationKind.DELIVERY -> if (spec.silent) CHANNEL_DELIVERY_SILENT else CHANNEL_DELIVERY
+    }
+
+    private fun smallIconFor(spec: NotificationSpec): Int = when (spec.kind) {
+        NotificationKind.APPROVAL, NotificationKind.QUESTION -> android.R.drawable.stat_sys_warning
+        NotificationKind.DELIVERY -> android.R.drawable.stat_notify_chat
+    }
+
+    private fun hasPermission(context: android.content.Context): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return true
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return true
+        // 首次触发时申请；申请期间本次不 post，授权后下一次事件会正常 post
+        try {
+            @Suppress("DEPRECATION")
+            AppContext.activity?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        } catch (_: Exception) {
+            // 无 Activity（异常场景）则不申请，静默跳过
+        }
+        return false
+    }
+
+    fun post(context: android.content.Context, spec: NotificationSpec) {
+        try {
+            if (!hasPermission(context)) return
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            ensureChannels(nm)
+            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val contentIntent = launch?.let {
+                PendingIntent.getActivity(
+                    context, 0, it,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+            val notification = Notification.Builder(context, channelIdFor(spec))
+                .setSmallIcon(smallIconFor(spec))
+                .setContentTitle(spec.title)
+                .setContentText(spec.body)
+                .setStyle(Notification.BigTextStyle().bigText(spec.body))
+                .setContentIntent(contentIntent)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_REMINDER)
+                .build()
+            nm.notify(spec.tag, spec.tag.hashCode(), notification)
+        } catch (_: Exception) {
+            // 通知失败不影响审批流程
+        }
+    }
+
+    fun cancel(context: android.content.Context, tag: String) {
+        try {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            nm.cancel(tag, tag.hashCode())
+        } catch (_: Exception) {
+            // 撤销失败忽略
+        }
+    }
+}
+
+internal actual fun platformPostNotification(spec: NotificationSpec) {
+    val context = AppContext.context ?: return
+    NotificationPoster.post(context, spec)
+}
+
+internal actual fun platformCancelNotification(tag: String) {
+    val context = AppContext.context ?: return
+    NotificationPoster.cancel(context, tag)
 }
 
 @Composable

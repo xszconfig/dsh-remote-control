@@ -274,6 +274,20 @@ class BridgeClient(
     /** 本地待发送消息 localId 自增序号（防同一毫秒内多条冲突）。 */
     private var pendingIdSeq = 0L
 
+    /** 主动通知编排器（三态门控 + 幂等去重 + 勿扰时段；宿主平台能力见 androidMain）。 */
+    private val notifications = NotificationController(object : NotificationHost {
+        override fun isForeground() = platformIsAppForeground()
+        override fun currentSessionId() = _session.value.currentSessionId
+        override fun post(spec: NotificationSpec) = platformPostNotification(spec)
+        override fun cancel(tag: String) = platformCancelNotification(tag)
+    })
+    /** 各会话最近一次 OPEN 轮次起点（turn_status 投影；结果交付「会话×轮次」幂等键）。 */
+    private val turnStartBySession = mutableMapOf<String, Long>()
+    /** 各会话最近一次「最终结论」时间戳（结果交付降噪：主会话 idle 需有 assistant_message）。 */
+    private val lastAssistantTsBySession = mutableMapOf<String, Long>()
+    /** 各会话最近一次非空 tool_result 时间戳（结果交付降噪：子代理 settle 允许 tool_result）。 */
+    private val lastToolResultTsBySession = mutableMapOf<String, Long>()
+
     init {
         scope.launch {
             connection.events.collect { ev -> handle(ev) }
@@ -1101,6 +1115,14 @@ class BridgeClient(
         // 自动打开最近会话：hello 对账完成后、无打开会话且本连接内未手动关闭过时，
         // 直接落进当前工作区最近一个主会话（更丝滑）。放在重订阅之后，避免重复订阅。
         maybeAutoOpenRecentSession()
+        // 补发审批/提问通知：重连/新连接后按服务端快照重建待裁决队列时，对未通知过的项主动召回
+        // （幂等：已通知过的不会重复；放在自动打开之后，让门控能正确识别「正在浏览该会话」）。
+        allApprovals.forEach { a ->
+            notifications.onApprovalArrived(a.approvalId, a.sessionId, a.toolName, a.reason, a.command)
+        }
+        ev.pendingQuestions.forEach { q ->
+            notifications.onQuestionArrived(q.rpcId, q.sessionId, q.questions.size, q.questions.firstOrNull()?.question)
+        }
     }
 
     /** 连接建立后的自动打开：条件满足才打开，否则只记 INFO 埋点。 */
@@ -1185,6 +1207,12 @@ class BridgeClient(
                 _session.update { s -> s.copy(pendingMessages = removePending(s.pendingMessages, matched)) }
             }
         }
+        // 结果交付降噪：记录各会话「最终结论 / 非空工具产出」的最近时间戳（跨会话，非当前会话也记）
+        when {
+            ev.event.type == "assistant_message" -> lastAssistantTsBySession[ev.sessionId] = ev.event.timestamp
+            ev.event.type == "tool_result" && !ev.event.toolResult.isNullOrBlank() ->
+                lastToolResultTsBySession[ev.sessionId] = ev.event.timestamp
+        }
         _session.update { s ->
             if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
         }
@@ -1239,6 +1267,10 @@ class BridgeClient(
     }
 
     private fun handleTurnStatus(ev: ServerEvent.TurnStatus) {
+        // 结果交付：记录各会话轮次起点（跨会话）；open=false（turn/end）时按「会话×轮次」幂等发通知
+        if (ev.open) {
+            ev.since?.let { turnStartBySession[ev.sessionId] = it }
+        }
         _session.update { st ->
             // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
             // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
@@ -1250,6 +1282,7 @@ class BridgeClient(
                 st.copy(divingTurnStart = null, deepDivingElapsed = null)
             }
         }
+        if (!ev.open) notifyTurnDelivery(ev.sessionId)
     }
 
     private fun handleThinkDelta(ev: ServerEvent.ThinkDelta) {
@@ -1274,6 +1307,11 @@ class BridgeClient(
         _session.update { st ->
             // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
             if (ev.sessionId == st.currentSessionId) st.copy(goal = ev.goal) else st
+        }
+        // 结果交付 D3：goal 终态（complete / blocked）主动通知（幂等键 = goal.updatedAt）
+        val goal = ev.goal
+        if (goal != null && (goal.phase == "complete" || goal.phase == "blocked")) {
+            notifyGoalDelivery(ev.sessionId, goal.updatedAt, blocked = goal.phase == "blocked", blockedMessage = goal.blockedMessage)
         }
     }
 
@@ -1352,6 +1390,7 @@ class BridgeClient(
     }
 
     private fun handleAgentStatus(ev: ServerEvent.AgentStatus) {
+        val prevStatus = _session.value.sessions.firstOrNull { it.id == ev.sessionId }?.status
         _session.update { s ->
             s.copy(
                 sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
@@ -1360,6 +1399,39 @@ class BridgeClient(
             )
         }
         scheduleSessionCacheSave()
+        // 结果交付 D1/D2 兜底：agent 由 running→idle（与 turn_status close 同源，幂等去重）
+        if (prevStatus == "running" && ev.status == "idle") {
+            notifyTurnDelivery(ev.sessionId)
+        }
+    }
+
+    /** 结果交付降噪：该会话本轮是否有「最终结论 / 非空工具产出」（主会话只认 assistant_message）。 */
+    private fun hasSubstantiveOutput(sessionId: String, isSubagent: Boolean): Boolean {
+        val turnStart = turnStartBySession[sessionId]
+        val assistant = lastAssistantTsBySession[sessionId]
+        val toolResult = lastToolResultTsBySession[sessionId]
+        fun Long?.afterTurn(): Boolean = this != null && (turnStart == null || this >= turnStart)
+        return if (isSubagent) assistant.afterTurn() || toolResult.afterTurn() else assistant.afterTurn()
+    }
+
+    /** 结果交付 D1/D2：轮次结束 / agent 空闲 → 主动通知（幂等键 = 会话×轮次起点）。 */
+    private fun notifyTurnDelivery(sessionId: String) {
+        val s = _session.value
+        val sess = s.sessions.firstOrNull { it.id == sessionId }
+        val isSubagent = sess?.parentSessionId != null
+        if (!hasSubstantiveOutput(sessionId, isSubagent)) {
+            ConnLog.info("NOTIFY", "结果交付跳过（无实质产出）session=${sessionId.take(8)} subagent=$isSubagent")
+            return
+        }
+        val turnKey = turnStartBySession[sessionId]?.toString() ?: "no-turn"
+        notifications.onDelivery(sessionId, sess?.name, isSubagent, turnKey, blocked = false, blockedMessage = null)
+    }
+
+    /** 结果交付 D3：goal 终态 → 主动通知（幂等键 = goal.updatedAt）。 */
+    private fun notifyGoalDelivery(sessionId: String, updatedAt: Long, blocked: Boolean, blockedMessage: String?) {
+        val s = _session.value
+        val sess = s.sessions.firstOrNull { it.id == sessionId }
+        notifications.onDelivery(sessionId, sess?.name, sess?.parentSessionId != null, "goal-$updatedAt", blocked, blockedMessage)
     }
 
     private fun handleSessionTitle(ev: ServerEvent.SessionTitle) {
@@ -1384,19 +1456,25 @@ class BridgeClient(
     }
 
     private fun handleApprovalRequest(ev: ServerEvent.ApprovalRequest) {
-        _session.update { s ->
-            val known = s.approvals.any { it.approvalId == ev.approval.approvalId }
-            ConnLog.info(
-                "APPROVAL",
-                "收到审批 approval=${ev.approval.approvalId.take(8)} tool=${ev.approval.toolName} " +
-                    "rpc=${ev.approval.rpcId?.take(8) ?: "bridge-held"}${if (known) "（重复，忽略）" else ""}",
+        val known = _session.value.approvals.any { it.approvalId == ev.approval.approvalId }
+        ConnLog.info(
+            "APPROVAL",
+            "收到审批 approval=${ev.approval.approvalId.take(8)} tool=${ev.approval.toolName} " +
+                "rpc=${ev.approval.rpcId?.take(8) ?: "bridge-held"}${if (known) "（重复，忽略）" else ""}",
+        )
+        if (!known) {
+            platformVibrateApproval()
+            notifications.onApprovalArrived(
+                ev.approval.approvalId, ev.approval.sessionId, ev.approval.toolName, ev.approval.reason, ev.approval.command,
             )
-            if (!known) platformVibrateApproval()
+        }
+        _session.update { s ->
             s.copy(approvals = if (known) s.approvals else s.approvals + ev.approval)
         }
     }
 
     private fun handleApprovalResolved(ev: ServerEvent.ApprovalResolved) {
+        notifications.onApprovalResolved(ev.approvalId)
         _session.update { s ->
             ConnLog.info("APPROVAL", "审批已解决 approval=${ev.approvalId.take(8)} outcome=${ev.outcome}")
             s.copy(
@@ -1407,6 +1485,7 @@ class BridgeClient(
     }
 
     private fun handleApprovalSettledLegacy(ev: ServerEvent.ApprovalSettledLegacy) {
+        notifications.onApprovalResolved(ev.approvalId)
         _session.update { s ->
             ConnLog.info("APPROVAL", "审批已解决（旧版事件）approval=${ev.approvalId.take(8)}")
             s.copy(
@@ -1417,18 +1496,24 @@ class BridgeClient(
     }
 
     private fun handleQuestionRequest(ev: ServerEvent.QuestionRequest) {
-        _session.update { s ->
-            val known = s.questions.any { it.rpcId == ev.question.rpcId }
-            ConnLog.info(
-                "QUESTION",
-                "收到提问 rpc=${ev.question.rpcId.take(8)} questions=${ev.question.questions.size}${if (known) "（重复，忽略）" else ""}",
+        val known = _session.value.questions.any { it.rpcId == ev.question.rpcId }
+        ConnLog.info(
+            "QUESTION",
+            "收到提问 rpc=${ev.question.rpcId.take(8)} questions=${ev.question.questions.size}${if (known) "（重复，忽略）" else ""}",
+        )
+        if (!known) {
+            platformVibrateApproval()
+            notifications.onQuestionArrived(
+                ev.question.rpcId, ev.question.sessionId, ev.question.questions.size, ev.question.questions.firstOrNull()?.question,
             )
-            if (!known) platformVibrateApproval()
+        }
+        _session.update { s ->
             s.copy(questions = if (known) s.questions else s.questions + ev.question)
         }
     }
 
     private fun handleQuestionResolved(ev: ServerEvent.QuestionResolved) {
+        notifications.onQuestionResolved(ev.rpcId)
         _session.update { s ->
             ConnLog.info("QUESTION", "提问已解决 rpc=${ev.rpcId.take(8)} outcome=${ev.outcome}")
             s.copy(
