@@ -125,6 +125,8 @@ data class SessionUiState(
     val currentSessionId: String? = null,
     /** 查看子代理会话时记录的返回目标（主会话 id）；返回键/← 回到主会话。 */
     val subagentReturnTo: String? = null,
+    /** 子会话打开时，主会话（subagentReturnTo）的 live 投影；平板中栏渲染，手机忽略。 */
+    val parentView: SessionViewState = SessionViewState(),
     val events: List<EventProjection> = emptyList(),
     /** 是否还有更早历史可翻页。 */
     val hasMore: Boolean = false,
@@ -171,7 +173,56 @@ data class SessionUiState(
     /** 正在提交答案的提问 rpcId。 */
     val decidingQuestionRpcId: String? = null,
     val errors: List<NoticeError> = emptyList(),
-)
+) {
+    /** 把 currentSessionId 的内联投影打包成 [SessionViewState]（供 viewOf 复用）。 */
+    fun currentView(): SessionViewState = SessionViewState(
+        events = events,
+        hasMore = hasMore,
+        historyTotal = historyTotal,
+        loadingOlder = loadingOlder,
+        queueItems = queueItems,
+        pendingMessages = pendingMessages,
+        modelWaitingSince = modelWaitingSince,
+        divingTurnStart = divingTurnStart,
+        deepDivingElapsed = deepDivingElapsed,
+        todos = todos,
+        commands = commands,
+        liveThink = liveThink,
+        goal = goal,
+        debug = debug,
+        debugOutput = debugOutput,
+        debugVars = debugVars,
+        diagnostics = diagnostics,
+    )
+
+    /** 取某会话的 live 投影：当前会话→内联字段；主会话(子会话打开时)→parentView；其余→空。 */
+    fun viewOf(sessionId: String): SessionViewState = when (sessionId) {
+        currentSessionId -> currentView()
+        subagentReturnTo -> parentView
+        else -> SessionViewState()
+    }
+
+    /** 把 [SessionViewState] 回写到 currentSessionId 的内联投影字段（handler 路由用）。 */
+    fun copyCurrentView(v: SessionViewState): SessionUiState = copy(
+        events = v.events,
+        hasMore = v.hasMore,
+        historyTotal = v.historyTotal,
+        loadingOlder = v.loadingOlder,
+        queueItems = v.queueItems,
+        pendingMessages = v.pendingMessages,
+        modelWaitingSince = v.modelWaitingSince,
+        divingTurnStart = v.divingTurnStart,
+        deepDivingElapsed = v.deepDivingElapsed,
+        todos = v.todos,
+        commands = v.commands,
+        liveThink = v.liveThink,
+        goal = v.goal,
+        debug = v.debug,
+        debugOutput = v.debugOutput,
+        debugVars = v.debugVars,
+        diagnostics = v.diagnostics,
+    )
+}
 
 /**
  * 断开连接时的状态清理：清掉服务端来的易变数据，但保留用户偏好
@@ -185,6 +236,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     workspaces = emptyList(),
     currentSessionId = null,
     subagentReturnTo = null,
+    parentView = SessionViewState(),
     events = emptyList(),
     hasMore = false,
     historyTotal = 0,
@@ -739,7 +791,7 @@ class BridgeClient(
         // 子代理视图的关闭 = 回到主会话（返回键与 ← 按钮共用此路径）
         val returnTo = _session.value.subagentReturnTo
         if (returnTo != null) {
-            _session.update { it.copy(subagentReturnTo = null) }
+            _session.update { it.copy(subagentReturnTo = null, parentView = SessionViewState()) }
             openSession(returnTo)
             return
         }
@@ -753,7 +805,8 @@ class BridgeClient(
         val parentId = _session.value.currentSessionId ?: return
         if (parentId == subagentId) return
         ConnLog.info("CMD", "打开子代理 subagentId=$subagentId parentId=$parentId")
-        _session.update { it.copy(subagentReturnTo = parentId) }
+        // 平板 route B：快照主会话投影到 parentView，子会话打开后中栏仍能 live 渲染主会话。
+        _session.update { it.copy(subagentReturnTo = parentId, parentView = it.currentView()) }
         openSession(subagentId)
     }
 
@@ -1046,6 +1099,21 @@ class BridgeClient(
         }
     }
 
+    /**
+     * 把一次「会话详情投影」变换路由到正确目标：currentSessionId → 内联字段；
+     * subagentReturnTo（子会话打开时的主会话）→ parentView；其余 → 丢弃。
+     * 平板 route B「双 live」的事件路由核心（手机无子会话时 subagentReturnTo 恒 null，行为不变）。
+     */
+    private fun updateView(sessionId: String, transform: (SessionViewState) -> SessionViewState) {
+        _session.update { s ->
+            when (sessionId) {
+                s.currentSessionId -> s.copyCurrentView(transform(s.currentView()))
+                s.subagentReturnTo -> s.copy(parentView = transform(s.parentView))
+                else -> s
+            }
+        }
+    }
+
     private fun handleHello(ev: ServerEvent.Hello) {
         sawHelloThisConnection = true
         // hello = 连接已建立且完全同步的权威信号：重连成功后由这里清横幅，
@@ -1149,14 +1217,12 @@ class BridgeClient(
 
     private fun handleHistory(ev: ServerEvent.History) {
         val wasLoadingOlder = _session.value.loadingOlder && ev.sessionId == _session.value.currentSessionId
-        _session.update { s ->
-            if (ev.sessionId != s.currentSessionId) {
-                s
-            } else if (s.loadingOlder) {
+        updateView(ev.sessionId) { v ->
+            if (v.loadingOlder) {
                 // 翻页响应：往前插入更早的一页（按 seq+type 去重——
                 // think/正文同 seq，纯 seq 去重会丢行）
-                val merged = (ev.events + s.events).distinctBy { "${it.seq}-${it.type}" }
-                s.copy(
+                val merged = (ev.events + v.events).distinctBy { "${it.seq}-${it.type}" }
+                v.copy(
                     events = merged,
                     hasMore = ev.hasMore,
                     historyTotal = ev.total,
@@ -1165,7 +1231,7 @@ class BridgeClient(
             } else {
                 // 订阅响应：该会话正在等模型 → 切进来立刻显示 Deep Diving（会话级，不串扰）。
                 // 轮次起点优先用服务端 turnSince（中途切入也能显示标签），回退模型等待起点。
-                s.copy(
+                v.copy(
                     events = ev.events.bounded(),
                     queueItems = ev.queue,
                     hasMore = ev.hasMore,
@@ -1188,10 +1254,10 @@ class BridgeClient(
                 val elapsed = start?.let { nowMillis() - it }
                 ConnLog.info("CMD", "会话历史到达 sessionId=${ev.sessionId} 条数=${ev.events.size} hasMore=${ev.hasMore} 耗时=${elapsed ?: "?"}ms")
             }
+            lastCacheSaveAt = 0
+            scope.launch { eventCache.save(eventCacheKey(ev.sessionId), _session.value.events.takeLast(MAX_EVENTS)) }
+            ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史窗口 ${_session.value.events.size} 条（排队 ${ev.queue.size}）")
         }
-        lastCacheSaveAt = 0
-        scope.launch { eventCache.save(eventCacheKey(ev.sessionId), _session.value.events.takeLast(MAX_EVENTS)) }
-        ConnLog.debug("CACHE", "会话 ${ev.sessionId} 历史窗口 ${_session.value.events.size} 条（排队 ${ev.queue.size}）")
     }
 
     private fun handleEvent(ev: ServerEvent.Event) {
@@ -1215,57 +1281,39 @@ class BridgeClient(
             ev.event.type == "tool_result" && !ev.event.toolResult.isNullOrBlank() ->
                 lastToolResultTsBySession[ev.sessionId] = ev.event.timestamp
         }
-        _session.update { s ->
-            if (ev.sessionId == s.currentSessionId) s.copy(events = (s.events + ev.event).bounded()) else s
-        }
+        updateView(ev.sessionId) { v -> v.copy(events = (v.events + ev.event).bounded()) }
         if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
     }
 
     private fun handleSessionQueue(ev: ServerEvent.SessionQueue) {
+        val queued = ev.items.count { it.placement == "queued" }
+        // queuedCounts 是跨会话的全局计数（供列表行中断确认弹框），无论当前/后台都更新。
         _session.update { s ->
-            val queued = ev.items.count { it.placement == "queued" }
-            val counts = if (queued == 0) s.queuedCounts - ev.sessionId else s.queuedCounts + (ev.sessionId to queued)
-            if (ev.sessionId == s.currentSessionId) {
-                s.copy(queueItems = ev.items, queuedCounts = counts)
-            } else {
-                s.copy(queuedCounts = counts)
-            }
+            s.copy(queuedCounts = if (queued == 0) s.queuedCounts - ev.sessionId else s.queuedCounts + (ev.sessionId to queued))
         }
+        updateView(ev.sessionId) { v -> v.copy(queueItems = ev.items) }
     }
 
     private fun handleModelWaiting(ev: ServerEvent.ModelWaiting) {
-        _session.update { st ->
-            // Deep Diving 本轮计时：首轮模型请求记录本轮起点，后续请求沿用（不重置）
-            if (ev.sessionId == st.currentSessionId) {
-                st.copy(
-                    modelWaitingSince = ev.startedAt,
-                    divingTurnStart = st.divingTurnStart ?: ev.startedAt,
-                )
-            } else {
-                st
-            }
+        // Deep Diving 本轮计时：首轮模型请求记录本轮起点，后续请求沿用（不重置）
+        updateView(ev.sessionId) { v ->
+            v.copy(modelWaitingSince = ev.startedAt, divingTurnStart = v.divingTurnStart ?: ev.startedAt)
         }
     }
 
     private fun handleModelWaitingDone(ev: ServerEvent.ModelWaitingDone) {
-        _session.update { st ->
-            // 只清「等待模型」指示；Deep Diving 时钟是轮次级状态（锚定轮次起点），
-            // 一轮中可能有多次模型调用，每次完成都会广播一次 model_waiting_done——
-            // 若在这里清 deepDivingElapsed，时钟会在下一个 tick（≤1s）前短暂消失，
-            // 正是用户看到的「计时器闪烁」。轮次级时钟只在 turn_status(closed) 清除。
-            if (ev.sessionId == st.currentSessionId && st.modelWaitingSince == ev.startedAt) {
-                st.copy(modelWaitingSince = null)
-            } else {
-                st
-            }
+        // 只清「等待模型」指示；Deep Diving 时钟是轮次级状态（锚定轮次起点），
+        // 一轮中可能有多次模型调用，每次完成都会广播一次 model_waiting_done——
+        // 若在这里清 deepDivingElapsed，时钟会在下一个 tick（≤1s）前短暂消失，
+        // 正是用户看到的「计时器闪烁」。轮次级时钟只在 turn_status(closed) 清除。
+        updateView(ev.sessionId) { v ->
+            if (v.modelWaitingSince == ev.startedAt) v.copy(modelWaitingSince = null) else v
         }
     }
 
     private fun handleDeepDivingTick(ev: ServerEvent.DeepDivingTick) {
-        _session.update { st ->
-            // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
-            if (ev.sessionId == st.currentSessionId) st.copy(deepDivingElapsed = ev.elapsedSeconds) else st
-        }
+        // 会话隔离：等待时长只归属对应会话（服务端时钟秒数，本地不再计时）
+        updateView(ev.sessionId) { v -> v.copy(deepDivingElapsed = ev.elapsedSeconds) }
     }
 
     private fun handleTurnStatus(ev: ServerEvent.TurnStatus) {
@@ -1273,43 +1321,30 @@ class BridgeClient(
         if (ev.open) {
             ev.since?.let { turnStartBySession[ev.sessionId] = it }
         }
-        _session.update { st ->
+        updateView(ev.sessionId) { v ->
             // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
             // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
-            if (ev.sessionId != st.currentSessionId) {
-                st
-            } else if (ev.open) {
-                st.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
-            } else {
-                st.copy(divingTurnStart = null, deepDivingElapsed = null)
-            }
+            if (ev.open) v.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
+            else v.copy(divingTurnStart = null, deepDivingElapsed = null)
         }
         if (!ev.open) notifyTurnDelivery(ev.sessionId)
     }
 
     private fun handleThinkDelta(ev: ServerEvent.ThinkDelta) {
-        _session.update { st ->
-            if (ev.sessionId == st.currentSessionId) st.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) else st
-        }
+        updateView(ev.sessionId) { v -> v.copy(liveThink = ev.text.takeIf { it.isNotEmpty() }) }
     }
 
     private fun handleDiagnostics(ev: ServerEvent.Diagnostics) {
-        _session.update { st ->
+        updateView(ev.sessionId) { v ->
             // 会话隔离：诊断只归属触发它的会话；文件级替换（空集合 = 该文件已无问题）
-            if (ev.sessionId != st.currentSessionId) {
-                st
-            } else {
-                val rest = st.diagnostics.filterNot { it.path == ev.path }
-                st.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
-            }
+            val rest = v.diagnostics.filterNot { it.path == ev.path }
+            v.copy(diagnostics = (rest + ev.diagnostics).takeLast(100))
         }
     }
 
     private fun handleGoalUpdate(ev: ServerEvent.GoalUpdate) {
-        _session.update { st ->
-            // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
-            if (ev.sessionId == st.currentSessionId) st.copy(goal = ev.goal) else st
-        }
+        // 会话隔离：目标变更只归属对应会话（goal=null 表示已清除 → 隐藏面板）
+        updateView(ev.sessionId) { v -> v.copy(goal = ev.goal) }
         // 结果交付 D3：goal 终态（complete / blocked）主动通知（幂等键 = goal.updatedAt）
         val goal = ev.goal
         if (goal != null && (goal.phase == "complete" || goal.phase == "blocked")) {
@@ -1318,50 +1353,29 @@ class BridgeClient(
     }
 
     private fun handleTodosUpdate(ev: ServerEvent.TodosUpdate) {
-        _session.update { st ->
-            // 会话隔离：任务列表只归属对应会话（每会话一份）
-            if (ev.sessionId == st.currentSessionId) st.copy(todos = ev.todos) else st
-        }
+        // 会话隔离：任务列表只归属对应会话（每会话一份）
+        updateView(ev.sessionId) { v -> v.copy(todos = ev.todos) }
     }
 
     private fun handleCommandsUpdate(ev: ServerEvent.CommandsUpdate) {
-        _session.update { st ->
-            // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
-            if (ev.sessionId == st.currentSessionId) st.copy(commands = ev.commands) else st
-        }
+        // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
+        updateView(ev.sessionId) { v -> v.copy(commands = ev.commands) }
     }
 
     private fun handleDebugState(ev: ServerEvent.DebugState) {
-        _session.update { st ->
+        updateView(ev.sessionId) { v ->
             // 会话隔离；离开 paused 时清空变量缓存（objectId 已失效）
-            if (ev.sessionId != st.currentSessionId) {
-                st
-            } else {
-                st.copy(
-                    debug = ev.debug,
-                    debugVars = if (ev.debug.state == "paused") st.debugVars else emptyMap(),
-                )
-            }
+            v.copy(debug = ev.debug, debugVars = if (ev.debug.state == "paused") v.debugVars else emptyMap())
         }
     }
 
     private fun handleDebugOutput(ev: ServerEvent.DebugOutput) {
-        _session.update { st ->
-            if (ev.sessionId == st.currentSessionId) {
-                st.copy(debugOutput = (st.debugOutput + ev.line).takeLast(200))
-            } else {
-                st
-            }
-        }
+        updateView(ev.sessionId) { v -> v.copy(debugOutput = (v.debugOutput + ev.line).takeLast(200)) }
     }
 
     private fun handleDebugVariables(ev: ServerEvent.DebugVariables) {
-        _session.update { st ->
-            if (ev.sessionId == st.currentSessionId) {
-                st.copy(debugVars = st.debugVars + (ev.variablesReference to ev.variables))
-            } else {
-                st
-            }
+        updateView(ev.sessionId) { v ->
+            v.copy(debugVars = v.debugVars + (ev.variablesReference to ev.variables))
         }
     }
 

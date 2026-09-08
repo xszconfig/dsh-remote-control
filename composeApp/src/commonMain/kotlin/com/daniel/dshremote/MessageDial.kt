@@ -58,7 +58,7 @@ private const val DIAL_PIVOT_BOTTOM_INSET_DP = 38f
  * 消息转盘：右侧中间的半透明旋钮，点击展开为 90° 扇形，单指拨动快速定位到「你发的消息」。
  *
  * 数据来源一律以 [SessionUiState]（服务端投影）为准：用户消息集合由 [userMessageRefs]
- * 从 state.events 惰性扫描得出；翻页复用 [onLoadOlder]（内部已有 loadingOlder 单飞守卫）。
+ * 从 view.events 惰性扫描得出；翻页复用 [onLoadOlder]（内部已有 loadingOlder 单飞守卫）。
  */
 class MessageDialState {
     var phase by mutableStateOf(DialPhase.Collapsed)
@@ -108,35 +108,35 @@ private suspend fun LazyListState.scrollToTop(index: Int) {
 @Composable
 fun MessageDial(
     dial: MessageDialState,
-    state: SessionUiState,
+    view: SessionViewState,
     listState: LazyListState,
     onLoadOlder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    val hasLiveThink = state.liveThink != null
-    val refs = remember(state.events, hasLiveThink) { userMessageRefs(state.events, hasLiveThink) }
+    val hasLiveThink = view.liveThink != null
+    val refs = remember(view.events, hasLiveThink) { userMessageRefs(view.events, hasLiveThink) }
 
     // 完全没有用户消息、也没有更早历史 → 不渲染。
-    if (refs.isEmpty() && !state.hasMore) return
+    if (refs.isEmpty() && !view.hasMore) return
 
     // 狩猎唤醒：loadingOlder 翻页完成 → 决策（卡住 → 继续 / 链式翻页 / snap 到第一条 / 失败退出）。
-    LaunchedEffect(state.loadingOlder) {
+    LaunchedEffect(view.loadingOlder) {
         if (dial.phase != DialPhase.WaitingOlder) return@LaunchedEffect
-        if (state.loadingOlder) return@LaunchedEffect
-        if (state.events === dial.seekEventsMark) {
+        if (view.loadingOlder) return@LaunchedEffect
+        if (view.events === dial.seekEventsMark) {
             // events 未变 = 发送失败/无进展：退出，不自动重试（横幅已由 loadOlderPage 提示）。
             dial.phase = DialPhase.Expanded
             return@LaunchedEffect
         }
-        when (val o = seekOutcome(refs, dial.seekOldestSeq, dial.selectedSeq, state.hasMore, dial.fingerDown, dial.seekPages)) {
+        when (val o = seekOutcome(refs, dial.seekOldestSeq, dial.selectedSeq, view.hasMore, dial.fingerDown, dial.seekPages)) {
             is SeekOutcome.Resume -> {
                 dial.selectedSeq = o.anchorSeq
                 dial.phase = if (dial.fingerDown) DialPhase.Rotating else DialPhase.Expanded
             }
             SeekOutcome.ChainMore -> {
                 dial.seekPages++
-                dial.seekEventsMark = state.events
+                dial.seekEventsMark = view.events
                 onLoadOlder()
             }
             is SeekOutcome.SnapToOldest -> {
@@ -173,7 +173,7 @@ fun MessageDial(
     DialOverlay(
         dial = dial,
         refs = refs,
-        state = state,
+        view = view,
         listState = listState,
         scope = scope,
         onLoadOlder = onLoadOlder,
@@ -186,7 +186,7 @@ fun MessageDial(
 private fun DialOverlay(
     dial: MessageDialState,
     refs: List<UserMsgRef>,
-    state: SessionUiState,
+    view: SessionViewState,
     listState: LazyListState,
     scope: CoroutineScope,
     onLoadOlder: () -> Unit,
@@ -195,7 +195,7 @@ private fun DialOverlay(
     // 手势 pointerInput(Unit) 不随重组重启：用 rememberUpdatedState 让 onSteps 读到最新 refs/state，
     // 否则翻页完成（events 变化）后手指仍按住继续转时，会用旧 refs 误判边界。
     val currentRefs by rememberUpdatedState(refs)
-    val currentState by rememberUpdatedState(state)
+    val currentState by rememberUpdatedState(view)
 
     Box(modifier) {
         // 展开时全屏透明 scrim：点外部收起；down 命中 scrim 后底层列表收不到拖拽 → 不误触滚动。
@@ -259,19 +259,19 @@ private fun expandDial(
     dial: MessageDialState,
     refs: List<UserMsgRef>,
     listState: LazyListState,
-    state: SessionUiState,
+    view: SessionViewState,
     onLoadOlder: () -> Unit,
 ) {
-    ConnLog.info("ACTION", "转盘打开 refs=${refs.size} hasMore=${state.hasMore}")
+    ConnLog.info("ACTION", "转盘打开 refs=${refs.size} hasMore=${view.hasMore}")
     if (refs.isNotEmpty()) {
         val center = listState.firstVisibleItemIndex + (listState.layoutInfo.visibleItemsInfo.size / 2)
         dial.selectedSeq = nearestUserSeq(refs, center) ?: refs.first().seq
         dial.phase = DialPhase.Expanded
-    } else if (state.hasMore) {
+    } else if (view.hasMore) {
         dial.selectedSeq = null
         dial.seekOldestSeq = null
         dial.seekPages = 0
-        dial.seekEventsMark = state.events
+        dial.seekEventsMark = view.events
         dial.phase = DialPhase.WaitingOlder
         onLoadOlder()
     }
@@ -283,7 +283,7 @@ private fun handleSteps(
     refs: List<UserMsgRef>,
     listState: LazyListState,
     scope: CoroutineScope,
-    state: SessionUiState,
+    view: SessionViewState,
     onLoadOlder: () -> Unit,
     delta: Int,
 ) {
@@ -296,7 +296,7 @@ private fun handleSteps(
     var remaining = delta
     while (remaining != 0) {
         val dir = if (remaining > 0) 1 else -1
-        when (val r = stepResult(refs, selectedIndex, dir, state.hasMore)) {
+        when (val r = stepResult(refs, selectedIndex, dir, view.hasMore)) {
             is DialStepResult.Jump -> {
                 dial.selectedSeq = r.newSeq
                 selectedIndex = refs.indexOfFirst { it.seq == r.newSeq }
@@ -307,7 +307,7 @@ private fun handleSteps(
             DialStepResult.NeedOlderPage -> {
                 dial.seekOldestSeq = refs.firstOrNull()?.seq
                 dial.seekPages = 0
-                dial.seekEventsMark = state.events
+                dial.seekEventsMark = view.events
                 dial.phase = DialPhase.WaitingOlder
                 onLoadOlder()
                 return // 丢弃剩余输入（卡住）
