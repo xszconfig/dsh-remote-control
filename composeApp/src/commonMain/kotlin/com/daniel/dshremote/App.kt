@@ -93,6 +93,7 @@ import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -136,6 +137,13 @@ fun App(client: BridgeClient) {
     val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
+    // 平板判定：宽度 ≥840dp（等价 WindowWidthSizeClass.Expanded）。仅 Expanded 启用三栏，
+    // 手机/横屏/折叠屏（Compact/Medium）走现有单页流，零回归。
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    val isTablet = isTabletLayout(widthDp)
+    LaunchedEffect(isTablet) {
+        ConnLog.info("ACTION", "平板布局切换 ${if (isTablet) "enabled" else "disabled"} widthDp=$widthDp")
+    }
     // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
     LaunchedEffect(devices.devices, devices.deviceStatuses) {
         client.autoConnectOnce()
@@ -176,13 +184,23 @@ fun App(client: BridgeClient) {
                 }
                 // 重连等待/重试期间保留会话界面，只加横幅提示
                 keepSessionUi ->
-                    MainScreen(
-                        client = client,
-                        state = session,
-                        notice = notice,
-                        onOpenLogs = { showLogs = true },
-                        onOpenDevices = { showDevices = true },
-                    )
+                    if (isTablet) {
+                        TabletMainScreen(
+                            client = client,
+                            state = session,
+                            notice = notice,
+                            onOpenLogs = { showLogs = true },
+                            onOpenDevices = { showDevices = true },
+                        )
+                    } else {
+                        MainScreen(
+                            client = client,
+                            state = session,
+                            notice = notice,
+                            onOpenLogs = { showLogs = true },
+                            onOpenDevices = { showDevices = true },
+                        )
+                    }
                 conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
                 else -> LandingScreen(client, conn, devices, onOpenLogs = { showLogs = true })
             }
@@ -709,6 +727,111 @@ private fun MainScreen(
     }
 }
 
+/** 平板三栏主界面：左栏=项目+会话合并侧栏；中栏=主会话；右栏=子代理会话（出现时左栏收起）。 */
+@Composable
+private fun TabletMainScreen(
+    client: BridgeClient,
+    state: SessionUiState,
+    notice: ConnectionNotice,
+    onOpenLogs: () -> Unit,
+    onOpenDevices: () -> Unit,
+) {
+    val pane = tabletPaneState(state.currentSessionId, state.subagentReturnTo)
+    // 中栏渲染的会话：无子会话=当前主会话；有子会话=主会话（subagentReturnTo）。
+    val midSessionId = state.subagentReturnTo ?: state.currentSessionId
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        // 连接/重启横幅与手机一致
+        when (val n = notice) {
+            is ConnectionNotice.Reconnecting -> ReconnectBanner()
+            is ConnectionNotice.Error -> ConnectionErrorBanner(
+                message = n.message,
+                more = state.errors.size - 1,
+                history = state.errors,
+                onDismiss = { client.dismissErrors() },
+            )
+            ConnectionNotice.Hidden -> Unit
+        }
+        Row(Modifier.weight(1f).fillMaxWidth()) {
+            // 左栏：项目（工作区过滤）+ 会话列表合并；子会话打开时收起。
+            if (pane.leftVisible) {
+                TabletLeftPane(
+                    client = client,
+                    state = state,
+                    onOpenLogs = onOpenLogs,
+                    onOpenDevices = onOpenDevices,
+                    modifier = Modifier.width(280.dp).fillMaxHeight(),
+                )
+            }
+            // 中栏：主会话（live）
+            if (pane.midVisible && midSessionId != null) {
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    TopBar(
+                        client = client,
+                        state = state,
+                        onMenu = {},
+                        onOpenLogs = onOpenLogs,
+                        sessionId = midSessionId,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Conversation(client, state, midSessionId)
+                }
+            }
+            // 右栏：子代理会话（live）
+            if (pane.rightVisible && state.currentSessionId != null) {
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    TopBar(
+                        client = client,
+                        state = state,
+                        onMenu = {},
+                        onOpenLogs = onOpenLogs,
+                        sessionId = state.currentSessionId,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Conversation(client, state, state.currentSessionId)
+                }
+            }
+        }
+    }
+    // 返回档 3：会话列表态 → 回桌面（档 1/2 由 Conversation 内部的 closeSession 处理）。
+    PlatformBackHandler(enabled = state.currentSessionId == null) { platformExitApp() }
+}
+
+/** 平板左栏：设备头 + 工作区过滤 + 会话列表。 */
+@Composable
+private fun TabletLeftPane(
+    client: BridgeClient,
+    state: SessionUiState,
+    onOpenLogs: () -> Unit,
+    onOpenDevices: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
+        Column(Modifier.fillMaxSize()) {
+            // 设备头（与手机抽屉一致）
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(state.connectedDevice?.name ?: "已连接", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        state.connectedDevice?.let { "${it.host}:${it.port}" } ?: "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onOpenDevices) { Text("🖥", fontSize = 16.sp) }
+                TextButton(onClick = onOpenLogs) { Text("📋") }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text("工作区", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            WorkspaceFilter(state = state, onSelect = { client.selectWorkspace(it) })
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 4.dp))
+            SessionList(client = client, state = state)
+        }
+    }
+}
+
 // ---- 重连横幅 ----
 
 @Composable
@@ -839,8 +962,6 @@ private fun WorkspaceDrawer(
     onSelect: (String?) -> Unit,
     onOpenDevices: () -> Unit,
 ) {
-    val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
-    val mainSessions = state.sessions.count { it.parentSessionId == null }
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surface,
         // 侧边栏占屏幕 85% 宽（用户要求：70% 太窄）
@@ -853,33 +974,7 @@ private fun WorkspaceDrawer(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
             )
-            DrawerEntry(
-                label = "全部会话",
-                badge = mainSessions,
-                icon = "🗂",
-                selected = state.selectedWorkspaceId == null,
-                onClick = { onSelect(null) },
-            )
-            state.workspaces.forEach { w ->
-                DrawerEntry(
-                    label = w.title,
-                    // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
-                    // 与列表不一致会出现「外面 N 个、点进去没有」）；只计顶层会话
-                    badge = state.sessions.count { it.parentSessionId == null && it.workspaceId == w.id },
-                    icon = "📁",
-                    selected = state.selectedWorkspaceId == w.id,
-                    onClick = { onSelect(w.id) },
-                )
-            }
-            if (ungrouped > 0) {
-                DrawerEntry(
-                    label = "未分组",
-                    badge = ungrouped,
-                    icon = "📄",
-                    selected = state.selectedWorkspaceId == UNGROUPED_KEY,
-                    onClick = { onSelect(UNGROUPED_KEY) },
-                )
-            }
+            WorkspaceFilter(state = state, onSelect = onSelect)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                 Text(
@@ -903,6 +998,40 @@ private fun WorkspaceDrawer(
             )
             Spacer(Modifier.height(8.dp))
         }
+    }
+}
+
+/** 工作区过滤条目（全部会话 / 各工作区 / 未分组）：手机抽屉与平板左栏共用。 */
+@Composable
+private fun WorkspaceFilter(state: SessionUiState, onSelect: (String?) -> Unit) {
+    val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
+    val mainSessions = state.sessions.count { it.parentSessionId == null }
+    DrawerEntry(
+        label = "全部会话",
+        badge = mainSessions,
+        icon = "🗂",
+        selected = state.selectedWorkspaceId == null,
+        onClick = { onSelect(null) },
+    )
+    state.workspaces.forEach { w ->
+        DrawerEntry(
+            label = w.title,
+            // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
+            // 与列表不一致会出现「外面 N 个、点进去没有」）；只计顶层会话
+            badge = state.sessions.count { it.parentSessionId == null && it.workspaceId == w.id },
+            icon = "📁",
+            selected = state.selectedWorkspaceId == w.id,
+            onClick = { onSelect(w.id) },
+        )
+    }
+    if (ungrouped > 0) {
+        DrawerEntry(
+            label = "未分组",
+            badge = ungrouped,
+            icon = "📄",
+            selected = state.selectedWorkspaceId == UNGROUPED_KEY,
+            onClick = { onSelect(UNGROUPED_KEY) },
+        )
     }
 }
 
@@ -932,8 +1061,8 @@ private fun DrawerEntry(
 // ---- 顶栏 ----
 
 @Composable
-private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit, onOpenLogs: () -> Unit) {
-    val session = state.currentSessionId?.let { sid ->
+private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit, onOpenLogs: () -> Unit, sessionId: String? = null) {
+    val session = (sessionId ?: state.currentSessionId)?.let { sid ->
         state.sessions.firstOrNull { it.id == sid }
     }
     Surface(color = MaterialTheme.colorScheme.surface) {
@@ -1280,6 +1409,8 @@ private fun SubagentSubtitle(sub: SessionSummary) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
+    // 会话详情投影：手机=currentSessionId；平板中栏=parentView（子会话打开时主会话 live）。
+    val view = state.viewOf(sessionId)
     var input by remember { mutableStateOf("") }
     // 输入框焦点：斜杠命令候选弹窗只在聚焦时出现（草稿载入不误弹）
     var inputFocused by remember { mutableStateOf(false) }
@@ -1297,8 +1428,8 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     // 转盘状态提升到 Conversation：滚底 effect 需读 phase 判断是否抑制强制滚底（新消息不打断转盘交互）。
-    val dialState = remember(state.currentSessionId) { MessageDialState() }
-    val latestSeq = state.events.lastOrNull()?.seq
+    val dialState = remember(sessionId) { MessageDialState() }
+    val latestSeq = view.events.lastOrNull()?.seq
     // 自动跟随底部状态机：
     // - 默认跟随（新消息到达 → 滚到底部；切会话重置为跟随）
     // - 用户上滑浏览历史 → 滚动停稳后暂停跟随（让他看）
@@ -1317,19 +1448,19 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
     // 切会话/打开会话：重置为跟随并定位底部
     LaunchedEffect(sessionId) {
         followBottom = true
-        if (state.events.isNotEmpty()) listState.scrollToItem(0)
+        if (view.events.isNotEmpty()) listState.scrollToItem(0)
     }
     // 新消息到达（含刚发出的消息回显）→ 仅当处于跟随态才滚到列表底部。
     // reverseLayout 下 index 0 = 底部最新；以最后事件 seq 为键，
     // 列表达 MAX_EVENTS 上限后 size 不再增长也能继续触发。
     LaunchedEffect(latestSeq) {
         // 转盘处于任何非收起态时挂起强制滚底，避免新消息打断转盘交互；收起后恢复跟随。
-        if (followBottom && state.events.isNotEmpty() && dialState.phase == DialPhase.Collapsed) {
+        if (followBottom && view.events.isNotEmpty() && dialState.phase == DialPhase.Collapsed) {
             listState.scrollToItem(0)
         }
     }
     // 新 pending 上屏（刚发送）→ 跟随态滚到底部看到自己的消息（pending 不在 events 里，需单独触发）。
-    val pendingCount = state.pendingMessages.count { it.sessionId == sessionId }
+    val pendingCount = view.pendingMessages.count { it.sessionId == sessionId }
     LaunchedEffect(pendingCount) {
         if (followBottom && dialState.phase == DialPhase.Collapsed) {
             listState.scrollToItem(0)
@@ -1340,7 +1471,7 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
             ConversationMessageList(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 client = client,
-                state = state,
+                view = view,
                 sessionId = sessionId,
                 listState = listState,
                 dialState = dialState,
@@ -1349,12 +1480,13 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
                     scope.launch { listState.scrollToItem(0) }
                 },
             )
-            ConversationPanels(state = state, client = client, sessionId = sessionId)
-            ConversationDevPanel(state = state, client = client, sessionId = sessionId)
+            ConversationPanels(view = view, client = client, sessionId = sessionId)
+            ConversationDevPanel(view = view, client = client, sessionId = sessionId)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             ConversationComposer(
                 client = client,
                 state = state,
+                view = view,
                 sessionId = sessionId,
                 input = input,
                 onInputChange = { input = it },
@@ -1371,14 +1503,14 @@ private fun Conversation(client: BridgeClient, state: SessionUiState, sessionId:
 private fun ConversationMessageList(
     modifier: Modifier,
     client: BridgeClient,
-    state: SessionUiState,
+    view: SessionViewState,
     sessionId: String,
     listState: LazyListState,
     dialState: MessageDialState,
     onJumpToBottom: () -> Unit,
 ) {
-    val pendingForSession = state.pendingMessages.filter { it.sessionId == sessionId }
-    if (state.events.isEmpty() && pendingForSession.isEmpty()) {
+    val pendingForSession = view.pendingMessages.filter { it.sessionId == sessionId }
+    if (view.events.isEmpty() && pendingForSession.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("💬", fontSize = 30.sp)
@@ -1395,14 +1527,14 @@ private fun ConversationMessageList(
                 topIndex >= info.totalItemsCount - 3
             }
         }
-        LaunchedEffect(shouldLoadOlder, state.hasMore, state.loadingOlder) {
-            if (shouldLoadOlder && state.hasMore && !state.loadingOlder) {
+        LaunchedEffect(shouldLoadOlder, view.hasMore, view.loadingOlder) {
+            if (shouldLoadOlder && view.hasMore && !view.loadingOlder) {
                 client.loadOlderPage(sessionId)
             }
         }
         // 「回到底部」按钮显隐：最新一条消息不在可见区（且列表已布局）→ 显示。
         // liveThink 流式行占 index 0 时最新消息在 index 1，否则在 index 0。
-        val latestIndex = latestEventIndex(state.liveThink != null)
+        val latestIndex = latestEventIndex(view.liveThink != null)
         val showJumpToBottom by remember(latestIndex, listState) {
             derivedStateOf {
                 val visible = listState.layoutInfo.visibleItemsInfo.map { it.index }
@@ -1423,17 +1555,17 @@ private fun ConversationMessageList(
                 reverseLayout = true,
             ) {
                 // 思考流式：一行持续刷新（reverseLayout 下首个 item = 最新位置，即底部）
-                state.liveThink?.let { lt ->
+                view.liveThink?.let { lt ->
                     item(key = "live-think") { LiveThinkRow(lt) }
                 }
                 // 本地待发送消息：乐观上屏的用户气泡（时间行带 Loading / ❗），回显到达后移除。
                 items(pendingForSession.asReversed(), key = { "pending-${it.localId}" }) { p ->
                     PendingBubble(p, onRetry = { client.retryMessage(p.localId) })
                 }
-                items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
-                    EventBubble(e, state.events)
+                items(view.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
+                    EventBubble(e, view.events)
                 }
-                if (state.loadingOlder) {
+                if (view.loadingOlder) {
                     item(key = "loading-older") {
                         Box(
                             Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -1456,7 +1588,7 @@ private fun ConversationMessageList(
             if (showJumpToBottom) {
                 MessageDial(
                     dial = dialState,
-                    state = state,
+                    view = view,
                     listState = listState,
                     onLoadOlder = { client.loadOlderPage(sessionId) },
                     modifier = Modifier.fillMaxSize(),
@@ -1468,21 +1600,21 @@ private fun ConversationMessageList(
 
 /** 面板区：Deep Diving 条 + 任务列表 + Goal + 排队消息（按上到下顺序，位于消息列表下方）。 */
 @Composable
-private fun ConversationPanels(state: SessionUiState, client: BridgeClient, sessionId: String) {
-    DeepDivingBar(state)
-    TodoPanel(state)
-    GoalPanel(state)
-    QueuePanel(state, client, sessionId)
+private fun ConversationPanels(view: SessionViewState, client: BridgeClient, sessionId: String) {
+    DeepDivingBar(view)
+    TodoPanel(view)
+    GoalPanel(view)
+    QueuePanel(view, client, sessionId)
 }
 
 /** Deep Diving：与 DSH Web 对齐——放在任务列表/排队消息面板上方（不在列表顶部）。 */
 @Composable
-private fun DeepDivingBar(state: SessionUiState) {
+private fun DeepDivingBar(view: SessionViewState) {
     // 深 Seek 品牌蓝；标签在整个轮次期间显示（服务端 turn_status），时钟在 ≥15s 后出现
     // （DSH Web showClock 阈值），时长只显示服务端推送的 deepDivingElapsed（不本地计时）。
-    val divingVisible = state.divingTurnStart != null || state.modelWaitingSince != null
+    val divingVisible = view.divingTurnStart != null || view.modelWaitingSince != null
     if (divingVisible) {
-        val elapsed = state.deepDivingElapsed ?: 0
+        val elapsed = view.deepDivingElapsed ?: 0
         val showClock = elapsed >= 15
         Surface(color = DeepSeekBlue.copy(alpha = 0.12f)) {
             Row(
@@ -1521,14 +1653,14 @@ private fun DeepDivingBar(state: SessionUiState) {
 
 /** 任务列表条：DSH 的 todo_write 清单（每会话一份），位于 Deep Diving 下方、Goal 上方。 */
 @Composable
-private fun TodoPanel(state: SessionUiState) {
-    if (state.todos.isNotEmpty()) {
+private fun TodoPanel(view: SessionViewState) {
+    if (view.todos.isNotEmpty()) {
         var todosExpanded by remember { mutableStateOf(true) }
         // 与服务端 DSH Web progressLabel 完全对齐：已完成 → 进行中 → 待处理，
         // 零计数的段省略（"·" 连接）。
-        val doneCount = state.todos.count { it.status == "completed" }
-        val activeCount = state.todos.count { it.status == "in_progress" }
-        val pendingCount = state.todos.size - doneCount - activeCount
+        val doneCount = view.todos.count { it.status == "completed" }
+        val activeCount = view.todos.count { it.status == "in_progress" }
+        val pendingCount = view.todos.size - doneCount - activeCount
         val progressSegments = buildList {
             if (doneCount > 0) add("$doneCount 已完成")
             if (activeCount > 0) add("$activeCount 进行中")
@@ -1544,7 +1676,7 @@ private fun TodoPanel(state: SessionUiState) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "📋 任务（${state.todos.size}）",
+                        "📋 任务（${view.todos.size}）",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -1572,11 +1704,11 @@ private fun TodoPanel(state: SessionUiState) {
                     val scrollState = rememberScrollState()
                     Column(
                         Modifier.fillMaxWidth().then(
-                            if (state.todos.size > 3) Modifier.height(112.dp).verticalScroll(scrollState)
+                            if (view.todos.size > 3) Modifier.height(112.dp).verticalScroll(scrollState)
                             else Modifier
                         ),
                     ) {
-                        state.todos.forEach { todo ->
+                        view.todos.forEach { todo ->
                             Row(
                                 Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1613,9 +1745,9 @@ private fun TodoPanel(state: SessionUiState) {
 
 /** Goal 面板：该会话的持久化目标（objective/阶段/轮次/阻塞原因）。位置：任务列表下方、排队消息上方。 */
 @Composable
-private fun GoalPanel(state: SessionUiState) {
+private fun GoalPanel(view: SessionViewState) {
     // 对齐 DSH Web：完成态（phase=complete）目标不再展示面板；goal=null（服务端已清除）同样不渲染。
-    state.goal?.takeIf { it.phase != "complete" }?.let { goal ->
+    view.goal?.takeIf { it.phase != "complete" }?.let { goal ->
         var goalExpanded by remember { mutableStateOf(false) }
         val phaseColor = when (goal.phase) {
             "active" -> StatusGreen
@@ -1682,8 +1814,8 @@ private fun GoalPanel(state: SessionUiState) {
 
 /** 排队消息面板：运行中发出的新消息进入队列；可收起/展开，每条可插队/删除。 */
 @Composable
-private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: String) {
-    if (state.queueItems.isNotEmpty()) {
+private fun QueuePanel(view: SessionViewState, client: BridgeClient, sessionId: String) {
+    if (view.queueItems.isNotEmpty()) {
         var queueExpanded by remember { mutableStateOf(true) }
         Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
             Column {
@@ -1695,7 +1827,7 @@ private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: S
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "⏳ 排队中的消息（${state.queueItems.size}）",
+                        "⏳ 排队中的消息（${view.queueItems.size}）",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -1709,7 +1841,7 @@ private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: S
                 if (queueExpanded) {
                     // 最多同屏 3 条：超出 3 条时列表区用固定高度（约 3 条行高）并支持纵向滚动；
                     // 收起/展开逻辑不变（展开时才渲染列表区）。
-                    val queueItems = state.queueItems
+                    val queueItems = view.queueItems
                     val scrollState = rememberScrollState()
                     Column(
                         Modifier.fillMaxWidth().then(
@@ -1766,13 +1898,13 @@ private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: S
 /** 开发状态行 + 详情面板：LSP 诊断 + 调试状态聚合为一条细行，点开进 ModalBottomSheet。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, sessionId: String) {
+private fun ConversationDevPanel(view: SessionViewState, client: BridgeClient, sessionId: String) {
     // 绝不自动弹面板：只更新徽标，用户点开才进详情。
     var showDevPanel by remember { mutableStateOf(false) }
-    if (state.diagnostics.isNotEmpty() || state.debug != null) {
-        val errorCount = state.diagnostics.count { it.severity == 1 }
-        val warnCount = state.diagnostics.count { it.severity == 2 }
-        val debugSnap = state.debug
+    if (view.diagnostics.isNotEmpty() || view.debug != null) {
+        val errorCount = view.diagnostics.count { it.severity == 1 }
+        val warnCount = view.diagnostics.count { it.severity == 2 }
+        val debugSnap = view.debug
         val pausedAt = debugSnap?.paused?.stoppedAt
         val tint = when {
             errorCount > 0 -> MaterialTheme.colorScheme.error
@@ -1786,12 +1918,12 @@ private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, se
                 Modifier.fillMaxWidth().clickable { showDevPanel = true }.padding(horizontal = 14.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (state.diagnostics.isNotEmpty()) {
+                if (view.diagnostics.isNotEmpty()) {
                     Text(if (errorCount > 0) "⛔" else "⚠️", fontSize = 13.sp)
                     Spacer(Modifier.width(6.dp))
                     Text(
                         buildString {
-                            append("${state.diagnostics.size} 诊断")
+                            append("${view.diagnostics.size} 诊断")
                             if (errorCount > 0) append("（$errorCount 错误）")
                             else if (warnCount > 0) append("（$warnCount 警告）")
                         },
@@ -1800,7 +1932,7 @@ private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, se
                         color = if (errorCount > 0) MaterialTheme.colorScheme.error else StatusAmber,
                     )
                 }
-                if (state.diagnostics.isNotEmpty() && debugSnap != null) {
+                if (view.diagnostics.isNotEmpty() && debugSnap != null) {
                     Spacer(Modifier.width(10.dp))
                     Text("·", style = MaterialTheme.typography.labelMedium, color = tint.copy(alpha = 0.6f))
                     Spacer(Modifier.width(10.dp))
@@ -1841,15 +1973,15 @@ private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, se
                 Text("开发面板", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
                 TabRow(selectedTabIndex = devTab) {
-                    Tab(selected = devTab == 0, onClick = { devTab = 0 }, text = { Text("诊断 ${state.diagnostics.size}") })
+                    Tab(selected = devTab == 0, onClick = { devTab = 0 }, text = { Text("诊断 ${view.diagnostics.size}") })
                     Tab(selected = devTab == 1, onClick = { devTab = 1 }, text = { Text("调试") })
                 }
                 Spacer(Modifier.height(10.dp))
                 if (devTab == 0) {
-                    if (state.diagnostics.isEmpty()) {
+                    if (view.diagnostics.isEmpty()) {
                         Text("暂无诊断：Agent 编辑代码后，语言服务器的错误/警告会自动出现在这里。", style = MaterialTheme.typography.bodySmall)
                     } else {
-                        state.diagnostics.forEach { d ->
+                        view.diagnostics.forEach { d ->
                             Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                                 Text(
                                     when (d.severity) { 1 -> "🔴"; 2 -> "🟡"; 3 -> "🔵"; else -> "⚪" },
@@ -1871,7 +2003,7 @@ private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, se
                         }
                     }
                 } else {
-                    DebugPanelContent(state, client, sessionId)
+                    DebugPanelContent(view, client, sessionId)
                 }
             }
         }
@@ -1883,6 +2015,7 @@ private fun ConversationDevPanel(state: SessionUiState, client: BridgeClient, se
 private fun ConversationComposer(
     client: BridgeClient,
     state: SessionUiState,
+    view: SessionViewState,
     sessionId: String,
     input: String,
     onInputChange: (String) -> Unit,
@@ -1900,9 +2033,9 @@ private fun ConversationComposer(
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
     val slashFragment = input.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
-    if (inputFocused && slashFragment != null && state.commands.isNotEmpty()) {
+    if (inputFocused && slashFragment != null && view.commands.isNotEmpty()) {
         val partial = slashFragment.removePrefix("/")
-        val candidates = state.commands.filter { it.name.startsWith(partial) }
+        val candidates = view.commands.filter { it.name.startsWith(partial) }
         if (candidates.isNotEmpty()) {
             CommandCandidatePopup(
                 candidates = candidates,
@@ -1939,7 +2072,7 @@ private fun ConversationComposer(
         // 与 DSH Web 对齐：运行中「终止」与「发送」并存——点终止中断当前推理；
         // 发送照常可用（消息进入排队队列，与桌面端行为一致）。非运行中只显示发送。
         val agentRunning = state.sessions.firstOrNull { it.id == sessionId }?.status == "running" ||
-            state.modelWaitingSince != null
+            view.modelWaitingSince != null
         if (agentRunning) {
             val queuedCount = state.queuedCounts[sessionId] ?: 0
             Button(
@@ -2029,11 +2162,11 @@ private fun StopIcon(modifier: Modifier = Modifier) {
 /** 调试面板内容：断点 / 调用栈 / 变量 / 输出（小屏紧凑，中文文案）。 */
 @Composable
 private fun DebugPanelContent(
-    state: SessionUiState,
+    view: SessionViewState,
     client: BridgeClient,
     sessionId: String,
 ) {
-    val debug = state.debug
+    val debug = view.debug
     if (debug == null) {
         Text(
             "当前无调试会话",
@@ -2080,16 +2213,16 @@ private fun DebugPanelContent(
         } else {
             PausedDebugSection(
                 paused = paused,
-                debugVars = state.debugVars,
+                debugVars = view.debugVars,
                 client = client,
                 sessionId = sessionId,
             )
         }
         // 输出区（暂停中也显示，放面板最底部）
-        if (state.debugOutput.isNotEmpty()) {
+        if (view.debugOutput.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
             Text(
-                "输出（最近 ${state.debugOutput.size} 行）",
+                "输出（最近 ${view.debugOutput.size} 行）",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
             )
@@ -2099,7 +2232,7 @@ private fun DebugPanelContent(
                 shape = RoundedCornerShape(10.dp),
             ) {
                 Column(Modifier.fillMaxWidth().padding(8.dp)) {
-                    state.debugOutput.takeLast(40).forEach { line ->
+                    view.debugOutput.takeLast(40).forEach { line ->
                         Text(
                             line,
                             style = MaterialTheme.typography.labelSmall,
