@@ -74,8 +74,54 @@ setInterval(() => {
   for (const [t, exp] of pairTokens) if (exp < now) pairTokens.delete(t)
 }, 60_000).unref()
 
+// ---- 可配置弱网注入（模拟好/中/差网络，测消息发送鲁棒性）----
+// 控制接口：POST /remote/net-condition {profile: 好|中|差} 或 {latencyMs,jitterMs,lossRate,bandwidthBps}
+// 注入点：mock 服务端 → 客户端的下行帧（丢包/延迟/抖动/限速），用于验证客户端 ack 超时/重发/回显去重。
+const NET_PRESETS = {
+  好: { latencyMs: 0, jitterMs: 0, lossRate: 0, bandwidthBps: Infinity },
+  中: { latencyMs: 100, jitterMs: 30, lossRate: 0.02, bandwidthBps: 10 * 1024 * 1024 }, // 100ms / 2% / 10Mbps
+  差: { latencyMs: 400, jitterMs: 100, lossRate: 0.10, bandwidthBps: 1 * 1024 * 1024 }, // 400ms / 10% / 1Mbps
+}
+let netProfile = '好'
+let netCondition = { ...NET_PRESETS.好 }
+// token bucket 限速：每连接的令牌（token = bit）
+const wsTokens = new WeakMap()
+
 function send(ws, obj) {
-  if (ws.readyState === 1) ws.send(JSON.stringify(obj))
+  if (ws.readyState !== 1) return
+  const cond = netCondition
+  // 1) 丢包
+  if (cond.lossRate > 0 && Math.random() < cond.lossRate) {
+    console.error(`NET drop ↓ type=${obj.type} (lossRate=${cond.lossRate})`)
+    return
+  }
+  const payload = JSON.stringify(obj)
+  const deliver = () => {
+    if (ws.readyState !== 1) return
+    // 2) 限速（token bucket，bandwidthBps 为 Infinity 时跳过）
+    if (Number.isFinite(cond.bandwidthBps)) {
+      let t = wsTokens.get(ws)
+      if (!t) { t = { tokens: cond.bandwidthBps, last: Date.now() }; wsTokens.set(ws, t) }
+      const now = Date.now()
+      t.tokens = Math.min(cond.bandwidthBps, t.tokens + ((now - t.last) / 1000) * cond.bandwidthBps)
+      t.last = now
+      const sizeBits = payload.length * 8
+      if (t.tokens < sizeBits) {
+        const waitMs = ((sizeBits - t.tokens) / cond.bandwidthBps) * 1000
+        t.tokens = 0
+        setTimeout(() => { if (ws.readyState === 1) ws.send(payload) }, waitMs)
+        return
+      }
+      t.tokens -= sizeBits
+    }
+    ws.send(payload)
+  }
+  // 3) 延迟 + 抖动（jitter 为均匀分布在 ±jitterMs 内的抖动）
+  let delay = cond.latencyMs
+  if (cond.jitterMs > 0) delay += (Math.random() * 2 - 1) * cond.jitterMs
+  delay = Math.max(0, delay)
+  if (delay > 0) setTimeout(deliver, delay)
+  else deliver()
 }
 
 const server = http.createServer((req, res) => {
@@ -93,6 +139,48 @@ const server = http.createServer((req, res) => {
       expiresAt: Date.now() + 600_000,
       urls: [`ws://127.0.0.1:${PORT}/remote/ws?pair=${pair}`],
     }))
+    return
+  }
+  if (url.pathname === '/remote/net-condition') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, profile: netProfile, condition: netCondition }))
+      return
+    }
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', (c) => { body += c.toString() })
+      req.on('end', () => {
+        let parsed
+        try { parsed = JSON.parse(body) } catch {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'bad json' }))
+          return
+        }
+        if (parsed.profile !== undefined && NET_PRESETS[parsed.profile] !== undefined) {
+          netProfile = parsed.profile
+          netCondition = { ...NET_PRESETS[parsed.profile] }
+        } else if (parsed.latencyMs !== undefined || parsed.jitterMs !== undefined || parsed.lossRate !== undefined || parsed.bandwidthBps !== undefined) {
+          netProfile = '自定义'
+          netCondition = {
+            latencyMs: parsed.latencyMs !== undefined ? Number(parsed.latencyMs) : netCondition.latencyMs,
+            jitterMs: parsed.jitterMs !== undefined ? Number(parsed.jitterMs) : netCondition.jitterMs,
+            lossRate: parsed.lossRate !== undefined ? Number(parsed.lossRate) : netCondition.lossRate,
+            bandwidthBps: parsed.bandwidthBps !== undefined ? Number(parsed.bandwidthBps) : netCondition.bandwidthBps,
+          }
+        } else {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'need profile(好|中|差) or custom params(latencyMs/jitterMs/lossRate/bandwidthBps)' }))
+          return
+        }
+        console.error(`NET condition → profile=${netProfile} ${JSON.stringify(netCondition)}`)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, profile: netProfile, condition: netCondition }))
+      })
+      return
+    }
+    res.writeHead(405, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: 'use GET or POST' }))
     return
   }
   res.writeHead(404).end()
@@ -137,10 +225,17 @@ server.on('upgrade', (req, socket, head) => {
           }
           break
         }
+        case 'ping': {
+          // 应用层心跳：与真实 bridge 0.14.0 对齐，客户端 ping → 服务端 pong
+          send(ws, { type: 'pong' })
+          break
+        }
         case 'send_message': {
           const evts = sessionEvents[cmd.sessionId] || (sessionEvents[cmd.sessionId] = [])
           const seq = evts.length + 1
           evts.push({ seq, type: 'user_message', text: cmd.text, timestamp: Date.now() })
+          // 送达确认：携带 msgId 才回 ack（对齐真实 bridge 0.14.0 语义）
+          if (cmd.msgId !== undefined) send(ws, { type: 'ack', msgId: cmd.msgId, ok: true })
           send(ws, { type: 'event', sessionId: cmd.sessionId, event: evts[evts.length - 1] })
           setTimeout(() => {
             evts.push({ seq: seq + 1, type: 'assistant_message', text: `（mock 回复）收到：${cmd.text}`, timestamp: Date.now() })
