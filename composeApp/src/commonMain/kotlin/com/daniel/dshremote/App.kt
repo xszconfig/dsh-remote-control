@@ -133,15 +133,26 @@ fun App(client: BridgeClient) {
     val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
+    // 主题三态：本地持久化；默认跟随系统
+    var themeMode by remember { mutableStateOf(ThemePrefs.load()) }
+    var showSettings by remember { mutableStateOf(false) }
+    val darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme())
     // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
     LaunchedEffect(devices.devices, devices.deviceStatuses) {
         client.autoConnectOnce()
     }
-    DshTheme(darkTheme = isSystemInDarkTheme()) {
+    DshTheme(darkTheme = darkTheme) {
         // 页面栈原则（docs/ui-navigation-guidelines.md）：A→B→C 时每按一次返回
         // 只回上一级。覆盖层页面（设备页/日志页/扫码）都必须有返回处理，
         // 关闭覆盖层后底下的页面状态原样保留，自然回到上一级。
-        if (showDevices) {
+        if (showSettings) {
+            SettingsScreen(
+                themeMode = themeMode,
+                onThemeModeChange = { m -> themeMode = m; ThemePrefs.save(m) },
+                onClose = { showSettings = false },
+            )
+            PlatformBackHandler(enabled = true) { showSettings = false }
+        } else if (showDevices) {
             // 设备页（连接态从侧边栏进入）：查看/切换设备、扫码/手动连接
             LandingScreen(
                 client = client,
@@ -179,6 +190,7 @@ fun App(client: BridgeClient) {
                         notice = notice,
                         onOpenLogs = { showLogs = true },
                         onOpenDevices = { showDevices = true },
+                        onOpenSettings = { showSettings = true },
                     )
                 conn.state == ConnectionState.Connecting -> ConnectingScreen(client, conn)
                 else -> LandingScreen(client, conn, devices, onOpenLogs = { showLogs = true })
@@ -617,6 +629,7 @@ private fun MainScreen(
     notice: ConnectionNotice,
     onOpenLogs: () -> Unit,
     onOpenDevices: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -643,6 +656,7 @@ private fun MainScreen(
                 state = state,
                 onMenu = { scope.launch { drawerState.open() } },
                 onOpenLogs = onOpenLogs,
+                onOpenSettings = onOpenSettings,
             )
             // 统一连接状态提示槽：三形态互斥展示（重连中 / 错误 / 隐藏）
             when (val n = notice) {
@@ -929,7 +943,7 @@ private fun DrawerEntry(
 // ---- 顶栏 ----
 
 @Composable
-private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit, onOpenLogs: () -> Unit) {
+private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Unit, onOpenLogs: () -> Unit, onOpenSettings: () -> Unit = {}) {
     val session = state.currentSessionId?.let { sid ->
         state.sessions.firstOrNull { it.id == sid }
     }
@@ -1040,6 +1054,7 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                     }
                 }
             }
+            TextButton(onClick = onOpenSettings) { Text("⚙️") }
             TextButton(onClick = onOpenLogs) { Text("📋") }
         }
     }
@@ -3536,6 +3551,55 @@ private fun formatDivingDuration(seconds: Long): String {
             val h = s / 3600
             val m = (s % 3600) / 60
             if (m == 0L) "本轮 ${h}小时" else "本轮 ${h}小时${m}分"
+        }
+    }
+}
+
+/** 设置页：主题三态切换 + 通知说明占位。 */
+@Composable
+private fun SettingsScreen(
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize().statusBarsPadding().background(MaterialTheme.colorScheme.background)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onClose) { Text("← 返回", fontWeight = FontWeight.SemiBold) }
+            Text("设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Text("主题", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            ThemeMode.entries.forEach { mode ->
+                val label = when (mode) {
+                    ThemeMode.FollowSystem -> "跟随系统"
+                    ThemeMode.Light -> "浅色"
+                    ThemeMode.Dark -> "深色"
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onThemeModeChange(mode) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (themeMode == mode) "◉" else "○",
+                        color = if (themeMode == mode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(label, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 12.dp))
+            Text("通知", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text("通知设置（占位，待通知模块接入）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
