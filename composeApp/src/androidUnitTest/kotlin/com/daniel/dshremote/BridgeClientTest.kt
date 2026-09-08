@@ -244,7 +244,7 @@ class BridgeClientTest {
         // 模拟：上次进程在「已落盘 sending、尚未送达」时被杀 → 磁盘残留 Sending
         val store = InMemoryPendingStore()
         store.data["s1"] = listOf(
-            PendingMessage(localId = "p1", sessionId = "s1", text = "hi", status = PendingStatus.Sending, createdAt = 1_000L),
+            PendingMessage(msgId = "p1", sessionId = "s1", text = "hi", status = PendingStatus.Sending, createdAt = 1_000L),
         )
         val client = newClient(backgroundScope, store)
         client.handle(
@@ -263,5 +263,52 @@ class BridgeClientTest {
         assertEquals("hi", client.session.value.pendingMessages.single().text)
         // 回写已转换状态，store 不再残留 Sending
         assertEquals(PendingStatus.Failed, store.data["s1"]!!.single().status)
+    }
+
+    @Test
+    fun ack_ok_removes_pending_memory_and_disk() = runTest {
+        val store = InMemoryPendingStore()
+        val client = newClient(backgroundScope, store)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        runCurrent() // 无连接 → send false → Failed（落盘）
+        val msgId = client.session.value.pendingMessages.single().msgId
+        client.handle(ServerEvent.Ack(msgId, ok = true))
+        runCurrent()
+        assertEquals(emptyList(), client.session.value.pendingMessages)
+        assertTrue(store.data["s1"].isNullOrEmpty())
+    }
+
+    @Test
+    fun ack_fail_marks_failed_and_increments_retryCount() = runTest {
+        val store = InMemoryPendingStore()
+        val client = newClient(backgroundScope, store)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        runCurrent() // send false → Failed（retryCount=0）
+        val msgId = client.session.value.pendingMessages.single().msgId
+        client.handle(ServerEvent.Ack(msgId, ok = false))
+        runCurrent()
+        assertEquals(PendingStatus.Failed, client.session.value.pendingMessages.single().status)
+        assertEquals(1, client.session.value.pendingMessages.single().retryCount)
+        assertEquals(1, store.data["s1"]!!.single().retryCount)
     }
 }

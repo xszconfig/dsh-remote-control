@@ -120,6 +120,30 @@ class ProtocolTest {
             """{"type":"error","code":"auth","message":"token 失效"}""",
         )
         assertEquals("auth", assertIs<ServerEvent.Error>(error).code)
+
+        // error 可回带 msgId：精确关联回 pending
+        val errorWithMsg = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"error","code":"not_running","message":"未运行","msgId":"m-1"}""",
+        )
+        assertEquals("m-1", assertIs<ServerEvent.Error>(errorWithMsg).msgId)
+    }
+
+    @Test
+    fun decode_ack() {
+        val ok = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"ack","msgId":"m-1","ok":true}""",
+        )
+        val okAck = assertIs<ServerEvent.Ack>(ok)
+        assertEquals("m-1", okAck.msgId)
+        assertEquals(true, okAck.ok)
+
+        val reject = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"ack","msgId":"m-1","ok":false}""",
+        )
+        assertEquals(false, assertIs<ServerEvent.Ack>(reject).ok)
     }
 
     // ---- 客户端命令编码 ----
@@ -148,8 +172,8 @@ class ProtocolTest {
             BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.Subscribe(null)),
         )
         assertEquals(
-            """{"type":"send_message","sessionId":"s1","text":"你好"}""",
-            BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.SendMessage("s1", "你好")),
+            """{"type":"send_message","sessionId":"s1","text":"你好","msgId":"m-1"}""",
+            BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.SendMessage("s1", "你好", "m-1")),
         )
         assertEquals(
             """{"type":"register_device","deviceId":"d1","name":"N","model":null}""",

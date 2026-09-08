@@ -664,9 +664,24 @@ sealed interface ServerEvent {
     @SerialName("device_revoked")
     data class DeviceRevoked(val deviceId: String) : ServerEvent
 
+    /**
+     * 消息发送确认（at-least-once 的权威送达信号；先于 user_message 回显到达）。
+     * ok=true：服务端已接受（投递进 agent/队列），客户端据此删除持久化记录；
+     * ok=false：服务端拒绝（如会话未运行/自动打开失败），客户端据此转 failed 并计重放次数。
+     * 待与 bridge 对齐：wire 字段名 msgId/ok 以 bridge 侧规格（bc82bca2）为准。
+     */
+    @Serializable
+    @SerialName("ack")
+    data class Ack(val msgId: String, val ok: Boolean) : ServerEvent
+
     @Serializable
     @SerialName("error")
-    data class Error(val code: String, val message: String) : ServerEvent
+    data class Error(
+        val code: String,
+        val message: String,
+        /** 可选：服务端拒绝消息时回带的 msgId，客户端据此把失败精确关联回 pending（消除静默失败）。 */
+        val msgId: String? = null,
+    ) : ServerEvent
 }
 
 // ---- 客户端命令 ----
@@ -683,7 +698,12 @@ sealed interface ClientCommand {
 
     @Serializable
     @SerialName("send_message")
-    data class SendMessage(val sessionId: String, val text: String) : ClientCommand
+    data class SendMessage(
+        val sessionId: String,
+        val text: String,
+        /** 客户端生成的消息幂等键（如 m-<sessionId 前缀>-<ts>-<seq>），随 PendingStore 持久化，重发复用。 */
+        val msgId: String,
+    ) : ClientCommand
 
     /** 切换当前会话模型（下一步 prompt 组装边界生效，不打断当前推理；reasoningEffort 可选）。 */
     @Serializable

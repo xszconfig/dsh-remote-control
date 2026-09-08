@@ -10,6 +10,10 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -53,6 +57,24 @@ fun reconnectDelayMs(attempt: Int): Long =
     minOf(1_000L shl (attempt - 1).coerceIn(0, 5), 30_000L)
 
 /**
+ * 应用层判活心跳（假连接秒级判死）：
+ * 客户端每 [PING_INTERVAL_MS] 发一条文本帧 ping，桥回 pong 文本帧；
+ * 若上一轮 ping 后 [PONG_TIMEOUT_MS] 内没收到 pong → 判定假连接，主动关闭触发重连。
+ * 待与 bridge 对齐：ping/pong 文本帧的 marker 字符串以 bridge 侧规格（bc82bca2）为准。
+ */
+const val PING_INTERVAL_MS: Long = 20_000L
+const val PONG_TIMEOUT_MS: Long = 10_000L
+const val PING_MARKER: String = "ping"
+const val PONG_MARKER: String = "pong"
+
+/**
+ * 判定是否因 pong 超时应判死：上一轮 ping（lastPingAt）之后超过 [PONG_TIMEOUT_MS]
+ * 仍未收到 pong（lastPongAt 未更新）。纯函数，commonTest 直测。
+ */
+fun pongTimedOut(lastPingAt: Long, lastPongAt: Long, now: Long, timeoutMs: Long = PONG_TIMEOUT_MS): Boolean =
+    lastPingAt > lastPongAt && now - lastPingAt > timeoutMs
+
+/**
  * 单条 WebSocket 连接的生命周期管理：握手、凭证头注入、事件解码、发送。
  * 不做策略（候选地址回退、自动重连等归 BridgeClient 编排）。
  *
@@ -74,6 +96,10 @@ class ConnectionManager(private val scope: CoroutineScope) {
     var currentUrl: String? = null
         private set
 
+    /** 应用层判活：上轮 ping 发送时刻（0 = 未发过）；pong 到达时刻（0 = 未收到）。 */
+    private var lastPingAt = 0L
+    private var lastPongAt = 0L
+
     /**
      * 打开一条连接并阻塞处理事件流，直到连接关闭后返回。
      * 互斥串行化：上一条连接（含取消清理）完全退出后才允许下一条开始，
@@ -94,16 +120,32 @@ class ConnectionManager(private val scope: CoroutineScope) {
             ) {
                 established = true
                 ws = this
+                lastPingAt = 0L
+                lastPongAt = nowMillis()
                 ConnLog.info("CONNECT", "握手成功，连接已建立")
                 _info.update { ConnectionInfo(ConnectionState.Connected) }
-                for (frame in incoming) {
-                    if (frame is Frame.Text) {
-                        try {
-                            val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
-                            _events.emit(ev)
-                        } catch (e: Exception) {
-                            ConnLog.warn("WS", "事件解码失败（跳过该帧）: ${e.message}")
+                coroutineScope {
+                    val heartbeat = launch { heartbeatLoop() }
+                    try {
+                        for (frame in incoming) {
+                            if (frame is Frame.Text) {
+                                val text = frame.readText()
+                                // 应用层 pong：判活信号，不按 ServerEvent 解码
+                                if (text == PONG_MARKER) {
+                                    lastPongAt = nowMillis()
+                                    ConnLog.debug("CONNECT", "收到应用层 pong")
+                                    continue
+                                }
+                                try {
+                                    val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), text)
+                                    _events.emit(ev)
+                                } catch (e: Exception) {
+                                    ConnLog.warn("WS", "事件解码失败（跳过该帧）: ${e.message}")
+                                }
+                            }
                         }
+                    } finally {
+                        heartbeat.cancel()
                     }
                 }
             }
@@ -125,6 +167,31 @@ class ConnectionManager(private val scope: CoroutineScope) {
             }
         }
         established
+    }
+
+    /** 应用层判活心跳：每 [PING_INTERVAL_MS] 发 ping；上轮 ping 后 [PONG_TIMEOUT_MS] 无 pong → 判死主动关闭。 */
+    private suspend fun heartbeatLoop() {
+        while (currentCoroutineContext().isActive) {
+            delay(PING_INTERVAL_MS)
+            val s = ws ?: break
+            val now = nowMillis()
+            if (pongTimedOut(lastPingAt, lastPongAt, now)) {
+                ConnLog.warn("CONNECT", "应用层 pong 超时 ${now - lastPingAt}ms，判定假连接，主动关闭触发重连")
+                try {
+                    s.close()
+                } catch (_: Exception) {
+                    // 关闭竞态忽略
+                }
+                break
+            }
+            lastPingAt = now
+            try {
+                s.send(Frame.Text(PING_MARKER))
+                ConnLog.debug("CONNECT", "发送应用层 ping")
+            } catch (_: Exception) {
+                break
+            }
+        }
     }
 
     /** 编排层用来上报「策略级」失败（如二维码无候选地址、全部候选失败）。 */

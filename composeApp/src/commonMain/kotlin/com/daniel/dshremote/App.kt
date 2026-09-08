@@ -1427,8 +1427,8 @@ private fun ConversationMessageList(
                     item(key = "live-think") { LiveThinkRow(lt) }
                 }
                 // 本地待发送消息：乐观上屏的用户气泡（时间行带 Loading / ❗），回显到达后移除。
-                items(pendingForSession.asReversed(), key = { "pending-${it.localId}" }) { p ->
-                    PendingBubble(p, onRetry = { client.retryMessage(p.localId) })
+                items(pendingForSession.asReversed(), key = { "pending-${it.msgId}" }) { p ->
+                    PendingBubble(p, onRetry = { client.retryMessage(p.msgId) })
                 }
                 items(state.events.asReversed(), key = { "${it.seq}-${it.type}" }) { e ->
                     EventBubble(e, state.events)
