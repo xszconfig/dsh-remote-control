@@ -205,4 +205,27 @@ class MessageDialMathTest {
         assertEquals(0, scrollDeltaToTop(viewportHeightPx = 1000, itemHeightPx = 1000))   // 行=视口 → 不动
         assertEquals(200, scrollDeltaToTop(viewportHeightPx = 1000, itemHeightPx = 1200)) // 超长行 → 正（向下对齐顶部）
     }
+
+    // ---- showDial：按需显示（手指活动优先于「到底隐藏」）----
+
+    @Test
+    fun showDial_visibleWhenNotAtBottom() {
+        // 上翻离开底部 → 显示（收起态圆钮）
+        assertTrue(showDial(showJumpToBottom = true, phase = DialPhase.Collapsed))
+    }
+
+    @Test
+    fun showDial_hiddenOnlyWhenCollapsedAndAtBottom() {
+        // 已到底部且收起 → 隐藏
+        assertFalse(showDial(showJumpToBottom = false, phase = DialPhase.Collapsed))
+    }
+
+    @Test
+    fun showDial_staysVisibleWhenRotatingAtBottom() {
+        // 已到底部但旋转中 → 保持挂载（不打断手指）
+        assertTrue(showDial(showJumpToBottom = false, phase = DialPhase.Rotating))
+        assertTrue(showDial(showJumpToBottom = false, phase = DialPhase.Expanded))
+        assertTrue(showDial(showJumpToBottom = false, phase = DialPhase.WaitingOlder))
+        assertTrue(showDial(showJumpToBottom = false, phase = DialPhase.AtBoundary))
+    }
 }

@@ -1543,10 +1543,11 @@ private fun ConversationMessageList(
                 visible.isNotEmpty() && !latestMessageVisible(visible, latestIndex)
             }
         }
-        // 转盘按需显示：与「回到底部」同款显隐——最新消息不可见时才出现，回到底部隐藏。
-        // 隐藏时若转盘仍在非收起态则收起（dialState 已 hoisted，隐藏不销毁状态，避免下次显示卡在展开态）。
+        // 转盘按需显示：showDial = 最新消息不可见 OR 非收起态（手指活动优先于「到底隐藏」）。
+        // 隐藏时收起：不得在旋转中（手指还在转盘上滑动）强制 collapse；松手后由转盘内 2.5s 自动收起自然关闭。
         LaunchedEffect(showJumpToBottom) {
-            if (!showJumpToBottom && dialState.phase != DialPhase.Collapsed) {
+            val rotatingFinger = dialState.phase == DialPhase.Rotating && dialState.fingerDown
+            if (!showJumpToBottom && dialState.phase != DialPhase.Collapsed && !rotatingFinger) {
                 dialState.collapse()
             }
         }
@@ -1586,8 +1587,8 @@ private fun ConversationMessageList(
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp),
             )
             // 消息转盘：挂载在消息列表 Box 内，圆钮悬浮于左下角（Deep Diving 上方）；
-            // 按需显示（上翻离开底部才出现），排队消息/任务/Goal 面板把 Deep Diving 上推时随之移动。
-            if (showJumpToBottom) {
+            // 按需显示：上翻离开底部出现，展开/旋转中即使已到底部也保持挂载（不打断手指）。
+            if (showDial(showJumpToBottom, dialState.phase)) {
                 MessageDial(
                     dial = dialState,
                     view = view,

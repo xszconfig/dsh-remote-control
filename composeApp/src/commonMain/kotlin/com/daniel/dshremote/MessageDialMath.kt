@@ -174,3 +174,12 @@ fun shouldVibrate(lastTickMs: Long, nowMs: Long, minIntervalMs: Long = DIAL_HAPT
  * = -(视口高 - 行高) = 行高 - 视口高。行高 > 视口高时（超长消息）为正，向下对齐顶部。
  */
 fun scrollDeltaToTop(viewportHeightPx: Int, itemHeightPx: Int): Int = itemHeightPx - viewportHeightPx
+
+/**
+ * 转盘显隐判定（按需显示）：最新消息不可见（showJumpToBottom）或转盘处于非收起态时显示。
+ *
+ * 语义（手指活动优先于「到底隐藏」）：转盘展开/旋转/狩猎/触边时，即使列表已滚到最新一条
+ * （showJumpToBottom=false），也保持挂载不打断手指；只有收起态（Collapsed）且已到底部才隐藏。
+ */
+fun showDial(showJumpToBottom: Boolean, phase: DialPhase): Boolean =
+    showJumpToBottom || phase != DialPhase.Collapsed
