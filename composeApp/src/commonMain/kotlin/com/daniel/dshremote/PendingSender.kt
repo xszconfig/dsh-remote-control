@@ -21,37 +21,46 @@ class PendingSender(
 ) {
 
     /**
-     * 断线自动重放：对会话内 retryCount < [MAX_AUTO_RETRY] 的 failed 消息按序自动重发（同 msgId 幂等），
-     * 每次间隔递增退避；重发失败计次，达上限保持 failed ❗ 交用户手点。触发点：openSession 恢复后、hello 重连后。
+     * 断线自动重放：对会话内 retryCount < [MAX_AUTO_RETRY] 的 failed 消息按序自动重发（同 msgId 幂等）。
+     * 每条消息在本次触发内最多补到 [MAX_AUTO_RETRY] 次，间隔按 retryCount 递增（1s/2s/4s）；
+     * 达上限保持 failed ❗ 交用户手点。触发点：openSession 恢复后、hello 重连后。
      */
     fun autoReplaySession(sessionId: String) {
         val toReplay = autoRetryablePendings(session.value.pendingMessages, sessionId)
         if (toReplay.isEmpty()) return
         ConnLog.info("ACTION", "自动重放会话 $sessionId 的 ${toReplay.size} 条待发送消息（上限 $MAX_AUTO_RETRY 次）")
-        toReplay.forEachIndexed { index, p ->
-            scope.launch {
-                val backoff = autoRetryBackoffMs(index)
-                if (backoff > 0) delay(backoff)
-                // 重放前复核：期间可能已被 ack/回显移除，或用户已手动处理、或已超上限
-                val cur = session.value.pendingMessages.firstOrNull { it.msgId == p.msgId }
-                if (cur == null || cur.retryCount >= MAX_AUTO_RETRY) return@launch
-                if (cur.status != PendingStatus.Sending && cur.status != PendingStatus.Failed) return@launch
-                val next = markPendingAutoRetry(cur)
-                session.update { s ->
-                    s.copy(pendingMessages = s.pendingMessages.map { if (it.msgId == p.msgId) next else it })
-                }
-                pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == p.msgId } + next }
-                if (connection.send(ClientCommand.SendMessage(sessionId, p.text, p.msgId))) {
-                    ConnLog.info("ACTION", "自动重放送达 msgId=${p.msgId}（第 ${index + 1} 次）")
-                    session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, p.msgId)) }
-                    pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == p.msgId } }
-                } else {
-                    ConnLog.warn("ACTION", "自动重放失败 msgId=${p.msgId} ws=${connection.info.value.state}")
-                    session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, p.msgId)) }
-                    pendingStore.update(sessionId) { list ->
-                        list.filterNot { it.msgId == p.msgId } + next.copy(status = PendingStatus.Failed)
-                    }
-                }
+        toReplay.forEach { p ->
+            scope.launch { replayWithRetries(sessionId, p.msgId) }
+        }
+    }
+
+    /** 单条消息的自动重放循环：失败则退避重试，直到送达、达上限、或被 ack/回显/用户处理。 */
+    private suspend fun replayWithRetries(sessionId: String, msgId: String) {
+        while (true) {
+            val cur = session.value.pendingMessages.firstOrNull { it.msgId == msgId } ?: return
+            if (cur.retryCount >= MAX_AUTO_RETRY) return
+            if (cur.status != PendingStatus.Sending && cur.status != PendingStatus.Failed) return
+            val backoff = autoRetryBackoffMs(cur.retryCount)
+            if (backoff > 0) delay(backoff)
+            // delay 后复核：期间可能已被 ack/回显移除，或用户已手动处理、或已超上限
+            val fresh = session.value.pendingMessages.firstOrNull { it.msgId == msgId } ?: return
+            if (fresh.retryCount >= MAX_AUTO_RETRY) return
+            if (fresh.status != PendingStatus.Sending && fresh.status != PendingStatus.Failed) return
+            val next = markPendingAutoRetry(fresh)
+            session.update { s ->
+                s.copy(pendingMessages = s.pendingMessages.map { if (it.msgId == msgId) next else it })
+            }
+            pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == msgId } + next }
+            if (connection.send(ClientCommand.SendMessage(sessionId, next.text, msgId))) {
+                ConnLog.info("ACTION", "自动重放送达 msgId=$msgId（第 ${next.retryCount} 次）")
+                session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, msgId)) }
+                pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == msgId } }
+                return
+            }
+            ConnLog.warn("ACTION", "自动重放失败 msgId=$msgId（第 ${next.retryCount} 次）ws=${connection.info.value.state}")
+            session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, msgId)) }
+            pendingStore.update(sessionId) { list ->
+                list.filterNot { it.msgId == msgId } + next.copy(status = PendingStatus.Failed)
             }
         }
     }

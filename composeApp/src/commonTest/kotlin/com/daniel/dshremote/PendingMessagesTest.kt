@@ -3,6 +3,7 @@ package com.daniel.dshremote
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class PendingMessagesTest {
 
@@ -160,5 +161,17 @@ class PendingMessagesTest {
         assertEquals(2_000L, autoRetryBackoffMs(1))
         assertEquals(4_000L, autoRetryBackoffMs(2))
         assertEquals(1_000L, autoRetryBackoffMs(-1)) // 负数 coerce 到 0
+    }
+
+    @Test
+    fun auto_replay_stops_after_max_retries() {
+        // 模拟 MAX_AUTO_RETRY 次自动重放（每次重放后失败回 failed）
+        var p = p("a", status = PendingStatus.Failed, retryCount = 0)
+        repeat(MAX_AUTO_RETRY) {
+            p = markPendingAutoRetry(p).copy(status = PendingStatus.Failed)
+        }
+        assertEquals(MAX_AUTO_RETRY, p.retryCount)
+        // 达上限后不再进入可自动重放集合 → 保持 failed ❗ 交用户手点
+        assertTrue(autoRetryablePendings(listOf(p), "s1").isEmpty())
     }
 }

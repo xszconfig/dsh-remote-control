@@ -31,6 +31,7 @@ enum class ConnectionState { Disconnected, Connecting, Connected, Reconnecting, 
 val ClientCommand.typeName: String
     get() = when (this) {
         ClientCommand.List -> "list"
+        ClientCommand.Ping -> "ping"
         is ClientCommand.Subscribe -> "subscribe"
         is ClientCommand.SendMessage -> "send_message"
         is ClientCommand.SetModel -> "set_model"
@@ -58,14 +59,12 @@ fun reconnectDelayMs(attempt: Int): Long =
 
 /**
  * 应用层判活心跳（假连接秒级判死）：
- * 客户端每 [PING_INTERVAL_MS] 发一条文本帧 ping，桥回 pong 文本帧；
+ * 客户端每 [PING_INTERVAL_MS] 发一条 [ClientCommand.Ping]（JSON `{"type":"ping"}`），桥回 `{"type":"pong"}`；
  * 若上一轮 ping 后 [PONG_TIMEOUT_MS] 内没收到 pong → 判定假连接，主动关闭触发重连。
- * 待与 bridge 对齐：ping/pong 文本帧的 marker 字符串以 bridge 侧规格（bc82bca2）为准。
+ * wire 与 bridge 0.14.0 / mock-bridge 对齐。
  */
 const val PING_INTERVAL_MS: Long = 20_000L
 const val PONG_TIMEOUT_MS: Long = 10_000L
-const val PING_MARKER: String = "ping"
-const val PONG_MARKER: String = "pong"
 
 /**
  * 判定是否因 pong 超时应判死：上一轮 ping（lastPingAt）之后超过 [PONG_TIMEOUT_MS]
@@ -129,15 +128,14 @@ class ConnectionManager(private val scope: CoroutineScope) {
                     try {
                         for (frame in incoming) {
                             if (frame is Frame.Text) {
-                                val text = frame.readText()
-                                // 应用层 pong：判活信号，不按 ServerEvent 解码
-                                if (text == PONG_MARKER) {
-                                    lastPongAt = nowMillis()
-                                    ConnLog.debug("CONNECT", "收到应用层 pong")
-                                    continue
-                                }
                                 try {
-                                    val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), text)
+                                    val ev = BridgeJson.decodeFromString(ServerEvent.serializer(), frame.readText())
+                                    // 应用层 pong：判活信号，ConnectionManager 内部消费，不下发业务层
+                                    if (ev is ServerEvent.Pong) {
+                                        lastPongAt = nowMillis()
+                                        ConnLog.debug("CONNECT", "收到应用层 pong")
+                                        continue
+                                    }
                                     _events.emit(ev)
                                 } catch (e: Exception) {
                                     ConnLog.warn("WS", "事件解码失败（跳过该帧）: ${e.message}")
@@ -186,7 +184,7 @@ class ConnectionManager(private val scope: CoroutineScope) {
             }
             lastPingAt = now
             try {
-                s.send(Frame.Text(PING_MARKER))
+                s.send(Frame.Text(BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.Ping)))
                 ConnLog.debug("CONNECT", "发送应用层 ping")
             } catch (_: Exception) {
                 break

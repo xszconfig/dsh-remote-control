@@ -146,6 +146,17 @@ class ProtocolTest {
         assertEquals(false, assertIs<ServerEvent.Ack>(reject).ok)
     }
 
+    @Test
+    fun encode_ping_decode_pong() {
+        // 应用层判活：客户端 ping → 服务端 pong（与 bridge 0.14.0 / mock-bridge 对齐）
+        assertEquals(
+            """{"type":"ping"}""",
+            BridgeJson.encodeToString(ClientCommand.serializer(), ClientCommand.Ping),
+        )
+        val pong = BridgeJson.decodeFromString(ServerEvent.serializer(), """{"type":"pong"}""")
+        assertEquals(ServerEvent.Pong, assertIs<ServerEvent.Pong>(pong))
+    }
+
     // ---- 客户端命令编码 ----
 
     @Test

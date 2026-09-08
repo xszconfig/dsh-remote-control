@@ -1132,6 +1132,7 @@ class BridgeClient(
             is ServerEvent.DeviceRegistered -> handleDeviceRegistered(ev)
             is ServerEvent.DeviceRevoked -> handleDeviceRevoked(ev)
             is ServerEvent.Ack -> pendingSender.handleAck(ev)
+            is ServerEvent.Pong -> Unit // 判活 pong 由 ConnectionManager 内部消费，兜底忽略
             is ServerEvent.Error -> handleError(ev)
         }
     }
