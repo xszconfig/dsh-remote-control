@@ -5,8 +5,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -201,34 +203,27 @@ internal object NotificationPoster {
         NotificationKind.DELIVERY -> android.R.drawable.stat_notify_chat
     }
 
-    private fun hasPermission(context: android.content.Context): Boolean {
+    fun isGranted(context: android.content.Context): Boolean {
         if (Build.VERSION.SDK_INT < 33) return true
-        val granted = ContextCompat.checkSelfPermission(
+        return ContextCompat.checkSelfPermission(
             context, Manifest.permission.POST_NOTIFICATIONS,
         ) == PackageManager.PERMISSION_GRANTED
-        if (granted) return true
-        // 首次触发时申请；申请期间本次不 post，授权后下一次事件会正常 post
-        try {
-            @Suppress("DEPRECATION")
-            AppContext.activity?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-        } catch (_: Exception) {
-            // 无 Activity（异常场景）则不申请，静默跳过
-        }
-        return false
     }
 
     fun post(context: android.content.Context, spec: NotificationSpec) {
         try {
-            if (!hasPermission(context)) return
+            if (!isGranted(context)) return
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
             ensureChannels(nm)
-            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            val contentIntent = launch?.let {
-                PendingIntent.getActivity(
-                    context, 0, it,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
+            // 点击直达：PendingIntent 带 sessionId extra，拉起 MainActivity 后解析并打开对应会话
+            val launch = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                spec.sessionId?.let { putExtra(EXTRA_NOTIFY_SESSION_ID, it) }
             }
+            val contentIntent = PendingIntent.getActivity(
+                context, 0, launch,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
             val notification = Notification.Builder(context, channelIdFor(spec))
                 .setSmallIcon(smallIconFor(spec))
                 .setContentTitle(spec.title)
@@ -256,12 +251,38 @@ internal object NotificationPoster {
 
 internal actual fun platformPostNotification(spec: NotificationSpec) {
     val context = AppContext.context ?: return
-    NotificationPoster.post(context, spec)
+    if (NotificationPoster.isGranted(context)) {
+        NotificationPoster.post(context, spec)
+    } else {
+        // 未授权：提示 rationale（App.kt 渲染引导）；本条通知丢弃（审批仍可在页内弹窗/重连补发）
+        NotificationPermissionState.prompt.value = NotificationPermissionPrompt.Rationale
+    }
 }
 
 internal actual fun platformCancelNotification(tag: String) {
     val context = AppContext.context ?: return
     NotificationPoster.cancel(context, tag)
+}
+
+internal actual fun platformRequestNotificationPermission() {
+    try {
+        @Suppress("DEPRECATION")
+        AppContext.activity?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFY_PERMISSION_REQ_CODE)
+    } catch (_: Exception) {
+        // 无 Activity 或系统拒绝，静默
+    }
+}
+
+internal actual fun platformOpenNotificationSettings() {
+    val context = AppContext.context ?: return
+    try {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        // 无设置页可跳则忽略
+    }
 }
 
 @Composable

@@ -287,6 +287,8 @@ class BridgeClient(
     private val lastAssistantTsBySession = mutableMapOf<String, Long>()
     /** 各会话最近一次非空 tool_result 时间戳（结果交付降噪：子代理 settle 允许 tool_result）。 */
     private val lastToolResultTsBySession = mutableMapOf<String, Long>()
+    /** 通知点击直达的待打开会话 id（hello 前暂存，hello 后命中则打开）。 */
+    private var pendingOpenSessionId: String? = null
 
     init {
         scope.launch {
@@ -308,6 +310,41 @@ class BridgeClient(
                 }
                 wasConnected = connected
             }
+        }
+        // 通知点击直达：MainActivity 写入目标会话 id → 打开对应会话（幂等消费后置空）
+        scope.launch {
+            NotificationLaunch.requestedSessionId.collect { sid ->
+                if (sid != null) {
+                    handleNotificationOpen(sid)
+                    NotificationLaunch.requestedSessionId.value = null
+                }
+            }
+        }
+    }
+
+    /** 通知点击直达：会话已加载则立即打开；未加载（hello 未到）则暂存待 hello 后打开。 */
+    private fun handleNotificationOpen(sessionId: String) {
+        val target = resolveNotificationOpenTarget(sessionId, _session.value.sessions)
+        if (target != null) {
+            ConnLog.info("NOTIFY", "通知直达打开会话 session=${target.take(8)}")
+            openSession(target)
+            pendingOpenSessionId = null
+        } else {
+            pendingOpenSessionId = sessionId
+            ConnLog.info("NOTIFY", "通知直达暂存待 hello session=${sessionId.take(8)}")
+        }
+    }
+
+    /** hello 后消费暂存的直达会话：命中则打开，未命中则停留会话列表。 */
+    private fun maybeOpenPendingNotificationSession() {
+        val sid = pendingOpenSessionId ?: return
+        val target = resolveNotificationOpenTarget(sid, _session.value.sessions)
+        pendingOpenSessionId = null
+        if (target != null) {
+            ConnLog.info("NOTIFY", "通知直达打开会话 session=${target.take(8)}")
+            openSession(target)
+        } else {
+            ConnLog.info("NOTIFY", "通知直达会话未找到 session=${sid.take(8)}，停留会话列表")
         }
     }
 
@@ -1114,9 +1151,14 @@ class BridgeClient(
                 }
             }
         }
-        // 自动打开最近会话：hello 对账完成后、无打开会话且本连接内未手动关闭过时，
-        // 直接落进当前工作区最近一个主会话（更丝滑）。放在重订阅之后，避免重复订阅。
-        maybeAutoOpenRecentSession()
+        // 打开会话：通知点击直达优先（命中暂存目标则打开，未命中停留列表）；
+        // 否则自动打开最近会话（hello 对账完成后、无打开会话且本连接内未手动关闭过时）。
+        // 放在重订阅之后，避免重复订阅。
+        if (pendingOpenSessionId != null) {
+            maybeOpenPendingNotificationSession()
+        } else {
+            maybeAutoOpenRecentSession()
+        }
         // 补发审批/提问通知：重连/新连接后按服务端快照重建待裁决队列时，对未通知过的项主动召回
         // （幂等：已通知过的不会重复；放在自动打开之后，让门控能正确识别「正在浏览该会话」）。
         allApprovals.forEach { a ->

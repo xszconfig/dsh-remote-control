@@ -130,6 +130,8 @@ fun App(client: BridgeClient) {
     val devices by client.devices.state.collectAsState()
     val session by client.session.collectAsState()
     val notice by client.notice.collectAsState()
+    // 通知权限引导状态（未授权时首次触发通知被拦截 → 提示 rationale）
+    val permPrompt by NotificationPermissionState.prompt.collectAsState()
     // 重连态派生自统一槽（用于 keepSessionUi 的「断线/重连不跳页」判断）
     val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
@@ -208,7 +210,51 @@ fun App(client: BridgeClient) {
                 onSubmit = { answers -> client.answerQuestion(question, answers) },
             )
         }
+        // 通知权限引导（未授权时）：小弹窗说明用途，同意后申请；拒绝后转「去设置」
+        if (permPrompt != NotificationPermissionPrompt.Hidden) {
+            NotificationPermissionDialog(
+                prompt = permPrompt,
+                onAllow = { platformRequestNotificationPermission() },
+                onDismiss = { NotificationPermissionState.prompt.value = NotificationPermissionPrompt.Hidden },
+                onOpenSettings = {
+                    platformOpenNotificationSettings()
+                    NotificationPermissionState.prompt.value = NotificationPermissionPrompt.Hidden
+                },
+            )
+        }
     }
+}
+
+/** 通知权限引导弹窗：Rationale=说明用途+允许；GoSettings=引导去系统设置开启。 */
+@Composable
+private fun NotificationPermissionDialog(
+    prompt: NotificationPermissionPrompt,
+    onAllow: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val goSettings = prompt == NotificationPermissionPrompt.GoSettings
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (goSettings) "通知权限已关闭" else "开启通知提醒") },
+        text = {
+            Text(
+                if (goSettings) {
+                    "审批/提问与结果交付的通知提醒需要通知权限。请在系统设置中开启，否则锁屏或后台时将无法收到提醒。"
+                } else {
+                    "为在锁屏或后台及时提醒你处理审批、提问与结果交付，需要通知权限（仅用于本项目的提醒，不用于营销推送）。"
+                }
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = if (goSettings) onOpenSettings else onAllow) {
+                Text(if (goSettings) "去设置" else "允许")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("暂不") }
+        },
+    )
 }
 
 // ================= 首页（未连接） =================

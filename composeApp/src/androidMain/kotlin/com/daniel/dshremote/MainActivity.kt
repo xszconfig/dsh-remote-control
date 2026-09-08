@@ -1,5 +1,7 @@
 package com.daniel.dshremote
 
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import java.io.File
 import androidx.activity.ComponentActivity
@@ -16,6 +18,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AppContext.context = applicationContext
         AppContext.activity = this
+        // 通知点击直达：冷启动读取 sessionId extra（BridgeClient 消费后打开对应会话）
+        NotificationLaunch.requestedSessionId.value = intent?.getStringExtra(EXTRA_NOTIFY_SESSION_ID)
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
         val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
         val sessionCache = AndroidSessionCache(File(applicationContext.filesDir, "session-cache"))
@@ -33,6 +37,24 @@ class MainActivity : ComponentActivity() {
                 )
             }
             App(client)
+        }
+    }
+
+    /** 通知点击直达：热启动（Activity 已在栈顶 singleTop）时接收新 intent。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        NotificationLaunch.requestedSessionId.value = intent.getStringExtra(EXTRA_NOTIFY_SESSION_ID)
+    }
+
+    /** 通知权限申请结果：同意 → 隐藏引导；拒绝 → 转「去设置」。 */
+    @Suppress("DEPRECATION")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFY_PERMISSION_REQ_CODE) {
+            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            NotificationPermissionState.prompt.value =
+                if (granted) NotificationPermissionPrompt.Hidden else NotificationPermissionPrompt.GoSettings
         }
     }
 }
