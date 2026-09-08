@@ -801,8 +801,6 @@ private fun WorkspaceDrawer(
     onSelect: (String?) -> Unit,
     onOpenDevices: () -> Unit,
 ) {
-    val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
-    val mainSessions = state.sessions.count { it.parentSessionId == null }
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surface,
         // 侧边栏占屏幕 85% 宽（用户要求：70% 太窄）
@@ -815,33 +813,7 @@ private fun WorkspaceDrawer(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
             )
-            DrawerEntry(
-                label = "全部会话",
-                badge = mainSessions,
-                icon = "🗂",
-                selected = state.selectedWorkspaceId == null,
-                onClick = { onSelect(null) },
-            )
-            state.workspaces.forEach { w ->
-                DrawerEntry(
-                    label = w.title,
-                    // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
-                    // 与列表不一致会出现「外面 N 个、点进去没有」）；只计顶层会话
-                    badge = state.sessions.count { it.parentSessionId == null && it.workspaceId == w.id },
-                    icon = "📁",
-                    selected = state.selectedWorkspaceId == w.id,
-                    onClick = { onSelect(w.id) },
-                )
-            }
-            if (ungrouped > 0) {
-                DrawerEntry(
-                    label = "未分组",
-                    badge = ungrouped,
-                    icon = "📄",
-                    selected = state.selectedWorkspaceId == UNGROUPED_KEY,
-                    onClick = { onSelect(UNGROUPED_KEY) },
-                )
-            }
+            WorkspaceFilter(state = state, onSelect = onSelect)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
             Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                 Text(
@@ -865,6 +837,40 @@ private fun WorkspaceDrawer(
             )
             Spacer(Modifier.height(8.dp))
         }
+    }
+}
+
+/** 工作区过滤条目（全部会话 / 各工作区 / 未分组）：手机抽屉与平板左栏共用。 */
+@Composable
+private fun WorkspaceFilter(state: SessionUiState, onSelect: (String?) -> Unit) {
+    val ungrouped = state.sessions.count { it.parentSessionId == null && it.workspaceId == null }
+    val mainSessions = state.sessions.count { it.parentSessionId == null }
+    DrawerEntry(
+        label = "全部会话",
+        badge = mainSessions,
+        icon = "🗂",
+        selected = state.selectedWorkspaceId == null,
+        onClick = { onSelect(null) },
+    )
+    state.workspaces.forEach { w ->
+        DrawerEntry(
+            label = w.title,
+            // 计数按会话列表实算（服务端 workspace.sessionCount 含 registry 残留，
+            // 与列表不一致会出现「外面 N 个、点进去没有」）；只计顶层会话
+            badge = state.sessions.count { it.parentSessionId == null && it.workspaceId == w.id },
+            icon = "📁",
+            selected = state.selectedWorkspaceId == w.id,
+            onClick = { onSelect(w.id) },
+        )
+    }
+    if (ungrouped > 0) {
+        DrawerEntry(
+            label = "未分组",
+            badge = ungrouped,
+            icon = "📄",
+            selected = state.selectedWorkspaceId == UNGROUPED_KEY,
+            onClick = { onSelect(UNGROUPED_KEY) },
+        )
     }
 }
 
