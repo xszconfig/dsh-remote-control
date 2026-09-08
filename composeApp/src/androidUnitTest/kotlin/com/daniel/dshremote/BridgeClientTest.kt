@@ -21,7 +21,7 @@ import kotlinx.coroutines.test.runTest
  */
 class BridgeClientTest {
 
-    private fun newClient(scope: CoroutineScope): BridgeClient {
+    private fun newClient(scope: CoroutineScope, pendingStore: PendingStore = InMemoryPendingStore()): BridgeClient {
         val dir = File(System.getProperty("java.io.tmpdir"), "dsh-client-test-${System.nanoTime()}")
         return BridgeClient(
             scope = scope,
@@ -42,7 +42,25 @@ class BridgeClientTest {
                 override suspend fun load(key: String): String? = null
                 override suspend fun save(key: String, version: String) {}
             },
+            pendingStore = pendingStore,
         )
+    }
+
+    /** 内存态待发送消息 store：纯 suspend（无 IO），runTest 下 runCurrent 可同步推进。 */
+    private class InMemoryPendingStore : PendingStore {
+        val data = mutableMapOf<String, List<PendingMessage>>()
+        override suspend fun load(sessionId: String): List<PendingMessage> = data[sessionId] ?: emptyList()
+        override suspend fun save(sessionId: String, pending: List<PendingMessage>) {
+            if (pending.isEmpty()) data.remove(sessionId) else data[sessionId] = pending
+        }
+        override suspend fun update(
+            sessionId: String,
+            transform: (List<PendingMessage>) -> List<PendingMessage>,
+        ): List<PendingMessage> {
+            val next = transform(data[sessionId] ?: emptyList())
+            if (next.isEmpty()) data.remove(sessionId) else data[sessionId] = next
+            return next
+        }
     }
 
     @Test
@@ -190,5 +208,60 @@ class BridgeClientTest {
         assertEquals(PendingStatus.Sending, client.session.value.pendingMessages.first().status)
         assertEquals("hi", client.session.value.pendingMessages.first().text)
         assertEquals(emptyList(), client.session.value.queueItems)
+    }
+
+    @Test
+    fun sendFailure_persistsFailed_andReopenRestores() = runTest {
+        val store = InMemoryPendingStore()
+        val client = newClient(backgroundScope, store)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        runCurrent() // 推进 scope.launch：写前日志落盘 → connection.send 失败 → markPendingFailed → 再落盘
+        // 发送失败（未连接）→ 内存 pending Failed
+        assertEquals(PendingStatus.Failed, client.session.value.pendingMessages.single().status)
+        // 已持久化：store 里该会话有 1 条 Failed
+        assertEquals(1, store.data["s1"]?.size)
+        assertEquals(PendingStatus.Failed, store.data["s1"]!!.single().status)
+        // 退出到列表再回来：openSession 先清空内存，再从 store 恢复为 Failed（可点 ❗ 重发）
+        client.closeSession()
+        client.openSession("s1")
+        runCurrent()
+        assertEquals(PendingStatus.Failed, client.session.value.pendingMessages.single().status)
+        assertEquals("hi", client.session.value.pendingMessages.single().text)
+    }
+
+    @Test
+    fun openSession_restoresSendingAsFailed() = runTest {
+        // 模拟：上次进程在「已落盘 sending、尚未送达」时被杀 → 磁盘残留 Sending
+        val store = InMemoryPendingStore()
+        store.data["s1"] = listOf(
+            PendingMessage(localId = "p1", sessionId = "s1", text = "hi", status = PendingStatus.Sending, createdAt = 1_000L),
+        )
+        val client = newClient(backgroundScope, store)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        runCurrent()
+        // 恢复时 sending 一律转 failed（结果未知，避免自动重发）
+        assertEquals(PendingStatus.Failed, client.session.value.pendingMessages.single().status)
+        assertEquals("hi", client.session.value.pendingMessages.single().text)
+        // 回写已转换状态，store 不再残留 Sending
+        assertEquals(PendingStatus.Failed, store.data["s1"]!!.single().status)
     }
 }
