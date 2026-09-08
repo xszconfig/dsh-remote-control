@@ -438,3 +438,21 @@ private fun ScannerPreview(onScanned: (String) -> Unit) {
         }
     }
 }
+
+internal actual fun platformLoadThemeMode(): String? {
+    val ctx = AppContext.context ?: return null
+    return try {
+        ctx.openFileInput("theme_mode.txt").bufferedReader().use { it.readText().trim() }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+internal actual fun platformSaveThemeMode(mode: String) {
+    val ctx = AppContext.context ?: return
+    try {
+        ctx.openFileOutput("theme_mode.txt", android.content.Context.MODE_PRIVATE).use { it.write(mode.toByteArray()) }
+    } catch (_: Exception) {
+        // 持久化失败不阻塞（下次启动回退跟随系统）
+    }
+}

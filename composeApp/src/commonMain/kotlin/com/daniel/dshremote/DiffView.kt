@@ -60,13 +60,13 @@ private fun diffLines(old: String?, new: String): List<DiffLine> {
     return out
 }
 
-// 与 Markdown 代码块一致的深底 + GitHub 风格的增减配色
-private val DiffBg = Color(0xFF14181F)
-private val DiffContextFg = Color(0xFFDCE4EF)
-private val DiffDelBg = Color(0xFF3B1D24)
-private val DiffDelFg = Color(0xFFFF9AA2)
-private val DiffAddBg = Color(0xFF17321F)
-private val DiffAddFg = Color(0xFF7EE787)
+// 与 Markdown 代码块一致的深底 + GitHub 风格的增减配色（token 化，随主题切换）
+private val DiffBg: Color @Composable get() = LocalColorTokens.current.diffBg
+private val DiffContextFg: Color @Composable get() = LocalColorTokens.current.diffContextFg
+private val DiffDelBg: Color @Composable get() = LocalColorTokens.current.diffDelBg
+private val DiffDelFg: Color @Composable get() = LocalColorTokens.current.diffDelFg
+private val DiffAddBg: Color @Composable get() = LocalColorTokens.current.diffAddBg
+private val DiffAddFg: Color @Composable get() = LocalColorTokens.current.diffAddFg
 
 private data class DiffStyle(val bg: Color, val fg: Color, val prefix: String, val text: String)
 
