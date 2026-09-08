@@ -35,10 +35,10 @@ class MarkdownCodeBlockTest {
 
     @Test
     fun manyLines_rightAlignsNumbersWithPadStart() {
-        // 12 行 → 行号占 2 位，右对齐（padStart）。
+        // 12 行 → 行号占 2 位，右对齐（padStart 用空格补位，等宽字体下自然右对齐）。
         val code = (1..12).joinToString("\n") { "line$it" }
         val m = buildCodeBlockLines(code)
-        assertEquals(listOf("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"), m.lineNumbers)
+        assertEquals(listOf(" 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9", "10", "11", "12"), m.lineNumbers)
         assertEquals(12, m.lines.size)
     }
 }
