@@ -93,6 +93,7 @@ import com.daniel.dshremote.protocol.QuestionAnswerItemWire
 import com.daniel.dshremote.protocol.QuestionItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -134,6 +135,13 @@ fun App(client: BridgeClient) {
     val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
+    // 平板判定：宽度 ≥840dp（等价 WindowWidthSizeClass.Expanded）。仅 Expanded 启用三栏，
+    // 手机/横屏/折叠屏（Compact/Medium）走现有单页流，零回归。
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    val isTablet = isTabletLayout(widthDp)
+    LaunchedEffect(isTablet) {
+        ConnLog.info("ACTION", "平板布局切换 ${if (isTablet) "enabled" else "disabled"} widthDp=$widthDp")
+    }
     // 冷启动自动连接：设备列表/探测结果就绪后决策一次（上次设备在线则无缝直连）
     LaunchedEffect(devices.devices, devices.deviceStatuses) {
         client.autoConnectOnce()
