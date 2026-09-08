@@ -103,6 +103,8 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -2629,8 +2631,11 @@ private fun Bubble(
                     ),
                     // 表格用自定义组件：宽表格按真实内容宽度测量 + 横向滑动，
                     // 替换库默认的固定列宽 + 省略号截断（见 MarkdownTableScroll.kt）。
+                    // 代码块用自定义组件：行号固定 + 长行不换行 + 代码区横向滑动（见 MarkdownCodeBlock.kt）。
                     components = markdownComponents(
                         table = { model -> ScrollableMarkdownTable(model) },
+                        codeFence = { model -> MarkdownCodeFence(model.content, model.node) { code, _ -> ScrollableCodeBlock(code) } },
+                        codeBlock = { model -> MarkdownCodeBlock(model.content, model.node) { code, _ -> ScrollableCodeBlock(code) } },
                     ),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                 )
