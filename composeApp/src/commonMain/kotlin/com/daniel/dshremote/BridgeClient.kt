@@ -1654,6 +1654,18 @@ class BridgeClient(
 
     private fun handleError(ev: ServerEvent.Error) {
         ConnLog.warn("EVENT", "服务端错误 ${ev.code}: ${ev.message}")
+        // 队列操作失败：主动刷新 + 明确提示「正在处理」，绝不静默消失（见 QueueItemLogic.kt）。
+        val banner = queueErrorBanner(ev.code)
+        if (banner != null) {
+            if (ev.code == "queue-item-not-found") {
+                ConnLog.info("QUEUE", "插队/删除目标已不在队列，主动刷新队列")
+                _session.value.currentSessionId?.let { sid ->
+                    scope.launch { if (!connection.send(ClientCommand.Subscribe(sid))) pushConnectionError("刷新队列失败（连接已断开）") }
+                }
+            }
+            pushBusinessError(banner)
+            return
+        }
         pushBusinessError("${ev.code}: ${ev.message}")
         // 审批裁决竞争失败（已被其他手机/桌面端处理）：本地同步清理
         if (ev.code == "not_found" && ev.message.startsWith("approval not found")) {

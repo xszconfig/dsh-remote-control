@@ -1740,19 +1740,31 @@ private fun QueuePanel(state: SessionUiState, client: BridgeClient, sessionId: S
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f),
                                 )
-                                if (item.placement == "queued") {
-                                    TextButton(onClick = {
-                                        ConnLog.info("ACTION", "排队插队 itemId=${item.id} sessionId=$sessionId")
-                                        client.sendQueueAction(sessionId, item.id, "steer")
-                                    }) {
-                                        Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                                // 乐观排队项（id 以 local- 开头）尚未被服务端 session_queue 回环替换成真实 id：
+                                // 此时 itemId 是本地造的，服务端 inbox 里没有它——直接插队/删除必报
+                                // queue-item-not-found 且消息看似「消失」。必须等真实 id 替换后才可操作，
+                                // 期间按钮禁用并显示「同步中…」。
+                                if (isSyncingQueueItem(item.id)) {
+                                    Text(
+                                        "同步中…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } else {
+                                    if (item.placement == "queued") {
+                                        TextButton(onClick = {
+                                            ConnLog.info("ACTION", "排队插队 itemId=${item.id} sessionId=$sessionId")
+                                            client.sendQueueAction(sessionId, item.id, "steer")
+                                        }) {
+                                            Text("插队", color = AccentBlue, style = MaterialTheme.typography.labelMedium)
+                                        }
                                     }
-                                }
-                                TextButton(onClick = {
-                                    ConnLog.info("ACTION", "排队移除 itemId=${item.id} sessionId=$sessionId")
-                                    client.sendQueueAction(sessionId, item.id, "remove")
-                                }) {
-                                    Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                    TextButton(onClick = {
+                                        ConnLog.info("ACTION", "排队移除 itemId=${item.id} sessionId=$sessionId")
+                                        client.sendQueueAction(sessionId, item.id, "remove")
+                                    }) {
+                                        Text("删除", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                    }
                                 }
                             }
                         }
