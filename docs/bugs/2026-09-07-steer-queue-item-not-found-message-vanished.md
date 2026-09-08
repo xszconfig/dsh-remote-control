@@ -8,7 +8,7 @@
 | 仓库/模块 | App（`BridgeClient.kt` / `App.kt` / 新增 `QueueItemLogic.kt`）+ 桥（`src/core.ts` queue_action） |
 | 发现方式 | 用户报告（着急插队反而丢消息，性质恶劣） |
 | 日期 | 2026-09-07 |
-| 相关 commit | app `<待回填>`（feature/steer-queue-fix）；bridge `<待回填>` |
+| 相关 commit | app `a7f835b`（feature/steer-queue-fix）；bridge `8ac3e39`（queue_action 日志随 coordinator 提交） |
 | 关联文档 | `docs/bugs/2026-09-02-queue-snapshot-debounce-race.md`（队列域前科）；`docs/decisions/网络连接与弱网可靠性调研.md`（msgId+ack 幂等演进方向） |
 
 ## 背景
@@ -82,8 +82,8 @@
 +  send(ws, { type:'error', code:'steer-unavailable', message:'当前轮次不接受插队，消息仍在排队' })
 ```
 
-- 提交哈希：app `<待回填>`（`feature/steer-queue-fix`）；bridge `<待回填>`。
-- 回归测试：客户端 `QueueItemLogicTest`（local- 判定 2 例 + 错误横幅 3 例）；桥 smoke 新增 2 条失败路径断言（`queue-item-not-found` / `steer-unavailable` 文案）。
+- 提交哈希：app `a7f835b`（`feature/steer-queue-fix`）；bridge `8ac3e39`（queue_action 失败路径日志 + steer-unavailable 文案，随 coordinator 提交）。
+- 回归测试：客户端 `QueueItemLogicTest`（local- 判定 2 例 + 错误横幅 3 例，`testDebugUnitTest` 全绿）；桥 smoke 新增 2 条失败路径断言（`queue-item-not-found` / `steer-unavailable` 文案，断言已就位、随「消息必达 0.14.0」工作提交）。
 
 ## 后续改进计划
 
