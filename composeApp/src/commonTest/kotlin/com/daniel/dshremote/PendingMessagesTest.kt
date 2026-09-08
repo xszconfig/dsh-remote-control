@@ -85,4 +85,22 @@ class PendingMessagesTest {
         )
         assertEquals("a", matchPendingEcho(list, "s1", "hi", 11_000L))
     }
+
+    @Test
+    fun restore_sending_becomes_failed() {
+        val list = listOf(
+            p("a", status = PendingStatus.Sending),
+            p("b", status = PendingStatus.Failed),
+        )
+        val restored = restorePendingFromDisk(list)
+        assertEquals(PendingStatus.Failed, restored.first { it.localId == "a" }.status)
+        assertEquals(PendingStatus.Failed, restored.first { it.localId == "b" }.status)
+    }
+
+    @Test
+    fun restore_sent_defensively_becomes_failed() {
+        // Sent 理论上不落盘；防御性：任何非 Failed 恢复时都转 failed（结果未知，不自动重发）
+        val restored = restorePendingFromDisk(listOf(p("a", status = PendingStatus.Sent)))
+        assertEquals(PendingStatus.Failed, restored.single().status)
+    }
 }

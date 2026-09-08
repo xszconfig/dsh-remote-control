@@ -229,6 +229,7 @@ class BridgeClient(
     private val sessionCache: SessionCache,
     private val draftCache: DraftCache,
     private val bootNoticeCache: BootNoticeCache,
+    private val pendingStore: PendingStore,
 ) {
 
     val connection = ConnectionManager(scope)
@@ -656,6 +657,23 @@ class BridgeClient(
             )
         }
         scope.launch {
+            // 恢复本地待发送消息：断线/杀进程/切换视图后不丢（P00）。sending 一律转 failed
+            // （发送结果未知，避免自动重发导致重复投递，交用户点 ❗ 手动决定）。
+            val restored = restorePendingFromDisk(pendingStore.load(sessionId))
+            if (restored.isNotEmpty()) {
+                _session.update { s ->
+                    if (s.currentSessionId == sessionId) {
+                        // 合并而非覆盖：openSession 已同步清空，但恢复期间的极短窗口内可能又发出新消息
+                        val others = s.pendingMessages.filterNot { it.sessionId == sessionId }
+                        s.copy(pendingMessages = restored + others)
+                    } else {
+                        s
+                    }
+                }
+                // 回写已转换状态（sending→failed），保证下次重启不再重复转换
+                pendingStore.save(sessionId, restored)
+                ConnLog.info("PENDING", "会话 $sessionId 恢复待发送消息 ${restored.size} 条（sending→failed）")
+            }
             // 先渲染本地缓存（秒开），订阅返回后以服务端历史为准
             val key = eventCacheKey(sessionId)
             val cached = eventCache.load(key)
@@ -691,6 +709,12 @@ class BridgeClient(
     fun saveDraft(sessionId: String, text: String) {
         scope.launch { draftCache.save(draftKey(sessionId), text) }
     }
+
+    // ---- 待发送消息持久化（P00：任何用户消息都是明确指令，不能丢）----
+    //
+    // 磁盘是「待发送消息」的事实源（内存 pendingMessages 只是 UI 投影，会被切会话/断连清空）。
+    // 落盘只写 Sending/Failed；Sent 不落盘（发送成功即 update 删除该条，回显由服务端历史承载）。
+    // 所有 upsert/删除走 PendingStore.update（原子读-改-写），并发发送不丢写、断连清空内存不误删磁盘。
 
     private var cacheSaveJob: Job? = null
     private var lastCacheSaveAt = 0L
@@ -818,28 +842,42 @@ class BridgeClient(
         // 语义（用户澄清）：仅 Agent 非运行中（队列空、消息被立即消费）才走 PendingBubble 状态机
         // （乐观上屏 + 时间行 Loading/❗）；运行中消息进排队队列，只在排队面板显示，不得上屏。
         val localId: String? = if (!running) "pending-${nowMillis()}-${pendingIdSeq++}" else null
-        if (localId != null) {
-            val pending = PendingMessage(
+        val pending: PendingMessage? = if (localId != null) {
+            PendingMessage(
                 localId = localId,
                 sessionId = sid,
                 text = text,
                 status = PendingStatus.Sending,
                 createdAt = nowMillis(),
             )
+        } else {
+            null
+        }
+        if (pending != null) {
             _session.update { s ->
                 if (s.currentSessionId == sid) s.copy(pendingMessages = addPending(s.pendingMessages, pending)) else s
             }
         }
         scope.launch {
+            // P00 写前日志（write-ahead）：先原子落盘 sending 再真正发送——任何时刻断线/杀进程，
+            // 该消息都已持久化，恢复时 sending→failed 交用户重发，绝不丢。
+            if (pending != null) {
+                pendingStore.update(sid) { list -> list.filterNot { it.localId == pending.localId } + pending }
+            }
             if (connection.send(ClientCommand.SendMessage(sid, text))) {
-                if (localId != null) {
-                    ConnLog.info("ACTION", "发送送达 localId=$localId（sending→sent）")
-                    _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+                if (pending != null) {
+                    ConnLog.info("ACTION", "发送送达 localId=${pending.localId}（sending→sent）")
+                    _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, pending.localId)) }
+                    // 消息已归服务端 → 从持久化记录删除该条（回显由历史承载）
+                    pendingStore.update(sid) { list -> list.filterNot { it.localId == pending.localId } }
                 }
             } else {
                 ConnLog.error("CMD", "发送消息失败 sessionId=$sid textLen=${text.length} ws=${connection.info.value.state}")
-                if (localId != null) {
-                    _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
+                if (pending != null) {
+                    _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, pending.localId)) }
+                    pendingStore.update(sid) { list ->
+                        list.filterNot { it.localId == pending.localId } + pending.copy(status = PendingStatus.Failed)
+                    }
                 }
                 pushConnectionError("「${text.take(20)}」未发送：连接已断开")
                 // 发送失败：回滚乐观排队项（仅运行中有；非运行中无 local- 项，filter 为 no-op）
@@ -857,12 +895,20 @@ class BridgeClient(
         ConnLog.info("ACTION", "重发点击 localId=$localId sessionId=${p.sessionId} textLen=${p.text.length}")
         _session.update { s -> s.copy(pendingMessages = markPendingSending(s.pendingMessages, localId)) }
         scope.launch {
+            // 重发前先原子落盘 sending（写前日志），断线/杀进程后可恢复为 failed
+            pendingStore.update(p.sessionId) { list ->
+                list.filterNot { it.localId == localId } + p.copy(status = PendingStatus.Sending)
+            }
             if (connection.send(ClientCommand.SendMessage(p.sessionId, p.text))) {
                 ConnLog.info("ACTION", "重发送达 localId=$localId（sending→sent）")
                 _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, localId)) }
+                pendingStore.update(p.sessionId) { list -> list.filterNot { it.localId == localId } }
             } else {
                 ConnLog.error("CMD", "重发失败 localId=$localId ws=${connection.info.value.state}")
                 _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, localId)) }
+                pendingStore.update(p.sessionId) { list ->
+                    list.filterNot { it.localId == localId } + p.copy(status = PendingStatus.Failed)
+                }
                 pushConnectionError("「${p.text.take(20)}」未发送：连接已断开")
             }
         }
@@ -1249,6 +1295,10 @@ class BridgeClient(
             if (matched != null) {
                 ConnLog.info("ACTION", "回显去重匹配 localId=$matched sessionId=${ev.sessionId}")
                 _session.update { s -> s.copy(pendingMessages = removePending(s.pendingMessages, matched)) }
+                // 回显已作为权威气泡上屏，同步清理该会话持久化记录
+                scope.launch {
+                    pendingStore.update(ev.sessionId) { list -> list.filterNot { it.localId == matched } }
+                }
             }
         }
         // 结果交付降噪：记录各会话「最终结论 / 非空工具产出」的最近时间戳（跨会话，非当前会话也记）

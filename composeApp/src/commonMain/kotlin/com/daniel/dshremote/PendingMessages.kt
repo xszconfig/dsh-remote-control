@@ -1,6 +1,7 @@
 package com.daniel.dshremote
 
 import kotlin.math.abs
+import kotlinx.serialization.Serializable
 
 /**
  * 消息发送状态机（IM 标准模式，纯客户端本地状态，无 Compose 依赖，commonTest 直测）。
@@ -12,12 +13,17 @@ import kotlin.math.abs
  *   由回显作为权威气泡渲染（避免同一消息显示两份）。
  * - 发送失败（connection.send false）→ [Failed]（时间行红色 ❗，点击重发）。
  * - 重发点击 → [Sending] → 再次进入送达/失败分支，循环取决于网络/服务状态。
+ *
+ * 持久化契约（P00）：任何用户消息都是明确指令，发送中/失败必须落盘。
+ * 落盘只写 Sending/Failed；[Sent] 不落盘（消息已归服务端，回显由服务端历史承载）。
  */
 
 /** 待发送消息状态：sending（Loading）/ sent（已送达，无图标）/ failed（红 ❗，点击重发）。 */
+@Serializable
 enum class PendingStatus { Sending, Sent, Failed }
 
-/** 一条本地待发送消息（乐观上屏 + 送达回显去重 + 失败重发）。 */
+/** 一条本地待发送消息（乐观上屏 + 送达回显去重 + 失败重发）；序列化用于跨重启落盘。 */
+@Serializable
 data class PendingMessage(
     val localId: String,
     val sessionId: String,
@@ -64,3 +70,13 @@ fun matchPendingEcho(
         it.sessionId == sessionId && it.text == text &&
             abs(echoTs - it.createdAt) < PENDING_ECHO_MATCH_WINDOW_MS
     }?.localId
+
+/**
+ * 从磁盘恢复待发送消息：sending 一律转 failed。
+ *
+ * 原因：发送结果未知（可能已送达 bridge、也可能没发出去），自动重发会造成重复投递；
+ * 转成 failed 交给用户点 ❗ 手动决定是否重发。Sent 理论上不会落盘（发送成功即删除记录），
+ * 防御性也转 failed（同样视为「结果未知」，避免静默自动重发）。
+ */
+fun restorePendingFromDisk(list: List<PendingMessage>): List<PendingMessage> =
+    list.map { if (it.status == PendingStatus.Failed) it else it.copy(status = PendingStatus.Failed) }
