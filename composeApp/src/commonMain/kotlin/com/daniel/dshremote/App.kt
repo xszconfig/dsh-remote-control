@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -113,10 +114,6 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
-/** Markdown 代码块固定配色（两种气泡底色上都清晰可读）。 */
-private val MarkdownCodeBg = Color(0xFF14181F)
-private val MarkdownCodeFg = Color(0xFFDCE4EF)
-
 /** 子代理下拉列表：最多同时展示 10 条（移动端小屏上限，铁律 9），超过则列表内上下滚动。 */
 private const val SUBAGENT_MENU_MAX_VISIBLE = 10
 private val SUBAGENT_MENU_MAX_HEIGHT = 48.dp * SUBAGENT_MENU_MAX_VISIBLE
@@ -140,7 +137,7 @@ fun App(client: BridgeClient) {
     LaunchedEffect(devices.devices, devices.deviceStatuses) {
         client.autoConnectOnce()
     }
-    DshTheme {
+    DshTheme(darkTheme = isSystemInDarkTheme()) {
         // 页面栈原则（docs/ui-navigation-guidelines.md）：A→B→C 时每按一次返回
         // 只回上一级。覆盖层页面（设备页/日志页/扫码）都必须有返回处理，
         // 关闭覆盖层后底下的页面状态原样保留，自然回到上一级。
@@ -3075,7 +3072,7 @@ private fun ApprovalSheetContent(
                     approval.command,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFFB8E6B8),
+                    color = LocalColorTokens.current.approveCmdGreen,
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState()),
@@ -3505,18 +3502,20 @@ private fun LogRow(time: String, level: String, levelColor: Color, tag: String, 
     }
 }
 
+@Composable
 private fun levelColor(level: ConnLogLevel): Color = when (level) {
-    ConnLogLevel.DEBUG -> Color(0xFF8B93A7)
-    ConnLogLevel.INFO -> Color(0xFF6E9BFF)
-    ConnLogLevel.WARN -> Color(0xFFF2C14E)
-    ConnLogLevel.ERROR -> Color(0xFFFF6B6B)
+    ConnLogLevel.DEBUG -> LocalColorTokens.current.logDebug
+    ConnLogLevel.INFO -> LocalColorTokens.current.logInfo
+    ConnLogLevel.WARN -> LocalColorTokens.current.logWarn
+    ConnLogLevel.ERROR -> LocalColorTokens.current.logError
 }
 
+@Composable
 private fun levelColorOf(level: String): Color = when (level) {
-    "warn" -> Color(0xFFF2C14E)
-    "error" -> Color(0xFFFF6B6B)
-    "info" -> Color(0xFF6E9BFF)
-    else -> Color(0xFF8B93A7)
+    "warn" -> LocalColorTokens.current.logWarn
+    "error" -> LocalColorTokens.current.logError
+    "info" -> LocalColorTokens.current.logInfo
+    else -> LocalColorTokens.current.logDebug
 }
 
 // ================= 工具 =================
