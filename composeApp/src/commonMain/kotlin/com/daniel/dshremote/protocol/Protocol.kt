@@ -664,9 +664,29 @@ sealed interface ServerEvent {
     @SerialName("device_revoked")
     data class DeviceRevoked(val deviceId: String) : ServerEvent
 
+    /**
+     * 消息发送确认（at-least-once 的权威送达信号；先于 user_message 回显到达）。
+     * ok=true：服务端已接受（投递进 agent/队列），客户端据此删除持久化记录；
+     * ok=false：服务端拒绝（如会话未运行/自动打开失败），客户端据此转 failed 并计重放次数。
+     * wire 字段与 bridge 0.14.0 / mock-bridge 对齐。
+     */
+    @Serializable
+    @SerialName("ack")
+    data class Ack(val msgId: String, val ok: Boolean) : ServerEvent
+
+    /** 应用层判活心跳响应（客户端 ping → 桥 pong）；ConnectionManager 内部消费，不下发业务层。 */
+    @Serializable
+    @SerialName("pong")
+    data object Pong : ServerEvent
+
     @Serializable
     @SerialName("error")
-    data class Error(val code: String, val message: String) : ServerEvent
+    data class Error(
+        val code: String,
+        val message: String,
+        /** 可选：服务端拒绝消息时回带的 msgId，客户端据此把失败精确关联回 pending（消除静默失败）。 */
+        val msgId: String? = null,
+    ) : ServerEvent
 }
 
 // ---- 客户端命令 ----
@@ -677,13 +697,23 @@ sealed interface ClientCommand {
     @SerialName("list")
     data object List : ClientCommand
 
+    /** 应用层判活心跳：客户端发 ping，桥回 pong（假连接秒级判死）。与 bridge 0.14.0 对齐。 */
+    @Serializable
+    @SerialName("ping")
+    data object Ping : ClientCommand
+
     @Serializable
     @SerialName("subscribe")
     data class Subscribe(val sessionId: String?) : ClientCommand
 
     @Serializable
     @SerialName("send_message")
-    data class SendMessage(val sessionId: String, val text: String) : ClientCommand
+    data class SendMessage(
+        val sessionId: String,
+        val text: String,
+        /** 客户端生成的消息幂等键（如 m-<sessionId 前缀>-<ts>-<seq>），随 PendingStore 持久化，重发复用。 */
+        val msgId: String,
+    ) : ClientCommand
 
     /** 切换当前会话模型（下一步 prompt 组装边界生效，不打断当前推理；reasoningEffort 可选）。 */
     @Serializable

@@ -18,12 +18,12 @@ class PendingStoreTest {
     }
 
     private fun p(
-        localId: String,
+        msgId: String,
         sessionId: String = "s1",
         text: String = "hello",
         status: PendingStatus = PendingStatus.Failed,
         createdAt: Long = 1_000L,
-    ) = PendingMessage(localId, sessionId, text, status, createdAt)
+    ) = PendingMessage(msgId, sessionId, text, status, createdAt)
 
     @Test
     fun save_load_roundtrip_preserves_all_fields() = runBlocking {
@@ -53,18 +53,18 @@ class PendingStoreTest {
         // upsert：写入 sending
         store.update("s1") { list -> list + p("a", status = PendingStatus.Sending) }
         assertEquals(PendingStatus.Sending, store.load("s1").single().status)
-        // upsert 同 localId：failed 覆盖 sending（发送失败后落盘 failed）
-        store.update("s1") { list -> list.filterNot { it.localId == "a" } + p("a", status = PendingStatus.Failed) }
+        // upsert 同 msgId：failed 覆盖 sending（发送失败后落盘 failed）
+        store.update("s1") { list -> list.filterNot { it.msgId == "a" } + p("a", status = PendingStatus.Failed) }
         assertEquals(PendingStatus.Failed, store.load("s1").single().status)
         // remove：发送成功 → 删除该条
-        store.update("s1") { list -> list.filterNot { it.localId == "a" } }
+        store.update("s1") { list -> list.filterNot { it.msgId == "a" } }
         assertTrue(store.load("s1").isEmpty())
     }
 
     @Test
     fun concurrent_updates_do_not_lose_writes() = runBlocking {
         val store = newTempStore()
-        // 并发 upsert 不同 localId：原子读-改-写保证全部落盘（防丢写，回归 DeviceStore 同类竞态）
+        // 并发 upsert 不同 msgId：原子读-改-写保证全部落盘（防丢写，回归 DeviceStore 同类竞态）
         coroutineScope {
             (1..20).map { n ->
                 async(Dispatchers.IO) {
@@ -73,7 +73,7 @@ class PendingStoreTest {
             }.awaitAll()
         }
         assertEquals(20, store.load("s1").size)
-        assertEquals((1..20).map { "id-$it" }.toSet(), store.load("s1").map { it.localId }.toSet())
+        assertEquals((1..20).map { "id-$it" }.toSet(), store.load("s1").map { it.msgId }.toSet())
     }
 
     @Test
