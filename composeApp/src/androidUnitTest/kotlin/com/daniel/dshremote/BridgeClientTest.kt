@@ -43,6 +43,11 @@ class BridgeClientTest {
                 override suspend fun save(key: String, version: String) {}
             },
             pendingStore = pendingStore,
+            notifiedKeysStore = object : NotifiedKeysStore {
+                override suspend fun load(): Set<String> = emptySet()
+                override suspend fun add(key: String) {}
+                override suspend fun remove(key: String) {}
+            },
         )
     }
 

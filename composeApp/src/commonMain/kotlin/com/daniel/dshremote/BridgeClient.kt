@@ -283,6 +283,7 @@ class BridgeClient(
     private val draftCache: DraftCache,
     private val bootNoticeCache: BootNoticeCache,
     private val pendingStore: PendingStore,
+    private val notifiedKeysStore: NotifiedKeysStore,
 ) {
 
     val connection = ConnectionManager(scope)
@@ -331,19 +332,17 @@ class BridgeClient(
     /** 本地待发送消息 msgId 自增序号（防同一毫秒内多条冲突）。 */
     private var pendingIdSeq = 0L
 
-    /** 主动通知编排器（三态门控 + 幂等去重 + 勿扰时段；宿主平台能力见 androidMain）。 */
-    private val notifications = NotificationController(object : NotificationHost {
-        override fun isForeground() = platformIsAppForeground()
-        override fun currentSessionId() = _session.value.currentSessionId
-        override fun post(spec: NotificationSpec) = platformPostNotification(spec)
-        override fun cancel(tag: String) = platformCancelNotification(tag)
-    })
-    /** 各会话最近一次 OPEN 轮次起点（turn_status 投影；结果交付「会话×轮次」幂等键）。 */
-    private val turnStartBySession = mutableMapOf<String, Long>()
-    /** 各会话最近一次「最终结论」时间戳（结果交付降噪：主会话 idle 需有 assistant_message）。 */
-    private val lastAssistantTsBySession = mutableMapOf<String, Long>()
-    /** 各会话最近一次非空 tool_result 时间戳（结果交付降噪：子代理 settle 允许 tool_result）。 */
-    private val lastToolResultTsBySession = mutableMapOf<String, Long>()
+    /** 主动通知编排器（三态门控 + 幂等去重 + 勿扰时段 + 幂等键持久化）。 */
+    private val notifications = NotificationController(
+        host = object : NotificationHost {
+            override fun isForeground() = platformIsAppForeground()
+            override fun currentSessionId() = _session.value.currentSessionId
+            override fun post(spec: NotificationSpec) = platformPostNotification(spec)
+            override fun cancel(tag: String) = platformCancelNotification(tag)
+        },
+        keys = notifiedKeysStore,
+        scope = scope,
+    )
     /** 通知点击直达的待打开会话 id（hello 前暂存，hello 后命中则打开）。 */
     private var pendingOpenSessionId: String? = null
 
@@ -1198,6 +1197,7 @@ class BridgeClient(
             is ServerEvent.ApprovalSettledLegacy -> handleApprovalSettledLegacy(ev)
             is ServerEvent.QuestionRequest -> handleQuestionRequest(ev)
             is ServerEvent.QuestionResolved -> handleQuestionResolved(ev)
+            is ServerEvent.DeliveryNotice -> handleDeliveryNotice(ev)
             is ServerEvent.DeviceRegistered -> handleDeviceRegistered(ev)
             is ServerEvent.DeviceRevoked -> handleDeviceRevoked(ev)
             is ServerEvent.Ack -> pendingSender.handleAck(ev)
@@ -1307,6 +1307,12 @@ class BridgeClient(
         ev.pendingQuestions.forEach { q ->
             notifications.onQuestionArrived(q.rpcId, q.sessionId, q.questions.size, q.questions.firstOrNull()?.question)
         }
+        // 补发结果交付通知：hello.pendingDeliveries 逐条幂等消费（(sessionId,turnKey) 查持久化键），
+        // 新增项批量 confirm_delivery（服务端删台账）；旧桥无该字段按空数组处理。
+        val newDeliveries = ev.pendingDeliveries.filter { notifications.onDeliveryNotice(it) }
+        if (newDeliveries.isNotEmpty()) {
+            confirmDeliveries(newDeliveries)
+        }
     }
 
     /** 连接建立后的自动打开：条件满足才打开，否则只记 INFO 埋点。 */
@@ -1393,12 +1399,6 @@ class BridgeClient(
                 }
             }
         }
-        // 结果交付降噪：记录各会话「最终结论 / 非空工具产出」的最近时间戳（跨会话，非当前会话也记）
-        when {
-            ev.event.type == "assistant_message" -> lastAssistantTsBySession[ev.sessionId] = ev.event.timestamp
-            ev.event.type == "tool_result" && !ev.event.toolResult.isNullOrBlank() ->
-                lastToolResultTsBySession[ev.sessionId] = ev.event.timestamp
-        }
         updateView(ev.sessionId) { v -> v.copy(events = (v.events + ev.event).bounded()) }
         if (ev.sessionId == _session.value.currentSessionId) scheduleCacheSave()
     }
@@ -1435,17 +1435,13 @@ class BridgeClient(
     }
 
     private fun handleTurnStatus(ev: ServerEvent.TurnStatus) {
-        // 结果交付：记录各会话轮次起点（跨会话）；open=false（turn/end）时按「会话×轮次」幂等发通知
-        if (ev.open) {
-            ev.since?.let { turnStartBySession[ev.sessionId] = it }
-        }
         updateView(ev.sessionId) { v ->
             // 与 DSH Web 对齐：整个轮次期间显示 Deep diving 标签（不只等模型时）；
             // 轮次结束清掉标签与计时。服务端为轮次生命周期的唯一权威。
+            // 结果交付通知不再由此客户端推导（服务端 delivery_notice 权威，见 handleDeliveryNotice）。
             if (ev.open) v.copy(divingTurnStart = ev.since, deepDivingElapsed = 0)
             else v.copy(divingTurnStart = null, deepDivingElapsed = null)
         }
-        if (!ev.open) notifyTurnDelivery(ev.sessionId)
     }
 
     private fun handleThinkDelta(ev: ServerEvent.ThinkDelta) {
@@ -1524,7 +1520,6 @@ class BridgeClient(
     }
 
     private fun handleAgentStatus(ev: ServerEvent.AgentStatus) {
-        val prevStatus = _session.value.sessions.firstOrNull { it.id == ev.sessionId }?.status
         _session.update { s ->
             s.copy(
                 sessions = s.sessions.map { if (it.id == ev.sessionId) it.copy(status = ev.status) else it },
@@ -1533,35 +1528,9 @@ class BridgeClient(
             )
         }
         scheduleSessionCacheSave()
-        // 结果交付 D1/D2 兜底：agent 由 running→idle（与 turn_status close 同源，幂等去重）
-        if (prevStatus == "running" && ev.status == "idle") {
-            notifyTurnDelivery(ev.sessionId)
-        }
     }
 
-    /** 结果交付降噪：该会话本轮是否有「最终结论 / 非空工具产出」（主会话只认 assistant_message）。 */
-    private fun hasSubstantiveOutput(sessionId: String, isSubagent: Boolean): Boolean {
-        val turnStart = turnStartBySession[sessionId]
-        val assistant = lastAssistantTsBySession[sessionId]
-        val toolResult = lastToolResultTsBySession[sessionId]
-        fun Long?.afterTurn(): Boolean = this != null && (turnStart == null || this >= turnStart)
-        return if (isSubagent) assistant.afterTurn() || toolResult.afterTurn() else assistant.afterTurn()
-    }
-
-    /** 结果交付 D1/D2：轮次结束 / agent 空闲 → 主动通知（幂等键 = 会话×轮次起点）。 */
-    private fun notifyTurnDelivery(sessionId: String) {
-        val s = _session.value
-        val sess = s.sessions.firstOrNull { it.id == sessionId }
-        val isSubagent = sess?.parentSessionId != null
-        if (!hasSubstantiveOutput(sessionId, isSubagent)) {
-            ConnLog.info("NOTIFY", "结果交付跳过（无实质产出）session=${sessionId.take(8)} subagent=$isSubagent")
-            return
-        }
-        val turnKey = turnStartBySession[sessionId]?.toString() ?: "no-turn"
-        notifications.onDelivery(sessionId, sess?.name, isSubagent, turnKey, blocked = false, blockedMessage = null)
-    }
-
-    /** 结果交付 D3：goal 终态 → 主动通知（幂等键 = goal.updatedAt）。 */
+    /** 结果交付 D3：goal 终态 → 主动通知（幂等键 = goal.updatedAt，客户端侧）。 */
     private fun notifyGoalDelivery(sessionId: String, updatedAt: Long, blocked: Boolean, blockedMessage: String?) {
         val s = _session.value
         val sess = s.sessions.firstOrNull { it.id == sessionId }
@@ -1654,6 +1623,24 @@ class BridgeClient(
                 questions = s.questions.filterNot { q -> q.rpcId == ev.rpcId },
                 decidingQuestionRpcId = s.decidingQuestionRpcId.takeIf { it != ev.rpcId },
             )
+        }
+    }
+
+    /** 服务端权威结果交付通知（实时）：去重消费 + 通知 + 回 confirm_delivery（服务端删台账）。 */
+    private fun handleDeliveryNotice(ev: ServerEvent.DeliveryNotice) {
+        val d = ev.notice
+        if (notifications.onDeliveryNotice(d)) {
+            confirmDeliveries(listOf(d))
+        }
+    }
+
+    /** 批量确认已消费的交付通知（幂等删除；抑制通知也要回确认，见 NotificationController.onDeliveryNotice）。 */
+    private fun confirmDeliveries(notices: List<com.daniel.dshremote.protocol.DeliveryNoticeWire>) {
+        val items = notices.map { com.daniel.dshremote.protocol.DeliveryConfirmItemWire(it.sessionId, it.turnKey) }
+        scope.launch {
+            if (!connection.send(ClientCommand.ConfirmDelivery(items))) {
+                ConnLog.warn("NOTIFY", "confirm_delivery 发送失败（连接已断开，服务端台账保留，重连补发兜底）")
+            }
         }
     }
 

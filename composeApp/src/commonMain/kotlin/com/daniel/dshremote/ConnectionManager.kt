@@ -40,6 +40,7 @@ val ClientCommand.typeName: String
         is ClientCommand.Approve -> "approve"
         is ClientCommand.AnswerApproval -> "answer_approval"
         is ClientCommand.AnswerQuestion -> "answer_question"
+        is ClientCommand.ConfirmDelivery -> "confirm_delivery"
         is ClientCommand.QueueAction -> "queue_action"
         is ClientCommand.DebugCommand -> "debug_command"
         is ClientCommand.UploadLogs -> "upload_logs"

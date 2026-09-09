@@ -387,6 +387,28 @@ data class ContextUsageWire(
     val breakdown: ContextBreakdownWire? = null,
 )
 
+// ---- 结果交付通知（服务端补投递，0.15.0；对齐 bridge protocol.ts）----
+
+/** 单条结果交付通知（服务端权威幂等键 (sessionId, turnKey)，重连补发不丢）。 */
+@Serializable
+data class DeliveryNoticeWire(
+    val sessionId: String,
+    /** 服务端权威幂等键：同一「会话×轮次」唯一（randomUUID），客户端不再从 turn_status.since 推导。 */
+    val turnKey: String,
+    /** 通知标题（服务端生成，如「结果已就绪」）。 */
+    val title: String,
+    /** 通知正文（服务端生成，含会话显示名与主/子代理语义）。 */
+    val body: String,
+    /** 是否子代理会话（App 据此选通知通道/图标）。 */
+    val isSubagent: Boolean,
+    /** 轮次完成时间（epoch ms，服务端时钟）。 */
+    val completedAt: Long,
+)
+
+/** 确认投递清单条目（confirm_delivery 批量载荷）。 */
+@Serializable
+data class DeliveryConfirmItemWire(val sessionId: String, val turnKey: String)
+
 // ---- 服务端事件（sealed 多态，type 字段判别）----
 
 @Serializable
@@ -414,6 +436,8 @@ sealed interface ServerEvent {
         val pendingRemoteApprovals: List<ApprovalRequestWire> = emptyList(),
         /** 桌面端持有、bridge 经 mux 转发的提问（回答走 answer_question）。 */
         val pendingQuestions: List<QuestionRequestWire> = emptyList(),
+        /** 未确认投递的结果交付通知（重连补发不丢；缺省=旧桥无该字段，App 按空数组处理）。 */
+        val pendingDeliveries: List<DeliveryNoticeWire> = emptyList(),
         /** LSP 代码智能状态：语言 → 是否可用（server 二进制已安装）；旧版 bridge 缺省 null。 */
         val lsp: HelloLsp? = null,
         /** 持久化工作状态（自动续跑）：当前事项 + 待办清单；旧版 bridge 缺省 null。 */
@@ -649,6 +673,11 @@ sealed interface ServerEvent {
     @SerialName("question_resolved")
     data class QuestionResolved(val rpcId: String, val sessionId: String, val outcome: String) : ServerEvent
 
+    /** 结果交付通知事件（轮次完成时实时广播；重连经 hello.pendingDeliveries 补发）。 */
+    @Serializable
+    @SerialName("delivery_notice")
+    data class DeliveryNotice(val notice: DeliveryNoticeWire) : ServerEvent
+
     @Serializable
     @SerialName("device_registered")
     data class DeviceRegistered(
@@ -768,6 +797,11 @@ sealed interface ClientCommand {
         val sessionId: String,
         val answers: kotlin.collections.List<QuestionAnswerItemWire>,
     ) : ClientCommand
+
+    /** 确认已消费的结果交付通知（幂等删除：桥按 (sessionId, turnKey) 删台账，重复/不存在键 no-op）。 */
+    @Serializable
+    @SerialName("confirm_delivery")
+    data class ConfirmDelivery(val deliveries: kotlin.collections.List<DeliveryConfirmItemWire>) : ClientCommand
 
     @Serializable
     @SerialName("register_device")

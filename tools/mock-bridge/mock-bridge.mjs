@@ -63,6 +63,11 @@ const sessionEvents = {
   ],
   'sess-gamma': [],
 }
+// 结果交付台账（模拟 bridge 0.15.0）：未确认投递的交付通知，重连经 hello.pendingDeliveries 补发；
+// 手机回 confirm_delivery 后按 (sessionId, turnKey) 删除。
+const pendingDeliveries = [
+  { sessionId: 'sess-alpha', turnKey: 'mock-turn-0001', title: '结果已就绪', body: '「重构支付模块」本轮已完成', isSubagent: false, completedAt: Date.now() - 120_000 },
+]
 const pairTokens = new Map() // token -> expiry
 function newPairToken() {
   const t = crypto.randomBytes(16).toString('hex')
@@ -251,6 +256,15 @@ server.on('upgrade', (req, socket, head) => {
           send(ws, { type: 'approval_settled', approvalId: cmd.approvalId, outcome: cmd.decision })
           break
         }
+        case 'confirm_delivery': {
+          let removed = 0
+          for (const d of cmd.deliveries || []) {
+            const i = pendingDeliveries.findIndex((p) => p.sessionId === d.sessionId && p.turnKey === d.turnKey)
+            if (i >= 0) { pendingDeliveries.splice(i, 1); removed++ }
+          }
+          console.error(`CONFIRM_DELIVERY removed=${removed} remaining=${pendingDeliveries.length}`)
+          break
+        }
         case 'register_device': {
           const token = crypto.randomBytes(16).toString('hex')
           devices.set(token, { deviceId: cmd.deviceId, name: cmd.name, model: cmd.model, lastSeenAt: Date.now() })
@@ -275,6 +289,7 @@ server.on('upgrade', (req, socket, head) => {
       type: 'hello', version: 'mock-1.0', serverId: SERVER_ID, hostname: HOSTNAME,
       sessions, agents: sessions.map((s) => ({ sessionId: s.id, role: 'main', status: s.status, depth: 0 })),
       workspaces,
+      pendingDeliveries,
     })
     // 5s 后推送一次审批请求 + 标题更新，供 UI 验证
     setTimeout(() => {
@@ -286,6 +301,13 @@ server.on('upgrade', (req, socket, head) => {
     setTimeout(() => {
       send(ws, { type: 'session_title', sessionId: 'sess-beta', title: '收银台联调' })
     }, 7_000)
+    // 9s 后推送一次结果交付通知（实时 delivery_notice 事件），供通知补投递验证
+    setTimeout(() => {
+      send(ws, {
+        type: 'delivery_notice',
+        notice: { sessionId: 'sess-beta', turnKey: 'mock-turn-0002', title: '结果已就绪', body: '「收银台联调」本轮已完成', isSubagent: false, completedAt: Date.now() },
+      })
+    }, 9_000)
   })
 })
 

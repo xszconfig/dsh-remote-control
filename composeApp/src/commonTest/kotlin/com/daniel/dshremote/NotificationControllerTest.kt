@@ -1,9 +1,13 @@
 package com.daniel.dshremote
 
+import com.daniel.dshremote.protocol.DeliveryNoticeWire
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 private class FakeHost(
     var foreground: Boolean = true,
@@ -18,10 +22,31 @@ private class FakeHost(
     override fun cancel(tag: String) { cancels.add(tag) }
 }
 
+private class FakeKeysStore : NotifiedKeysStore {
+    val keys = mutableSetOf<String>()
+    override suspend fun load(): Set<String> = keys.toSet()
+    override suspend fun add(key: String) { keys.add(key) }
+    override suspend fun remove(key: String) { keys.remove(key) }
+}
+
+private fun deliveryNotice(sessionId: String = "s1", turnKey: String = "tk-1") = DeliveryNoticeWire(
+    sessionId = sessionId,
+    turnKey = turnKey,
+    title = "结果已就绪",
+    body = "「会话A」本轮已完成",
+    isSubagent = false,
+    completedAt = 1_000L,
+)
+
 class NotificationControllerTest {
 
-    private fun controller(host: FakeHost, minutes: Int = 12 * 60): NotificationController =
-        NotificationController(host, nowMinutes = { minutes })
+    private fun controller(host: FakeHost, store: FakeKeysStore = FakeKeysStore(), minutes: Int = 12 * 60): NotificationController =
+        NotificationController(
+            host = host,
+            keys = store,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
+            nowMinutes = { minutes },
+        )
 
     // ---- 纯函数：三态门控 presenceOf ----
 
@@ -179,6 +204,71 @@ class NotificationControllerTest {
         val c = controller(host)
         c.onDelivery("s1", "会话A", false, "t1", blocked = false, blockedMessage = null)
         assertEquals(0, host.posts.size)
+    }
+
+    // ---- 控制器：服务端权威 delivery_notice（onDeliveryNotice）----
+
+    @Test
+    fun deliveryNotice_dedupedByTurnKey() {
+        val host = FakeHost(foreground = false)
+        val c = controller(host)
+        assertTrue(c.onDeliveryNotice(deliveryNotice(turnKey = "tk-1")))  // 新增 → 消费
+        assertFalse(c.onDeliveryNotice(deliveryNotice(turnKey = "tk-1"))) // 重复 → 跳过
+        assertEquals(1, host.posts.size)
+        assertEquals("结果已就绪", host.posts[0].title)
+        // 不同 turnKey → 再次消费
+        assertTrue(c.onDeliveryNotice(deliveryNotice(turnKey = "tk-2")))
+        assertEquals(2, host.posts.size)
+    }
+
+    @Test
+    fun deliveryNotice_usesServerTitleAndBody() {
+        val host = FakeHost(foreground = false)
+        val c = controller(host)
+        c.onDeliveryNotice(deliveryNotice(sessionId = "s9", turnKey = "tk-9"))
+        assertEquals("「会话A」本轮已完成", host.posts[0].body)
+        assertEquals("s9", host.posts[0].sessionId)
+    }
+
+    @Test
+    fun deliveryNotice_suppressedStillConsumedForConfirm() {
+        // 前台浏览该会话 → 抑制不发系统通知，但返回 true（仍要回 confirm_delivery，服务端删台账）
+        val host = FakeHost(foreground = true, currentSessionId = "s1")
+        val c = controller(host)
+        assertTrue(c.onDeliveryNotice(deliveryNotice(sessionId = "s1", turnKey = "tk-1")))
+        assertEquals(0, host.posts.size)
+        // 幂等键已占位：再次到达（重连补发）返回 false，不会重复确认
+        assertFalse(c.onDeliveryNotice(deliveryNotice(sessionId = "s1", turnKey = "tk-1")))
+    }
+
+    @Test
+    fun notifiedKeys_persistedRoundTrip_dedupsAcrossController() {
+        // 进程被杀后重启：同一 store 恢复已持久化键 → 新 controller 不再重复通知
+        val store = FakeKeysStore()
+        val host1 = FakeHost(foreground = false)
+        val c1 = controller(host1, store)
+        assertTrue(c1.onDeliveryNotice(deliveryNotice(turnKey = "tk-persist")))
+        assertEquals(1, host1.posts.size)
+
+        // 新 controller（模拟进程重启）复用同一 store：load 恢复键 → 重复到达不再通知
+        val host2 = FakeHost(foreground = false)
+        val c2 = controller(host2, store)
+        assertFalse(c2.onDeliveryNotice(deliveryNotice(turnKey = "tk-persist")))
+        assertEquals(0, host2.posts.size)
+    }
+
+    @Test
+    fun notifiedKeys_approvalQuestion_coexistWithDelivery() {
+        // approvalId/rpcId/delivery 三套键互不冲突
+        val host = FakeHost(foreground = false)
+        val c = controller(host)
+        c.onApprovalArrived("a1", "s1", "bash", null, null)
+        c.onQuestionArrived("q1", "s1", 1, "是否继续？")
+        assertTrue(c.onDeliveryNotice(deliveryNotice(sessionId = "s1", turnKey = "tk-1")))
+        assertEquals(3, host.posts.size)
+        assertEquals(NotificationKind.APPROVAL, host.posts[0].kind)
+        assertEquals(NotificationKind.QUESTION, host.posts[1].kind)
+        assertEquals(NotificationKind.DELIVERY, host.posts[2].kind)
     }
 
     // ---- 文案构建 ----

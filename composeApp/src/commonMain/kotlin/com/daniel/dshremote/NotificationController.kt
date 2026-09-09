@@ -1,5 +1,8 @@
 package com.daniel.dshremote
 
+import com.daniel.dshremote.protocol.DeliveryNoticeWire
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -129,9 +132,12 @@ internal fun systemMinutesOfDay(): Int {
 /**
  * 主动通知编排器：三态门控 + 幂等去重 + 勿扰时段 + 通知构建。
  * 纯逻辑，不依赖平台；平台能力经 [NotificationHost] 注入，时钟可注入以便单测。
+ * 幂等键经 [NotifiedKeysStore] 持久化（进程被杀/重启后重连不重复通知）。
  */
 class NotificationController(
     private val host: NotificationHost,
+    private val keys: NotifiedKeysStore,
+    private val scope: CoroutineScope,
     private val nowMinutes: () -> Int = { systemMinutesOfDay() },
 ) {
     companion object {
@@ -139,17 +145,32 @@ class NotificationController(
         const val DND_END_MINUTES = 8 * 60     // 08:00
     }
 
-    /** 已通知幂等键（approval:{id} / question:{rpcId} / delivery:{sessionId}:{turnKey}）。 */
+    /** 已通知幂等键（approval:{id} / question:{rpcId} / delivery:{sessionId}:{turnKey}）；内存为同步事实源，落盘为跨重启恢复。 */
     private val notifiedKeys = mutableSetOf<String>()
+
+    init {
+        // 启动时恢复已持久化的幂等键（异步，连接/补发前通常已完成）
+        scope.launch { notifiedKeys += keys.load() }
+    }
+
+    private fun persistAdd(key: String) {
+        scope.launch { keys.add(key) }
+    }
+
+    private fun persistRemove(key: String) {
+        scope.launch { keys.remove(key) }
+    }
 
     private fun decideAndPost(key: String, kind: NotificationKind, sessionId: String?, title: String, body: String) {
         if (!notifiedKeys.add(key)) return // 幂等：已通知过
+        persistAdd(key)
         val presence = presenceOf(host.isForeground(), host.currentSessionId(), sessionId)
         val inDnd = isInDndWindow(nowMinutes(), DND_START_MINUTES, DND_END_MINUTES)
         val decision = decideNotification(kind, presence, inDnd)
         if (!decision.post) {
             // 未发通知则不占幂等位：后续（如重连 hello 补发）仍有第二次机会
             notifiedKeys.remove(key)
+            persistRemove(key)
             ConnLog.info("NOTIFY", "抑制 $kind key=${key.take(16)} 原因=${presence.name}")
             return
         }
@@ -168,7 +189,10 @@ class NotificationController(
     /** 审批已裁决：撤回对应通知。 */
     fun onApprovalResolved(approvalId: String) {
         val key = "approval:$approvalId"
-        if (notifiedKeys.remove(key)) host.cancel(key)
+        if (notifiedKeys.remove(key)) {
+            host.cancel(key)
+            persistRemove(key)
+        }
     }
 
     /** 提问到达（实时事件或 hello 补发共用，幂等）。 */
@@ -182,10 +206,13 @@ class NotificationController(
     /** 提问已回答：撤回对应通知。 */
     fun onQuestionResolved(rpcId: String) {
         val key = "question:$rpcId"
-        if (notifiedKeys.remove(key)) host.cancel(key)
+        if (notifiedKeys.remove(key)) {
+            host.cancel(key)
+            persistRemove(key)
+        }
     }
 
-    /** 结果交付到达（D1/D2/D3）。turnKey 为「会话×轮次」幂等键。 */
+    /** 结果交付到达（D3 goal 终态，客户端侧；turnKey 传 goal.updatedAt 派生键）。 */
     fun onDelivery(
         sessionId: String?,
         sessionTitle: String?,
@@ -198,5 +225,27 @@ class NotificationController(
         val title = if (blocked) DELIVERY_BLOCKED_TITLE else DELIVERY_COMPLETE_TITLE
         val body = if (blocked) deliveryBlockedBody(sessionTitle, blockedMessage) else deliveryCompleteBody(sessionTitle, isSubagent)
         decideAndPost(key, NotificationKind.DELIVERY, sessionId, title, body)
+    }
+
+    /**
+     * 服务端权威结果交付通知（D1/D2，实时 delivery_notice 或 hello.pendingDeliveries 补发共用）。
+     * 按 (sessionId, turnKey) 去重；抑制（前台浏览/勿扰）仍算已消费（不回退幂等位），
+     * 返回是否「新增消费」——调用方据此决定是否回 confirm_delivery（服务端删台账）。
+     */
+    fun onDeliveryNotice(notice: DeliveryNoticeWire): Boolean {
+        val key = "delivery:${notice.sessionId}:${notice.turnKey}"
+        if (!notifiedKeys.add(key)) return false // 已消费过（去重）
+        persistAdd(key)
+        val presence = presenceOf(host.isForeground(), host.currentSessionId(), notice.sessionId)
+        val inDnd = isInDndWindow(nowMinutes(), DND_START_MINUTES, DND_END_MINUTES)
+        val decision = decideNotification(NotificationKind.DELIVERY, presence, inDnd)
+        if (decision.post) {
+            host.post(NotificationSpec(NotificationKind.DELIVERY, notice.sessionId, notice.title, notice.body, decision.silent, key))
+            ConnLog.info("NOTIFY", "触发 delivery_notice key=${key.take(16)} presence=${presence.name} silent=${decision.silent}")
+        } else {
+            // 抑制只是不发系统通知，不代表可丢——仍要回确认（服务端删台账）
+            ConnLog.info("NOTIFY", "抑制 delivery_notice key=${key.take(16)} 原因=${presence.name}（仍确认）")
+        }
+        return true
     }
 }
