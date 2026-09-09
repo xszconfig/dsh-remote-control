@@ -456,3 +456,18 @@ internal actual fun platformSaveThemeMode(mode: String) {
         // 持久化失败不阻塞（下次启动回退跟随系统）
     }
 }
+
+/** 同步窗口背景与系统栏图标色到当前主题（enableEdgeToEdge 后状态栏区域露出 window 背景）。 */
+@Composable
+actual fun SystemBarsSync(darkTheme: Boolean) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    if (!view.isInEditMode) {
+        androidx.compose.runtime.SideEffect {
+            val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
+            window.decorView.setBackgroundColor(if (darkTheme) 0xFF0B0F1A.toInt() else 0xFFF8F9FC.toInt())
+            val controller = androidx.core.view.WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
+}

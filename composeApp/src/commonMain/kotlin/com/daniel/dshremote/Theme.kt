@@ -84,6 +84,8 @@ val MarkdownCodeFg: Color @Composable get() = LocalColorTokens.current.markdownC
 @Composable
 fun DshTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
     val scheme = if (darkTheme) DshDarkColors else DshLightColors
+    // 同步系统栏图标色 + 窗口背景到当前主题，消除浅色模式下状态栏区域的深色残留。
+    SystemBarsSync(darkTheme)
     CompositionLocalProvider(
         LocalColorTokens provides if (darkTheme) ColorTokens.Dark else ColorTokens.Light,
     ) {
@@ -92,3 +94,7 @@ fun DshTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
         }
     }
 }
+
+/** 平台层同步系统栏外观（expect/actual；Android 实现见 Platform.android.kt）。 */
+@Composable
+expect fun SystemBarsSync(darkTheme: Boolean)
