@@ -1,5 +1,6 @@
 package com.daniel.dshremote
 
+import com.daniel.dshremote.protocol.QueueItemWire
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -48,5 +49,61 @@ class QueueItemLogicTest {
         // 无专属文案的错误走通用 code:message 横幅
         assertNull(queueErrorBanner("some-other-error"))
         assertNull(queueErrorBanner("not_found"))
+    }
+
+    // ---- 展示过滤：只显示用户来源项，过滤系统注入（context）----
+
+    private fun item(id: String, placement: String) = QueueItemWire(id = id, placement = placement, text = "t-$id")
+
+    @Test
+    fun user_visible_filters_out_context_items() {
+        val items = listOf(
+            item("a", "queued"),
+            item("s", "steering"),
+            item("c1", "context"),
+            item("c2", "context"),
+            item("b", "queued"),
+        )
+        assertEquals(
+            listOf("a", "s", "b"),
+            userVisibleQueueItems(items).map { it.id },
+        )
+    }
+
+    @Test
+    fun user_visible_keeps_order_of_kept_items() {
+        // 过滤只删 context，不动其余项的相对顺序（与服务端投影顺序一致）
+        val items = listOf(item("a", "queued"), item("c", "context"), item("b", "queued"))
+        assertEquals(listOf("a", "b"), userVisibleQueueItems(items).map { it.id })
+    }
+
+    // ---- 乐观项插入：插到 queued 段末尾（steering/context 之前），保证 FIFO ----
+
+    @Test
+    fun optimistic_insert_after_all_queued() {
+        // 全 queued：插到末尾（FIFO）
+        val items = listOf(item("a", "queued"), item("b", "queued"))
+        assertEquals(
+            listOf("a", "b", "opt"),
+            insertOptimisticQueued(items, item("opt", "queued")).map { it.id },
+        )
+    }
+
+    @Test
+    fun optimistic_insert_before_steering_context() {
+        // 存在 steering/context 时：新排队项插到它们之前（与服务端 [...nextTurn, ...nextStep] 一致）
+        val items = listOf(item("a", "queued"), item("s", "steering"), item("c", "context"))
+        assertEquals(
+            listOf("a", "opt", "s", "c"),
+            insertOptimisticQueued(items, item("opt", "queued")).map { it.id },
+        )
+    }
+
+    @Test
+    fun optimistic_insert_into_empty() {
+        assertEquals(
+            listOf("opt"),
+            insertOptimisticQueued(emptyList(), item("opt", "queued")).map { it.id },
+        )
     }
 }

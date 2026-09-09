@@ -1,5 +1,7 @@
 package com.daniel.dshremote
 
+import com.daniel.dshremote.protocol.QueueItemWire
+
 /**
  * 排队消息面板的纯逻辑（供 App.kt QueuePanel 与 BridgeClient.handleError 复用，便于单测）。
  *
@@ -24,4 +26,25 @@ fun queueErrorBanner(code: String): String? = when (code) {
     "queue-item-not-found" -> "排队消息已被本轮领取，正在处理中（未丢失）"
     "steer-unavailable" -> "当前轮次不接受插队，消息仍在排队（可稍后再插队）"
     else -> null
+}
+
+/**
+ * 排队面板「展示」过滤：只保留用户来源项（placement = queued/steering），
+ * 过滤系统注入项（placement = context：子代理收尾通知/报告、LSP 反馈等）。
+ *
+ * 仅过滤展示，不动服务端队列本身（铁律 6：队列状态由服务端管理）。
+ */
+fun userVisibleQueueItems(items: List<QueueItemWire>): List<QueueItemWire> =
+    items.filter { it.placement != "context" }
+
+/**
+ * 乐观排队项插入：插到「排队」(queued) 段的末尾（即 steering/context 之前）。
+ *
+ * 服务端投影顺序是 [...nextTurn(queued), ...nextStep(steering/context)]（先进先出）；
+ * 直接 append 到列表末尾会把新排队项排到 steering/context 之后，与服务端顺序不一致。
+ * 此函数保证乐观项的展示顺序与服务端投影一致（FIFO）。
+ */
+fun insertOptimisticQueued(items: List<QueueItemWire>, opt: QueueItemWire): List<QueueItemWire> {
+    val insertAt = items.indexOfFirst { it.placement != "queued" }.let { if (it == -1) items.size else it }
+    return items.toMutableList().apply { add(insertAt, opt) }
 }

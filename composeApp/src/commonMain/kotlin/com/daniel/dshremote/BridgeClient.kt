@@ -894,7 +894,7 @@ class BridgeClient(
         if (running) {
             val opt = QueueItemWire(id = "local-${nowMillis()}", placement = "queued", text = text)
             _session.update { s ->
-                if (s.currentSessionId == sid) s.copy(queueItems = s.queueItems + opt) else s
+                if (s.currentSessionId == sid) s.copy(queueItems = insertOptimisticQueued(s.queueItems, opt)) else s
             }
         }
         // 语义（用户澄清）：仅 Agent 非运行中（队列空、消息被立即消费）才走 PendingBubble 状态机
@@ -1331,7 +1331,7 @@ class BridgeClient(
                 // 轮次起点优先用服务端 turnSince（中途切入也能显示标签），回退模型等待起点。
                 v.copy(
                     events = ev.events.bounded(),
-                    queueItems = ev.queue,
+                    queueItems = userVisibleQueueItems(ev.queue),
                     hasMore = ev.hasMore,
                     historyTotal = ev.total,
                     modelWaitingSince = ev.modelWaitingSince,
@@ -1388,12 +1388,13 @@ class BridgeClient(
     }
 
     private fun handleSessionQueue(ev: ServerEvent.SessionQueue) {
-        val queued = ev.items.count { it.placement == "queued" }
+        val visible = userVisibleQueueItems(ev.items)
+        val queued = visible.count { it.placement == "queued" }
         // queuedCounts 是跨会话的全局计数（供列表行中断确认弹框），无论当前/后台都更新。
         _session.update { s ->
             s.copy(queuedCounts = if (queued == 0) s.queuedCounts - ev.sessionId else s.queuedCounts + (ev.sessionId to queued))
         }
-        updateView(ev.sessionId) { v -> v.copy(queueItems = ev.items) }
+        updateView(ev.sessionId) { v -> v.copy(queueItems = visible) }
     }
 
     private fun handleModelWaiting(ev: ServerEvent.ModelWaiting) {
