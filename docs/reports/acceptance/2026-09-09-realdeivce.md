@@ -67,21 +67,25 @@
 
 无（未创建 worktree、未提交。发现的两个问题分别归：①「后台保活」功能级问题→待主对话路由通知/连接域；②「浅色残留」→已由主题域代理 4517b8d7 接手，本代理不修）。
 
-## 截图与取证路径
+## 截图清单（仓库留档 `docs/screenshots/2026-09-09-realdeivce/`，2026-09-10 按新规则补关联）
 
-**主题三态**：`/tmp/theme-light-screens/{follow,light,dark}.png`（dark 已确认明显变暗）
+| 截图 | 关联验收项 |
+|---|---|
+| [`00-baseline.jpg`](../../screenshots/2026-09-09-realdeivce/00-baseline.jpg) | 基线（验收开始前） |
+| [`01-coldstart.jpg`](../../screenshots/2026-09-09-realdeivce/01-coldstart.jpg) | 项 1 冷启动冒烟 |
+| [`02-sessionlist.jpg`](../../screenshots/2026-09-09-realdeivce/02-sessionlist.jpg) | 项 2 连接状态、项 15 子代理元信息 |
+| [`07-interrupt-dialog.jpg`](../../screenshots/2026-09-09-realdeivce/07-interrupt-dialog.jpg) | 项 8 中断弹框三选项 |
+| [`08-reconnected.jpg`](../../screenshots/2026-09-09-realdeivce/08-reconnected.jpg) | 项 7 心跳判活（重连后会话视图） |
+| [`10-subagent-list.jpg`](../../screenshots/2026-09-09-realdeivce/10-subagent-list.jpg) | 项 15 子代理列表滚动 |
+| [`11-scrolled-dial.jpg`](../../screenshots/2026-09-09-realdeivce/11-scrolled-dial.jpg) | 项 9 转盘按需显示、项 14 跳到底部 |
+| [`12-dial-expanded.jpg`](../../screenshots/2026-09-09-realdeivce/12-dial-expanded.jpg) | 项 9 转盘原位展开 |
+| [`13-notification.jpg`](../../screenshots/2026-09-09-realdeivce/13-notification.jpg) | 项 17 结果交付通知 |
+| [`follow.jpg`](../../screenshots/2026-09-09-realdeivce/follow.jpg) · [`light.jpg`](../../screenshots/2026-09-09-realdeivce/light.jpg) · [`dark.jpg`](../../screenshots/2026-09-09-realdeivce/dark.jpg) | 项 16 主题三态 |
+| [`current.jpg`](../../screenshots/2026-09-09-realdeivce/current.jpg) | 验收后当前态 |
 
-**验收截图**：`/tmp/accept-2026-09-09/`
-- `00-baseline.png` 初始态、`01-coldstart.png` 冷启动后
-- `02-sessionlist.png` 会话列表（连接状态 + 子代理元信息）
-- `07-interrupt-dialog.png` 中断确认弹框（三选项）
-- `08-reconnected.png` 会话视图（重连后）
-- `10-subagent-list.png` 子代理下拉列表
-- `11-scrolled-dial.png` 上滚态（转盘圆钮 + 跳到底部按钮）、`12-dial-expanded.png` 转盘展开
-- `13-notification.png` 通知栏
-- `04-scrolled-up.png`、`06-after-send.png` 的 screencap 偶发失败（relay），对应 uiautomator XML 文本树均在（`04-scrolled-up.xml`、`06-after-send.xml`）
+**缺失截图**（当时 screencap 失败/未截，结论以 uiautomator XML 为准；自 09-10 起按 AGENTS.md 规则 11 必须重试截图并关联）：`03-enter-session`、`04-scrolled-up`、`05-input-typed`、`06-after-send`、`09-settings`。
 
-**uiautomator XML 文本树（结论主依据）**：`/tmp/accept-2026-09-09/*.xml`（全部非空）
+**uiautomator XML 文本树（次选证据）**：`/tmp/accept-2026-09-09/*.xml`（全部非空）
 
 ## 非破坏性说明
 
