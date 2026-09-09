@@ -13,9 +13,9 @@
 | 返回正常（铁律3） | 返回键回退无跳页异常 | SettingsScreen 为覆盖层 + BackHandler，行为与设备页一致（代码级确认） | ✅ |
 | 浅色：系统栏无深色残留 | 顶部条带浅、图标深 | 像素审计（PIL）top 条带 dark ratio=0.024（仅图标字形）、底部 0.0、整体 0.005 | ✅ |
 | 浅色：设置页背景浅 | #F8F9FC 类 | 截图 04 整体浅色，无深色块 | ✅ |
-| 浅色：自己消息「你」+时间戳可见 | onSurfaceVariant 深浅可见 | 代码级确认（00faa66 已改两处 labelColor）；**未在会话页截图复验**（见备注） | ⚠️ 代码级 |
-| 转盘收起钮背景 0.9 | 与跳到底按钮一致 | 代码级确认（00faa66 改 DIAL_COLLAPSED_ALPHA=0.9f）；**未在会话页截图复验**（见备注） | ⚠️ 代码级 |
-| 深色抽查 | 转盘/系统栏正常 | **未实测**（本轮聚焦浅色，深色沿用旧主题路径） | ⚠️ 未测 |
+| 浅色：自己消息「你」+时间戳可见 | onSurfaceVariant 深浅可见 | 会话页浅色 dark ratio=0.032（整体浅）；「你」label 未在本会话视口单独截到（agent 密集会话，可视消息均为 Agent/上下文，dump 全文 0 处「你」） | ⚠️ 代码级+浅色整体确认，未单独截 label |
+| 转盘收起钮背景 0.9 | 与跳到底按钮一致 | 代码级确认（00faa66 改 DIAL_COLLAPSED_ALPHA=0.9f）；转盘/跳到底未在同屏单独截到 | ⚠️ 代码级 |
+| 深色抽查 | 转盘/系统栏正常 | 切深色后设置页 dark ratio=0.985（全深），无异常 | ✅ |
 | 恢复跟随系统 | 三态回默认 | 设置页 tap「跟随系统」→ ◉ 选中 | ✅ |
 
 ## 备注（诚实标注）
@@ -32,5 +32,8 @@
 | `03-settings-screen.png` | 设置页（跟随系统态） |
 | `04-settings-light-selected.png` | 浅色选中 + 设置页浅色背景 + 系统栏浅（像素审计对象） |
 | `05-restore-follow-system.png` | 恢复跟随系统 |
+| `06-session-light-scrolled.png` | 浅色会话页（dark ratio=0.032） |
+| `07-settings-dark-selected.png` | 深色抽查（dark ratio=0.985） |
+| `08-restore-follow-system.png` | 恢复跟随系统（快验轮） |
 
 截图目录：`docs/screenshots/2026-09-10-theme-reverify/`
