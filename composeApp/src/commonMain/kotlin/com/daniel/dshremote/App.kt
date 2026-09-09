@@ -668,6 +668,10 @@ private fun MainScreen(
                     scope.launch { drawerState.close() }
                     onOpenDevices()
                 },
+                onOpenSettings = {
+                    scope.launch { drawerState.close() }
+                    onOpenSettings()
+                },
             )
         },
     ) {
@@ -774,6 +778,7 @@ private fun TabletMainScreen(
                     state = state,
                     onOpenLogs = onOpenLogs,
                     onOpenDevices = onOpenDevices,
+                    onOpenSettings = onOpenSettings,
                     modifier = Modifier.width(280.dp).fillMaxHeight(),
                 )
             }
@@ -820,6 +825,7 @@ private fun TabletLeftPane(
     state: SessionUiState,
     onOpenLogs: () -> Unit,
     onOpenDevices: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
@@ -845,6 +851,15 @@ private fun TabletLeftPane(
             WorkspaceFilter(state = state, onSelect = { client.selectWorkspace(it) })
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 4.dp))
             SessionList(client = client, state = state)
+            Spacer(Modifier.weight(1f))
+            // 设置入口（侧边栏底部，通常位置）
+            DrawerEntry(
+                label = "设置",
+                badge = null,
+                icon = "⚙️",
+                selected = false,
+                onClick = onOpenSettings,
+            )
         }
     }
 }
@@ -978,6 +993,7 @@ private fun WorkspaceDrawer(
     state: SessionUiState,
     onSelect: (String?) -> Unit,
     onOpenDevices: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surface,
@@ -1012,6 +1028,15 @@ private fun WorkspaceDrawer(
                 icon = "🖥",
                 selected = false,
                 onClick = onOpenDevices,
+            )
+            Spacer(Modifier.weight(1f))
+            // 设置入口（侧边栏底部，通常位置）
+            DrawerEntry(
+                label = "设置",
+                badge = null,
+                icon = "⚙️",
+                selected = false,
+                onClick = onOpenSettings,
             )
             Spacer(Modifier.height(8.dp))
         }
@@ -1189,7 +1214,6 @@ private fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> Un
                     }
                 }
             }
-            TextButton(onClick = onOpenSettings) { Text("⚙️") }
             TextButton(onClick = onOpenLogs) { Text("📋") }
         }
     }
