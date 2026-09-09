@@ -35,8 +35,8 @@ const val DIAL_AUTO_COLLAPSE_MS = 2500L
 /** 展开扇面半透明透明度。 */
 const val DIAL_FAN_ALPHA = 0.12f
 
-/** 收起圆钮透明度。 */
-const val DIAL_COLLAPSED_ALPHA = 0.38f
+/** 收起圆钮透明度（对齐「跳到底部」按钮 0.9，浅色下不再过透明）。 */
+const val DIAL_COLLAPSED_ALPHA = 0.9f
 
 /** 一条已定位的用户消息：seq 跨投影重锚，rowIndex 是 LazyColumn 行号。 */
 data class UserMsgRef(val seq: Long, val rowIndex: Int)

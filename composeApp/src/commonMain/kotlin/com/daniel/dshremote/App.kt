@@ -2495,7 +2495,7 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
                 alignEnd = true,
                 container = MaterialTheme.colorScheme.primary,
                 content = MaterialTheme.colorScheme.onPrimary,
-                labelColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
+                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         "assistant_message" -> Bubble(
@@ -2527,7 +2527,7 @@ private fun EventBubble(e: EventProjection, allEvents: List<EventProjection>) {
 /** 本地待发送消息气泡：用户气泡 + 时间行状态图标（Loading / ❗），回显到达后移除。 */
 @Composable
 private fun PendingBubble(p: PendingMessage, onRetry: () -> Unit) {
-    val labelColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalAlignment = Alignment.End,
