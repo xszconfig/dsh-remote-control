@@ -1859,7 +1859,11 @@ private fun GoalPanel(view: SessionViewState) {
 @Composable
 private fun QueuePanel(view: SessionViewState, client: BridgeClient, sessionId: String) {
     if (view.queueItems.isNotEmpty()) {
-        var queueExpanded by remember { mutableStateOf(true) }
+        // 默认折叠：只显示「⏳ 排队中的消息（N）」摘要行，用户点摘要行才展开列表。
+        // 折叠态是纯本地 UI 状态（与服务端投影无关），用 remember(sessionId) 键控：
+        // 切会话时 sessionId 变化 → 状态重置为折叠（进会话默认折叠、不跨会话串味）；
+        // 同一会话内展开/收起状态随重组保留。
+        var queueExpanded by remember(sessionId) { mutableStateOf(false) }
         Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)) {
             Column {
                 Row(
