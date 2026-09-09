@@ -3779,6 +3779,32 @@ private fun SettingsScreen(
             Text("通知", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text("通知设置（占位，待通知模块接入）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 12.dp))
+            Text("后台保活", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "为保证锁屏或后台时结果交付通知能及时送达，需要本应用在后台保持运行。华为手机请到「设置 → 应用 → 应用启动管理」把本应用设为「手动管理」并开启自启动、关联启动、后台活动三项，同时关闭电池优化。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            var batteryExempt by remember { mutableStateOf(platformIsIgnoringBatteryOptimizations()) }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (batteryExempt) "电池优化：已豁免" else "电池优化：未豁免",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = {
+                    platformRequestIgnoreBatteryOptimizations()
+                    batteryExempt = platformIsIgnoringBatteryOptimizations()
+                }) {
+                    Text("申请忽略电池优化")
+                }
+            }
         }
     }
 }

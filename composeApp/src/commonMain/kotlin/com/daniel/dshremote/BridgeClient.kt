@@ -29,6 +29,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -346,6 +347,13 @@ class BridgeClient(
     /** 通知点击直达的待打开会话 id（hello 前暂存，hello 后命中则打开）。 */
     private var pendingOpenSessionId: String? = null
 
+    /** 按需前台服务编排器（running 代理保活；宿主平台能力见 androidMain）。 */
+    private val keepAlive = KeepAliveController(object : KeepAliveHost {
+        override fun isForeground() = platformIsAppForeground()
+        override fun startOrUpdate(mainCount: Int, subCount: Int) = platformStartKeepAliveService(mainCount, subCount)
+        override fun stop() = platformStopKeepAliveService()
+    })
+
     init {
         scope.launch {
             connection.events.collect { ev -> handle(ev) }
@@ -374,6 +382,14 @@ class BridgeClient(
                     handleNotificationOpen(sid)
                     NotificationLaunch.requestedSessionId.value = null
                 }
+            }
+        }
+        // 前台服务保活：会话投影 + 连接态变化 → 计数 → 启停（断连维持、重连校正）
+        scope.launch {
+            combine(_session, connection.info) { s, info ->
+                s.sessions to (info.state == ConnectionState.Connected)
+            }.collect { (sessions, connected) ->
+                keepAlive.onProjectionChanged(sessions, connected)
             }
         }
     }

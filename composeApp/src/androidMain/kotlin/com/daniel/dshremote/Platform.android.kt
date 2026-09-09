@@ -285,6 +285,60 @@ internal actual fun platformOpenNotificationSettings() {
     }
 }
 
+// ---- 按需前台服务（保活）+ 电池优化豁免 ----
+
+internal actual fun platformStartKeepAliveService(mainCount: Int, subCount: Int) {
+    val context = AppContext.context ?: return
+    try {
+        val intent = Intent(context, KeepAliveService::class.java).apply {
+            action = KeepAliveService.ACTION_START
+            putExtra(KeepAliveService.EXTRA_MAIN, mainCount)
+            putExtra(KeepAliveService.EXTRA_SUB, subCount)
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(intent)
+        } else {
+            @Suppress("DEPRECATION")
+            context.startService(intent)
+        }
+    } catch (_: Exception) {
+        // 后台启动受限等场景：忽略，下次前台投影变化会重试
+    }
+}
+
+internal actual fun platformStopKeepAliveService() {
+    val context = AppContext.context ?: return
+    try {
+        context.stopService(Intent(context, KeepAliveService::class.java))
+        context.getSystemService(NotificationManager::class.java)?.cancel(KeepAliveService.NOTIFICATION_ID)
+    } catch (_: Exception) {
+        // 停止失败忽略
+    }
+}
+
+internal actual fun platformRequestIgnoreBatteryOptimizations() {
+    val context = AppContext.context ?: return
+    try {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = android.net.Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        // 部分设备无该系统页则忽略
+    }
+}
+
+internal actual fun platformIsIgnoringBatteryOptimizations(): Boolean {
+    val context = AppContext.context ?: return false
+    return try {
+        val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+        pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+    } catch (_: Exception) {
+        false
+    }
+}
+
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
