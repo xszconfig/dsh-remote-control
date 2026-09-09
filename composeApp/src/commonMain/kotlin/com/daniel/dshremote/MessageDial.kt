@@ -46,13 +46,13 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 // 收起圆钮命中判定（绝对 dp，pointerInput 内 dp.toPx() 换算）：
-// - 命中半径：圆钮半径 28dp + 6dp 容差 = 34dp
-// - 圆钮中心即手势表面中心（表面与 56dp 圆钮等大，响应区=视觉区）
-private const val KNOB_HIT_RADIUS_DP = 34f
-/** 收起态手势表面边长（与 56dp 圆钮等大）。 */
-private val DIAL_COLLAPSED_SURFACE_SIZE = 56.dp
-/** 展开扇面枢轴距列表底的距离：10dp 底边距 + 28dp 圆钮半径 = 38dp（原地展开，枢轴对齐圆钮中心 Y）。 */
-private const val DIAL_PIVOT_BOTTOM_INSET_DP = 38f
+// - 命中半径：圆钮半径 24dp + 6dp 容差 = 30dp
+// - 圆钮中心即手势表面中心（表面与 48dp 圆钮等大，响应区=视觉区；背景对齐跳到底按钮 48dp）
+private const val KNOB_HIT_RADIUS_DP = 30f
+/** 收起态手势表面边长（与 48dp 圆钮等大，对齐跳到底按钮尺寸）。 */
+private val DIAL_COLLAPSED_SURFACE_SIZE = 48.dp
+/** 展开扇面枢轴距列表底的距离：8dp 底边距 + 24dp 圆钮半径 = 32dp（原地展开，枢轴对齐圆钮中心 Y）。 */
+private const val DIAL_PIVOT_BOTTOM_INSET_DP = 32f
 
 /**
  * 消息转盘：右侧中间的半透明旋钮，点击展开为 90° 扇形，单指拨动快速定位到「你发的消息」。
@@ -214,7 +214,7 @@ private fun DialOverlay(
             modifier = Modifier
                 .align(if (dial.phase == DialPhase.Collapsed) Alignment.BottomStart else Alignment.CenterStart)
                 .then(
-                    if (dial.phase == DialPhase.Collapsed) Modifier.padding(start = 8.dp, bottom = 10.dp)
+                    if (dial.phase == DialPhase.Collapsed) Modifier.padding(start = 8.dp, bottom = 8.dp)
                     else Modifier
                 ),
             dial = dial,
@@ -332,7 +332,7 @@ private fun vibrateTick(dial: MessageDialState, boundary: Boolean) {
     platformVibrateTick(boundary)
 }
 
-/** 收起圆钮视觉（纯绘制，无手势）：56dp 半透明「七线半圆扇」——红基准线 0°（最长最粗）+ 左右各 3 根短刻度 ±22.5°/±45°/±67.5° + 细弧线勾勒半圆轮廓。 */
+/** 收起圆钮视觉（纯绘制，无手势）：48dp 半透明「九线半圆扇」——红基准线 0°（最长最粗）+ 左右各 4 根短刻度 ±22.5°/±45°/±67.5°/±90° + 细弧线勾勒半圆轮廓（图案尺寸不变，只缩小背景圆）。 */
 @Composable
 private fun CollapsedKnobVisual() {
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -344,13 +344,14 @@ private fun CollapsedKnobVisual() {
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = DIAL_COLLAPSED_ALPHA)),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.fillMaxSize().padding(6.dp)) {
+        // 背景 56dp→48dp，内边距 6→2 让 Canvas 仍为 44dp：刻度图案绝对尺寸不变（outer=22dp）。
+        Canvas(Modifier.fillMaxSize().padding(2.dp)) {
             val c = this.center
             val outer = this.size.minDimension / 2f
-            // 短刻度：±67.5°/±45°/±22.5°（七线半圆扇面，与展开态形状更接近）
+            // 短刻度：±90°/±67.5°/±45°/±22.5°（九线半圆扇面，与展开态形状更接近）
             val tickInner = outer * 0.45f
             val tickOuter = outer * 0.82f
-            for (deg in listOf(-67.5f, -45f, -22.5f, 22.5f, 45f, 67.5f)) {
+            for (deg in listOf(-90f, -67.5f, -45f, -22.5f, 22.5f, 45f, 67.5f, 90f)) {
                 val a = deg * PI.toFloat() / 180f
                 val dir = Offset(cos(a), sin(a))
                 drawLine(tickColor, c + dir * tickInner, c + dir * tickOuter, strokeWidth = 2.2.dp.toPx())
@@ -360,12 +361,12 @@ private fun CollapsedKnobVisual() {
             val redOuter = outer * 0.95f
             val dir = Offset(cos(0f), sin(0f))
             drawLine(red, c + dir * redInner, c + dir * redOuter, strokeWidth = 3.dp.toPx())
-            // 细弧线勾勒半圆轮廓（-67.5°~+67.5°）
+            // 细弧线勾勒半圆轮廓（-90°~+90°）
             val arcR = outer * 0.82f
             drawArc(
                 color = tickColor.copy(alpha = 0.5f),
-                startAngle = -67.5f,
-                sweepAngle = 135f,
+                startAngle = -90f,
+                sweepAngle = 180f,
                 useCenter = false,
                 topLeft = Offset(c.x - arcR, c.y - arcR),
                 size = Size(arcR * 2, arcR * 2),
@@ -376,7 +377,7 @@ private fun CollapsedKnobVisual() {
 }
 
 /**
- * 统一转盘交互面：收起态 56dp 小表面（仅覆盖圆钮，不挡发送/中断等按钮）、展开态 128dp 全高条。
+ * 统一转盘交互面：收起态 48dp 小表面（仅覆盖圆钮，不挡发送/中断等按钮）、展开态 128dp 全高条。
  * 单一 pointerInput(Unit) 不因 phase 切换而重建，保证「摁下圆钮不抬指直接滑动 → 展开并旋转」一气呵成。
  * 收起态命中区域外不响应也不拦截（表面本身已缩小到圆钮区，事件自然落到底层按钮/列表）；
  * 展开态全条 + scrim 主动独占拦截是有意行为。
