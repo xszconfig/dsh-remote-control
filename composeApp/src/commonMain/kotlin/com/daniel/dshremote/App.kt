@@ -3716,20 +3716,20 @@ private fun levelColorOf(level: String): Color = when (level) {
 // 时间格式化：formatTimestamp 见 TimestampFormat.kt；
 // 绝对时间戳 formatClock（日志页）与 nowMillis 见 TimeFormat.kt
 
-/** Deep Diving 等待时长文案（服务端时钟秒数透传）。 */
+/** Deep Diving 等待时长文案（服务端时钟秒数透传；只显示时长，不含「本轮」）。 */
 private fun formatDivingDuration(seconds: Long): String {
     val s = seconds.coerceAtLeast(0)
     return when {
-        s < 60 -> "本轮 ${s}秒"
+        s < 60 -> "${s}秒"
         s < 3600 -> {
             val m = s / 60
             val rem = s % 60
-            if (rem == 0L) "本轮 ${m}分" else "本轮 ${m}分${rem}秒"
+            if (rem == 0L) "${m}分" else "${m}分${rem}秒"
         }
         else -> {
             val h = s / 3600
             val m = (s % 3600) / 60
-            if (m == 0L) "本轮 ${h}小时" else "本轮 ${h}小时${m}分"
+            if (m == 0L) "${h}小时" else "${h}小时${m}分"
         }
     }
 }
