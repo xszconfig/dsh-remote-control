@@ -10,13 +10,15 @@ agent 经 CLI 调用，直接反哺 lint / 修复流程。
 
 MVP 成功标准：改一个 Kotlin 文件 → 服务返回编译结果，耗时个位数秒级（对比 Gradle 现状 23–35s）。
 
-## 2. 已拍板决策（2026-09-06）
+## 2. 已拍板决策（2026-09-06 初拍 + 2026-09-07 三项补充）
 
 | 决策点 | 选择 |
 |---|---|
-| 进程形态 | **按需 CLI 优先**，长驻 daemon 后置（`--watch`/HTTP 留作后续迭代） |
-| 实现落点 | **dsh 侧 wrapper，不动 Jugg 核心代码**（复用 Jugg `cmd_line` 现有命令） |
-| 前置成本 | 接受「首次跑一次完整 Gradle 基线 + 编译 Jugg 仓库成 jar」 |
+| 进程形态 | **长驻 daemon（既定方向，已实施 commit 578ae8f/4b46387）**——按需 CLI 实测 13s 冷启动不达秒级，2026-09-07 改拍转常驻摊销冷启动 |
+| 实现落点 | **dsh 侧 wrapper，不动 Jugg 核心代码**（复用 Jugg `cmd_line` 现有命令；daemon 入口为 Jugg `cmd_line` 新增 `Daemon.kt`） |
+| 前置成本 | 接受「首次跑一次完整 Gradle 基线 + 编译 Jugg 仓库成 jar」（需 ideaIC ~3.1GB） |
+| 热应用 | 2026-09-07 拍板升级为一等目标（跳过打包+装 APK+华为确认+重启）；调研结论与路线见 `docs/decisions/Jugg秒编服务方案设计.md` 第九节 |
+| 基准测量 | 2026-09-07 拍板重测口径：改一行 + 热 daemon + 3 次中位数（compileDebugKotlin 0.52s / assembleDebug 8.06s） |
 
 ## 3. 技术链路
 
