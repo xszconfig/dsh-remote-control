@@ -34,10 +34,16 @@ jugg-check（每次，秒级）:
   git status 检测改动 → FileChangesHandler.filter 分类
   → IncrementalCompilerHelper.compile → JuggCompiler → K2JVMCompiler(项目自己的 Kotlin 2.1.0 + Compose 插件)
   → 提取 CompileError → 结构化 JSON
+
+jugg-apply（每次，秒级热应用，一等目标）:
+  git status 检测改动 → 增量编译(JuggCompiler) → mergeDex(增量 dex)
+  → DirectOverlayWriter 写 code_cache/.overlay（Android 官方 overlay dex 机制，无需 app 接 SDK）
+  → am force-stop + monkey 重启 → 三段计时(compile/mergeDex/apply/restart)
 ```
 
 复用 Jugg `main` 模块的：增量影响扩散（字节码/元数据，无 PSI/VFS）、Gradle 项目模型序列化、
-Kotlin 增量编译链（K2JVMCompiler + Compose 插件 + KMP `-Xmulti-platform -Xcommon-sources`）。
+Kotlin 增量编译链（K2JVMCompiler + Compose 插件 + KMP `-Xmulti-platform -Xcommon-sources`）、
+部署原语（`DirectOverlayWriter` overlay dex + `AdbCmdHelper` app 生命周期）。
 
 ## 4. 关键事实（实现约束）
 

@@ -1,8 +1,9 @@
-# Jugg 无头编译服务（jugg-service）
+# Jugg 无头编译 + 热应用服务（jugg-service）
 
-一个**不驻留 IDE 的秒级 Kotlin 编译检查服务**：复用腾讯音乐 Jugg 的增量编译引擎
+一个**不驻留 IDE 的秒级编译 + 热应用服务**：复用腾讯音乐 Jugg 的增量编译引擎
 （`main` 模块，0 PSI/VFS 依赖，字节码/元数据影响分析），对 dsh-remote-control
-（KMP + Compose Multiplatform）做单文件改动后的秒级「编译通过 / 错误列表」检查。
+（KMP + Compose Multiplatform）做单文件改动后的秒级「编译通过 / 错误列表」检查，
+并可把改动**热应用到真机**（绕开打包 + 装 APK + 华为确认 + 重启）。
 错误结构化（文件:行:列 + 消息），可直接反哺 lint / 修复流程。
 
 ## 架构
@@ -10,11 +11,13 @@
 ```
 jugg-init（一次性）  建立基线: 跑一次 assembleDebug + 序列化工程模型（≈3 分钟）
 jugg-daemon start    常驻进程: 摊销 JVM + K2JVMCompiler 初始化 + 基线加载（一次性 ≈13s）
-jugg-check <file>    秒级编译: HTTP POST /compile → 增量编译 → 结构化错误 JSON
+jugg-check <file>    秒级编译检查: HTTP POST /compile → 增量编译 → 结构化错误 JSON
+jugg-apply <file>    秒级热应用: HTTP POST /apply → 增量编译 + mergeDex → 写 code_cache/.overlay → am 重启
 ```
 
-关键点：**按需 CLI 每次冷启动 ≈13s，比 Gradle 热 daemon（8.9s）还慢**；
-转常驻 daemon 后，13s 初始化只发生一次，后续每次编译检查为秒级。
+关键点：**按需 CLI 每次冷启动 ≈13s，比 Gradle 热 daemon（compileDebugKotlin 0.52s）还慢**；
+转常驻 daemon 后，13s 初始化只发生一次。「编译检查」Gradle 已秒级，**Jugg 的价值在热应用**——跳过
+`assembleDebug`（8s）+ 装机确认 + 重启的 1 分钟级全链路，以 overlay dex 把代码直接应用到设备。
 
 ## 前置
 
@@ -43,14 +46,21 @@ cd tools/jugg-service
 ./jugg-check /Users/xieshaoze/Code/dsh-remote-control
 # 或显式指定文件
 ./jugg-check /Users/xieshaoze/Code/dsh-remote-control App.kt
+
+# 4. 秒级热应用（改一行 → 真机可见；需 debug 包 + 设备解锁）
+./jugg-apply /Users/xieshaoze/Code/dsh-remote-control
+# 或显式指定文件 + 设备 + 包名
+JUGG_DEVICE=100.71.236.18:5555 JUGG_PACKAGE=com.daniel.dshremote.debug \
+  ./jugg-apply /Users/xieshaoze/Code/dsh-remote-control App.kt
 ```
 
 ## 调用方式（agent / lint 体系）
 
-- **CLI**：`jugg-check <projectDir> [file...]`，stdout 一行 JSON。
+- **CLI**：`jugg-check <projectDir> [file...]`（编译检查）、`jugg-apply <projectDir> [file...]`（热应用），stdout 一行 JSON。
 - **HTTP**（daemon 内）：
   - `GET  /health` → `{"status":"ready","baseline":"..."}`
   - `POST /compile`，body `{"files":["/abs/App.kt"]}` → 编译结果 JSON。
+  - `POST /apply`，body `{"files":["/abs/App.kt"],"deviceSerial":"...","packageName":"com.daniel.dshremote.debug"}` → 三段计时 JSON。
 
 ## 输出契约
 

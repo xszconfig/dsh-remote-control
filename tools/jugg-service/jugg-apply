@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# jugg-apply —— 改一行代码 → 真机秒级应用（绕开打包+装 APK+华为确认流程）
+# 原理：Jugg 增量编译 → mergeDex 增量 dex → 写入 code_cache/.overlay → am 重启
+# 用法:
+#   jugg-apply <projectDir>              # 自动检测 git 改动的 .kt 并应用
+#   jugg-apply <projectDir> App.kt Foo.kt # 显式指定文件
+# 环境变量:
+#   JUGG_PORT(默认 12330) JUGG_DEVICE(默认 adb 第一个设备) JUGG_PACKAGE(默认 com.daniel.dshremote.debug)
+# 输出(一行 JSON):
+#   {"ok":true,"stage":"done","durations":{"compile":ms,"mergeDex":ms,"apply":ms,"restart":ms},"totalMs":ms}
+set -euo pipefail
+
+PROJECT_DIR="${1:?用法: jugg-apply <projectDir> [file...]}"
+shift || true
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+PORT="${JUGG_PORT:-12330}"
+ADB="${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb"
+
+# 收集改动文件
+FILES=()
+if [ $# -gt 0 ]; then
+  for f in "$@"; do
+    case "$f" in
+      /*) FILES+=("$f") ;;
+      *)  FILES+=("$PROJECT_DIR/$f") ;;
+    esac
+  done
+else
+  while IFS= read -r f; do
+    [ -n "$f" ] && FILES+=("$PROJECT_DIR/$f")
+  done < <(cd "$PROJECT_DIR" && git status --porcelain -- '*.kt' '*.java' 2>/dev/null | awk '{print $2}')
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+  echo '{"ok":false,"reason":"no changed .kt/.java files"}'
+  exit 1
+fi
+
+if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+  echo "✗ daemon 未运行，请先: jugg-daemon \"$PROJECT_DIR\" start" >&2
+  exit 1
+fi
+
+# 设备（默认 adb 第一个在线设备）+ 目标包
+DEVICE="${JUGG_DEVICE:-}"
+if [ -z "$DEVICE" ]; then
+  DEVICE="$("$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device"{print $1; exit}')"
+fi
+if [ -z "$DEVICE" ]; then
+  echo "✗ 未找到在线 adb 设备" >&2
+  exit 1
+fi
+PACKAGE="${JUGG_PACKAGE:-com.daniel.dshremote.debug}"
+
+BODY="$(python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"files": a[:-2], "deviceSerial": a[-2], "packageName": a[-1]}))' "${FILES[@]}" "$DEVICE" "$PACKAGE")"
+
+curl -s -X POST "http://127.0.0.1:$PORT/apply" -H 'Content-Type: application/json' -d "$BODY"
+echo
