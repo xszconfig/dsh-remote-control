@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# jugg-check —— 秒级 Kotlin 编译检查（调常驻 daemon，返回结构化错误 JSON）
+# 用法:
+#   jugg-check <projectDir>                 # 自动检测 git 改动的 .kt 文件并编译
+#   jugg-check <projectDir> App.kt Foo.kt   # 显式指定文件（绝对或相对 projectDir 路径）
+# 输出（stdout 一行 JSON）:
+#   {"ok":false,"durationMs":2340,"errors":[{"file":"...","line":42,"column":17,"message":"...","severity":"error"}]}
+set -euo pipefail
+
+PROJECT_DIR="${1:?用法: jugg-check <projectDir> [file...]}"
+shift || true
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+PORT="${JUGG_PORT:-12330}"
+
+# 收集改动文件
+FILES=()
+if [ $# -gt 0 ]; then
+  for f in "$@"; do
+    case "$f" in
+      /*) FILES+=("$f") ;;
+      *)  FILES+=("$PROJECT_DIR/$f") ;;
+    esac
+  done
+else
+  while IFS= read -r f; do
+    [ -n "$f" ] && FILES+=("$PROJECT_DIR/$f")
+  done < <(cd "$PROJECT_DIR" && git status --porcelain -- '*.kt' '*.java' 2>/dev/null | awk '{print $2}')
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+  echo '{"ok":true,"durationMs":0,"errors":[],"note":"no changed .kt/.java files"}'
+  exit 0
+fi
+
+if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+  echo "✗ daemon 未运行，请先: jugg-daemon \"$PROJECT_DIR\" start" >&2
+  exit 1
+fi
+
+BODY="$(python3 -c 'import json,sys; print(json.dumps({"files": sys.argv[1:]}))' "${FILES[@]}")"
+curl -s -X POST "http://127.0.0.1:$PORT/compile" -H 'Content-Type: application/json' -d "$BODY"
+echo

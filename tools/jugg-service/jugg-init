@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# jugg-init —— 建立 Jugg 增量编译基线（一次性，≈3 分钟）
+# 用法: jugg-init <projectDir>
+set -euo pipefail
+
+PROJECT_DIR="${1:?用法: jugg-init <projectDir>}"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
+JUGG_HOME="${JUGG_HOME:-$HOME/GitHub/jugg/cmd_line/build/install/cmd_line}"
+export JAVA_HOME="${JAVA_HOME:-$HOME/.gradle/jdks/eclipse_adoptium-17-aarch64-os_x.2/jdk-17.0.20.1+1/Contents/Home}"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+if [ ! -x "$JUGG_HOME/bin/cmd_line" ]; then
+  echo "✗ 未找到 Jugg CLI: $JUGG_HOME/bin/cmd_line" >&2
+  echo "  请先构建 Jugg: cd ~/GitHub/jugg && ./gradlew :cmd_line:installDist" >&2
+  exit 1
+fi
+
+echo "==> 建立 Jugg 基线（首次会跑一次完整 assembleDebug，约 3 分钟）"
+"$JUGG_HOME/bin/cmd_line" \
+  cmd=buildGradleBase \
+  baseBuildProjectDir="$PROJECT_DIR" \
+  gradleCompileTask=:composeApp:assembleDebug \
+  gradleOutputApkPath="composeApp/build/outputs/apk/debug/*.apk" \
+  logLevel=INFO
+
+echo "==> 基线已建立: $PROJECT_DIR/build/jugg"

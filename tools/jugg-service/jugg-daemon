@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# jugg-daemon —— 常驻 Jugg 无头编译服务（摊销 JVM+编译器初始化，秒级编译检查）
+# 用法:
+#   jugg-daemon <projectDir> start   # 后台启动（默认端口 12330）
+#   jugg-daemon <projectDir> stop    # 停止
+#   jugg-daemon <projectDir> status  # 健康检查
+set -euo pipefail
+
+PROJECT_DIR="${1:?用法: jugg-daemon <projectDir> start/stop/status}"
+ACTION="${2:-start}"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
+PORT="${JUGG_PORT:-12330}"
+PID_FILE="${JUGG_PID_FILE:-/tmp/jugg-daemon-$(echo "$PROJECT_DIR" | tr '/' '_').pid}"
+JUGG_HOME="${JUGG_HOME:-$HOME/GitHub/jugg/cmd_line/build/install/cmd_line}"
+export JAVA_HOME="${JAVA_HOME:-$HOME/.gradle/jdks/eclipse_adoptium-17-aarch64-os_x.2/jdk-17.0.20.1+1/Contents/Home}"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+BASE_DIR="$PROJECT_DIR/build/jugg"
+
+daemon_pid() {
+  [ -f "$PID_FILE" ] && cat "$PID_FILE" 2>/dev/null || true
+}
+
+is_running() {
+  local pid; pid="$(daemon_pid)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+case "$ACTION" in
+  start)
+    if is_running; then
+      echo "==> daemon 已在运行 (pid $(daemon_pid), port $PORT)"
+      exit 0
+    fi
+    if [ ! -d "$BASE_DIR" ]; then
+      echo "✗ 未找到基线 $BASE_DIR，请先运行 jugg-init" >&2
+      exit 1
+    fi
+    if [ ! -x "$JUGG_HOME/bin/cmd_line" ]; then
+      echo "✗ 未找到 Jugg CLI: $JUGG_HOME/bin/cmd_line" >&2
+      exit 1
+    fi
+    echo "==> 启动 Jugg daemon（首次初始化约 10-15s）..."
+    nohup "$JUGG_HOME/bin/cmd_line" \
+      cmd=daemon \
+      baseBuildJuggRootDir="$BASE_DIR" \
+      sourceProjectDir="$PROJECT_DIR" \
+      port="$PORT" \
+      logLevel=WARN \
+      > /tmp/jugg-daemon.log 2>&1 &
+    echo $! > "$PID_FILE"
+    # 等待就绪
+    for _ in $(seq 1 60); do
+      if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+        echo "==> daemon 已就绪: http://127.0.0.1:$PORT (pid $(daemon_pid))"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "✗ daemon 启动超时，日志: /tmp/jugg-daemon.log" >&2
+    exit 1
+    ;;
+  stop)
+    if is_running; then
+      kill "$(daemon_pid)" 2>/dev/null || true
+      sleep 1
+      rm -f "$PID_FILE"
+      echo "==> daemon 已停止"
+    else
+      echo "==> daemon 未运行"
+      rm -f "$PID_FILE"
+    fi
+    ;;
+  status)
+    if is_running && curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+      echo "==> daemon 运行中 (pid $(daemon_pid), http://127.0.0.1:$PORT)"
+      curl -s "http://127.0.0.1:$PORT/health"; echo
+    else
+      echo "==> daemon 未运行"
+      exit 1
+    fi
+    ;;
+  *)
+    echo "用法: jugg-daemon <projectDir> {start|stop|status}" >&2
+    exit 1
+    ;;
+esac
