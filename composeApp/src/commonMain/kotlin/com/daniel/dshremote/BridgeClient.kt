@@ -6,6 +6,7 @@ import com.daniel.dshremote.protocol.ApprovalRequestWire
 import com.daniel.dshremote.protocol.BridgeJson
 import com.daniel.dshremote.protocol.CachedSessionSnapshot
 import com.daniel.dshremote.protocol.ClientCommand
+import com.daniel.dshremote.protocol.ContextUsageWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
 import com.daniel.dshremote.protocol.LogEntryWire
@@ -15,6 +16,7 @@ import com.daniel.dshremote.protocol.QueueItemWire
 import com.daniel.dshremote.protocol.ServerEvent
 import com.daniel.dshremote.protocol.ServerLogEntry
 import com.daniel.dshremote.protocol.ServerLogsResponse
+import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.StoredEndpoint
@@ -151,6 +153,10 @@ data class SessionUiState(
     val todos: List<com.daniel.dshremote.protocol.ServerEvent.TodoWire> = emptyList(),
     /** 当前会话可用的斜杠命令清单（服务端注册表权威；输入 "/" 时弹候选，会话级）。 */
     val commands: List<com.daniel.dshremote.protocol.CommandWire> = emptyList(),
+    /** 当前会话模型目录快照（当前选择 + provider 分组 + routable；服务端投影权威，会话级切会话重置）。 */
+    val models: SessionModelsWire? = null,
+    /** 当前会话上下文窗口占用（percent 由服务端算好，客户端零推算；会话级切会话重置）。 */
+    val contextUsage: ContextUsageWire? = null,
     /** 思考流式实时行（reasoning-delta 节流推送；null = 无流式思考）。 */
     val liveThink: String? = null,
     /** 当前会话持久化目标（null = 无目标）；会话级，切会话重置、按 sessionId 过滤。 */
@@ -250,6 +256,8 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     deepDivingElapsed = null,
     todos = emptyList(),
     commands = emptyList(),
+    models = null,
+    contextUsage = null,
     liveThink = null,
     goal = null,
     debug = null,
@@ -715,6 +723,8 @@ class BridgeClient(
                 deepDivingElapsed = null,
                 todos = emptyList(),
                 commands = emptyList(),
+                models = null,
+                contextUsage = null,
                 liveThink = null,
                 goal = null,
                 debug = null,
@@ -997,6 +1007,16 @@ class BridgeClient(
         }
     }
 
+    /** 切换当前会话模型（下一步 prompt 组装边界生效，不打断当前推理；reasoningEffort 可选）。 */
+    fun setModel(sessionId: String, provider: String, model: String, reasoningEffort: String? = null) {
+        ConnLog.info("MODEL", "切换模型 sessionId=$sessionId provider=$provider model=$model effort=$reasoningEffort")
+        scope.launch {
+            if (!connection.send(ClientCommand.SetModel(sessionId, provider, model, reasoningEffort))) {
+                pushConnectionError("切换模型指令发送失败（连接已断开）")
+            }
+        }
+    }
+
     /** 排队消息操作：steer = 插队（注入当前轮）；remove = 移除排队消息。 */
     /** 加载更早的一页历史（seq < 当前窗口最小 seq）。 */
     fun loadOlderPage(sessionId: String) {
@@ -1182,8 +1202,8 @@ class BridgeClient(
             is ServerEvent.GoalUpdate -> handleGoalUpdate(ev)
             is ServerEvent.TodosUpdate -> handleTodosUpdate(ev)
             is ServerEvent.CommandsUpdate -> handleCommandsUpdate(ev)
-            is ServerEvent.ModelsUpdate -> ConnLog.debug("MODEL", "模型目录快照（阶段1占位，阶段3落状态）sessionId=${ev.sessionId}")
-            is ServerEvent.ContextUsage -> ConnLog.debug("CTX", "上下文占用（阶段1占位，阶段3落状态）sessionId=${ev.sessionId}")
+            is ServerEvent.ModelsUpdate -> handleModelsUpdate(ev)
+            is ServerEvent.ContextUsage -> handleContextUsage(ev)
             is ServerEvent.DebugState -> handleDebugState(ev)
             is ServerEvent.DebugOutput -> handleDebugOutput(ev)
             is ServerEvent.DebugVariables -> handleDebugVariables(ev)
@@ -1475,6 +1495,35 @@ class BridgeClient(
     private fun handleCommandsUpdate(ev: ServerEvent.CommandsUpdate) {
         // 会话隔离：斜杠命令清单只归属对应会话（候选弹窗数据源，服务端权威）
         updateView(ev.sessionId) { v -> v.copy(commands = ev.commands) }
+    }
+
+    private fun handleModelsUpdate(ev: ServerEvent.ModelsUpdate) {
+        // 会话隔离：模型目录快照只归属对应会话（服务端投影权威，客户端只渲染、不推算）。
+        // current 可能为 null（未加载/占位），routable null = 未加载（不置灰输入框）。
+        if (_session.value.currentSessionId == ev.sessionId) {
+            _session.update { it.copy(models = ev.models) }
+            ConnLog.info(
+                "MODEL",
+                "模型目录快照 sessionId=${ev.sessionId} current=${ev.models.current?.provider}/${ev.models.current?.model}" +
+                    " routable=${ev.models.routable} groups=${ev.models.groups.size} failures=${ev.models.failures.size}",
+            )
+        } else {
+            ConnLog.debug("MODEL", "模型目录快照非当前会话，丢弃 sessionId=${ev.sessionId}")
+        }
+    }
+
+    private fun handleContextUsage(ev: ServerEvent.ContextUsage) {
+        // 会话隔离：上下文占用只归属对应会话；percent 由服务端算好（clamp 0-100），客户端零推算。
+        if (_session.value.currentSessionId == ev.sessionId) {
+            _session.update { it.copy(contextUsage = ev.usage) }
+            ConnLog.info(
+                "CTX",
+                "上下文占用 sessionId=${ev.sessionId} percent=${ev.usage.percent}" +
+                    " projected=${ev.usage.projectedTokens} window=${ev.usage.contextWindow}",
+            )
+        } else {
+            ConnLog.debug("CTX", "上下文占用非当前会话，丢弃 sessionId=${ev.sessionId}")
+        }
     }
 
     private fun handleDebugState(ev: ServerEvent.DebugState) {

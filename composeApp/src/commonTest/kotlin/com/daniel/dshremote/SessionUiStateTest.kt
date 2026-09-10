@@ -2,8 +2,11 @@ package com.daniel.dshremote
 
 import com.daniel.dshremote.protocol.AgentSummary
 import com.daniel.dshremote.protocol.ApprovalRequestWire
+import com.daniel.dshremote.protocol.ContextUsageWire
 import com.daniel.dshremote.protocol.DeviceStatus
 import com.daniel.dshremote.protocol.EventProjection
+import com.daniel.dshremote.protocol.ModelSelectionWire
+import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SessionSummary
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.WorkspaceSummary
@@ -48,6 +51,18 @@ class SessionUiStateTest {
         // 用户偏好保留：工作区选择在重连后仍是用户上次的视图
         assertEquals("w1", cleared.selectedWorkspaceId)
         assertEquals(listOf(NoticeError("历史错误", recoverable = false)), cleared.errors)
+    }
+
+    @Test
+    fun clearedForDisconnect_clearsModelsAndContextUsage() {
+        // 输入区操作条会话级字段：断开归零（不残留上个会话的模型目录/占用）
+        val state = SessionUiState(
+            models = SessionModelsWire(current = ModelSelectionWire("p1", "m1")),
+            contextUsage = ContextUsageWire(percent = 41),
+        )
+        val cleared = state.clearedForDisconnect()
+        assertNull(cleared.models)
+        assertNull(cleared.contextUsage)
     }
 
     // ---- 直连失败清掉 hint 设备名（状态矛盾止血） ----
