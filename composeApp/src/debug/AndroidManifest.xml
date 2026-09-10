@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug 专用覆盖：仅 debug 变体使用带 DEBUG 角标的启动图标。
+     release-in-house / release-store 的图标保持原样（无 icon 覆盖，沿用系统默认）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher" />
+</manifest>

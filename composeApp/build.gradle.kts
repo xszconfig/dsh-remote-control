@@ -76,6 +76,11 @@ android {
         }
     }
     buildTypes {
+        // debug 独立包名：与 release-in-house / release-store 可同时安装互不冲突，
+        // 数据目录独立（这正是「日常开发包 + 秒编热应用」可并存的前提）。
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+        }
         getByName("release") {
             isMinifyEnabled = false
         }
