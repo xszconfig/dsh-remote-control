@@ -8,6 +8,7 @@ import com.daniel.dshremote.protocol.QueueItemWire
 import com.daniel.dshremote.protocol.QuestionRequestWire
 import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SessionSummary
+import com.daniel.dshremote.protocol.SkillWire
 import com.daniel.dshremote.protocol.StoredDevice
 import com.daniel.dshremote.protocol.WorkspaceSummary
 
@@ -66,6 +67,8 @@ data class SessionUiState(
     val debugVars: Map<String, List<com.daniel.dshremote.protocol.ServerEvent.DebugVariableWire>> = emptyMap(),
     /** LSP 诊断（跨会话全局：文件级最新集合，cap 100 条）。 */
     val diagnostics: List<com.daniel.dshremote.protocol.ServerEvent.DiagnosticWire> = emptyList(),
+    /** 技能目录（全局、与会话无关）：bridge 连接即下发 skills_update + skills/change 时广播全量目录。 */
+    val skills: List<SkillWire> = emptyList(),
     /** 服务端重启通知（重连后 server_boot 推送；横幅展示，可关闭）。 */
     val serverBoot: com.daniel.dshremote.protocol.ServerEvent.ServerBoot? = null,
     /** 待处理审批队列（服务端持有 → 手机裁决；可能多单排队）。 */
@@ -161,6 +164,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     debugOutput = emptyList(),
     debugVars = emptyMap(),
     diagnostics = emptyList(),
+    skills = emptyList(),
     serverBoot = null,
     approvals = emptyList(),
     decidingApprovalId = null,

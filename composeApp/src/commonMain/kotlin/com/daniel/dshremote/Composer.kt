@@ -1,12 +1,17 @@
 package com.daniel.dshremote
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,12 +54,13 @@ import com.daniel.dshremote.protocol.ContextUsageWire
 import com.daniel.dshremote.protocol.ModelCatalogModelWire
 import com.daniel.dshremote.protocol.ModelProviderGroupWire
 import com.daniel.dshremote.protocol.SessionModelsWire
+import com.daniel.dshremote.protocol.SkillWire
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
-/** 输入区：斜杠命令候选弹窗 + 输入框（上）+ 操作条（下：模型入口 / 上下文环 / 终止 / 发送）。 */
+/** 输入区：入口列表（上，横向 chips，可扩展）+ 输入框（中）+ 操作条（下：模型入口 / 上下文环 / 终止 / 发送）。 */
 @Composable
 internal fun ConversationComposer(
     client: BridgeClient,
@@ -74,6 +81,7 @@ internal fun ConversationComposer(
     var confirmQueuedCount by remember { mutableStateOf(0) }
     var showModelSheet by remember { mutableStateOf(false) }
     var showContextDetail by remember { mutableStateOf(false) }
+    var showSkillPanel by remember { mutableStateOf(false) }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
@@ -93,34 +101,47 @@ internal fun ConversationComposer(
     // 发送可点 = 输入非空；发送点击后立即清空输入框 → 自然置灰（PRD 2.5 解 A，不新增提交锁）。
     val canSend = input.trim().isNotEmpty()
 
+    // 输入框上方入口列表：数据驱动（后续加新入口只加数据项，不改容器结构）。
+    val composerEntries = remember { listOf(ComposerEntry(id = "skills", label = "技能")) }
+
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        // 上：输入框独占一行（原样式不变）。
-        Row(
-            Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
-                modifier = Modifier.weight(1f).onFocusChanged {
-                    onInputFocusedChange(it.isFocused)
-                    if (it.isFocused) {
-                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
-                    } else {
-                        ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
+        // 上：入口列表（横向 chips，可横向滚动，≥40dp 触达）。
+        ComposerEntryList(
+            entries = composerEntries,
+            onEntryClick = { entry ->
+                when (entry.id) {
+                    "skills" -> {
+                        ConnLog.info("SKILL", "技能入口点击 sessionId=$sessionId")
+                        showSkillPanel = true
                     }
-                },
-                placeholder = { Text("发指令给DeepSeek Harness") },
-                shape = RoundedCornerShape(22.dp),
-                maxLines = 4,
-                // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
-                // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
-                ),
-            )
-        }
+                }
+            },
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Spacer(Modifier.height(6.dp))
+        // 中：输入框独占一行（从左到右撑满）。
+        OutlinedTextField(
+            value = input,
+            onValueChange = onInputChange,
+            modifier = Modifier.fillMaxWidth().onFocusChanged {
+                onInputFocusedChange(it.isFocused)
+                if (it.isFocused) {
+                    ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
+                } else {
+                    ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
+                }
+            },
+            placeholder = { Text("发指令给DeepSeek Harness") },
+            shape = RoundedCornerShape(22.dp),
+            maxLines = 4,
+            // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
+            // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            ),
+        )
+        Spacer(Modifier.height(6.dp))
         // 下：操作条（从左到右固定顺序：模型入口 → 上下文环 → 终止 → 发送）。
         Row(
             Modifier.fillMaxWidth().height(48.dp).padding(bottom = 6.dp),
@@ -136,7 +157,7 @@ internal fun ConversationComposer(
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
-            // ② 上下文窗口环形进度（percent==null 不渲染，占位空）
+            // ② 上下文窗口环形进度（percent==null 不渲染，占位空保持布局稳定）
             ContextRing(
                 usage = state.contextUsage,
                 onClick = {
@@ -224,6 +245,52 @@ internal fun ConversationComposer(
             onDismiss = { showContextDetail = false },
         )
     }
+    if (showSkillPanel) {
+        SkillPanel(
+            skills = state.skills,
+            onDismiss = { showSkillPanel = false },
+        )
+    }
+}
+
+/** 输入框上方入口项：数据驱动的 id + 展示标签，后续加新入口只加数据项、不改容器结构。 */
+internal data class ComposerEntry(val id: String, val label: String)
+
+/** 输入框上方入口列表容器：横向 chips/按钮行，可横向滚动；只依赖 [ComposerEntry] 数据，不感知具体入口。 */
+@Composable
+internal fun ComposerEntryList(
+    entries: List<ComposerEntry>,
+    onEntryClick: (ComposerEntry) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        entries.forEach { entry ->
+            ComposerEntryChip(label = entry.label, onClick = { onEntryClick(entry) })
+            Spacer(Modifier.width(8.dp))
+        }
+    }
+}
+
+/** 入口 chip：胶囊形，≥40dp 触达（移动端优先）。 */
+@Composable
+internal fun ComposerEntryChip(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
+    }
 }
 
 /** 操作条① 模型入口：当前模型短标签（无则「选择模型」占位）+ 切换指示，≥40dp 触达。 */
@@ -276,6 +343,77 @@ internal fun ContextRing(usage: ContextUsageWire?, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurface,
         )
     }
+}
+
+/** 技能面板：半屏 Sheet，顶部搜索框 + LazyColumn 浏览电脑端 DSH 全部技能（仅浏览，条目无点击动作）。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var query by remember { mutableStateOf("") }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Text(
+            "技能",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            placeholder = { Text("搜索技能（名称 / 描述）") },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        val filtered = filterSkills(skills, query)
+        if (filtered.isEmpty()) {
+            Box(
+                Modifier.fillMaxWidth().weight(1f).padding(vertical = 32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (skills.isEmpty()) "暂无可用技能（桌面端未上报）" else "没有匹配的技能",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                items(filtered, key = { it.name }) { skill ->
+                    SkillRow(skill)
+                }
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+    }
+}
+
+/** 技能单行：名称（加粗）+ 描述（次要色）+ 适用（whenToUse，有则附一行小字）。 */
+@Composable
+private fun SkillRow(skill: SkillWire) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(skill.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+        Text(
+            skill.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!skill.whenToUse.isNullOrBlank()) {
+            Text(
+                "适用：${skill.whenToUse}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
 
 /** 模型选择弹窗：provider 分组 → 模型 → reasoning effort 档位（移动端半屏 Sheet）。 */
@@ -403,32 +541,47 @@ internal fun ModelOptionRow(name: String, description: String?, selected: Boolea
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
 
-/** 上下文占用分类明细弹窗：系统提示 / 工具 / 对话三类 token 数（标注近似组成）。 */
+/** 上下文分段三色（对齐桌面 ContextMeter）：蓝灰=系统提示词 / 紫=工具 / 蓝=对话消息。 */
+private val ContextSystemColor = Color(0xFF78909C)
+private val ContextToolsColor = Color(0xFF9C27B0)
+private val ContextMessageColor = Color(0xFF2196F3)
+
+/** 上下文占用弹层（对齐桌面 DSH Web ContextMeter，信息不少项）：标题 + 大百分比 + 已用/总量 + 三色分段条 + 图例。 */
 @Composable
 internal fun ContextDetailDialog(usage: ContextUsageWire?, onDismiss: () -> Unit) {
+    val percent = usage?.percent
+    val used = contextUsedTokens(usage)
     val breakdown = usage?.breakdown
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("上下文占用（近似组成）") },
+        title = { Text("上下文已用") },
         text = {
             Column {
-                if (breakdown == null) {
-                    Text(
-                        "暂无分类明细（桌面端未上报 breakdown 投影）。占用百分比为 provider 锚定的参考值，非计费/门控输入。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Text(
+                    if (percent != null) "$percent%" else "—",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(6.dp))
+                val usedText = used?.let { "~${formatContextTokens(it)}" } ?: "—"
+                val windowText = usage?.contextWindow?.let { formatContextTokens(it) } ?: "—"
+                Text(
+                    "$usedText / $windowText",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (breakdown != null) {
+                    Spacer(Modifier.height(14.dp))
+                    ContextSegmentedBar(
+                        system = breakdown.systemTokens,
+                        tools = breakdown.toolsTokens,
+                        messages = breakdown.messageTokens,
                     )
-                } else {
-                    val total = breakdown.systemTokens + breakdown.toolsTokens + breakdown.messageTokens
-                    BreakdownRow("系统提示", breakdown.systemTokens, total)
-                    BreakdownRow("工具", breakdown.toolsTokens, total)
-                    BreakdownRow("对话", breakdown.messageTokens, total)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "三类按固定启发式估算，之和 ≠ 占用分子（占用为 provider 锚定的参考值，非计费/门控输入）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Spacer(Modifier.height(12.dp))
+                    ContextLegendRow(ContextSystemColor, "系统提示词", breakdown.systemTokens)
+                    ContextLegendRow(ContextToolsColor, "工具", breakdown.toolsTokens)
+                    ContextLegendRow(ContextMessageColor, "对话消息", breakdown.messageTokens)
                 }
             }
         },
@@ -438,14 +591,25 @@ internal fun ContextDetailDialog(usage: ContextUsageWire?, onDismiss: () -> Unit
     )
 }
 
-/** 明细弹窗单行：类别名 + token 数 + 占三类之和的百分比（total=0 时不显示占比）。 */
+/** 三色分段条形图：system/tools/messages 按占比分段（占比为 0 的段不渲染）。 */
 @Composable
-internal fun BreakdownRow(label: String, tokens: Long, total: Long) {
-    val percent = if (total > 0) ((tokens * 100) / total).toInt() else null
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun ContextSegmentedBar(system: Long, tools: Long, messages: Long) {
+    Row(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp))) {
+        if (system > 0) Box(Modifier.weight(system.toFloat()).fillMaxHeight().background(ContextSystemColor))
+        if (tools > 0) Box(Modifier.weight(tools.toFloat()).fillMaxHeight().background(ContextToolsColor))
+        if (messages > 0) Box(Modifier.weight(messages.toFloat()).fillMaxHeight().background(ContextMessageColor))
+    }
+}
+
+/** 图例单行：色块 + 标签 + ~token 数。 */
+@Composable
+private fun ContextLegendRow(color: Color, label: String, tokens: Long) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(12.dp).clip(RoundedCornerShape(3.dp)).background(color))
+        Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Text(
-            formatTokens(tokens) + (percent?.let { " · $it%" } ?: ""),
+            "~${formatContextTokens(tokens)}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

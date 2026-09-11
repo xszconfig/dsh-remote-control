@@ -959,7 +959,7 @@ class BridgeClient(
             is ServerEvent.CommandsUpdate -> handleCommandsUpdate(ev)
             is ServerEvent.ModelsUpdate -> handleModelsUpdate(ev)
             is ServerEvent.ContextUsage -> handleContextUsage(ev)
-            is ServerEvent.SkillsUpdate -> ConnLog.debug("SKILL", "技能目录（占位，App UI 子代理落状态）skills=${ev.skills.size}")
+            is ServerEvent.SkillsUpdate -> handleSkillsUpdate(ev)
             is ServerEvent.DebugState -> handleDebugState(ev)
             is ServerEvent.DebugOutput -> handleDebugOutput(ev)
             is ServerEvent.DebugVariables -> handleDebugVariables(ev)
@@ -1280,6 +1280,12 @@ class BridgeClient(
         } else {
             ConnLog.debug("CTX", "上下文占用非当前会话，丢弃 sessionId=${ev.sessionId}")
         }
+    }
+
+    /** 技能目录（全局、无 sessionId）：bridge 连接即下发 + skills/change 时广播，直接覆盖全量目录。 */
+    private fun handleSkillsUpdate(ev: ServerEvent.SkillsUpdate) {
+        _session.update { it.copy(skills = ev.skills) }
+        ConnLog.info("SKILL", "技能目录 skills=${ev.skills.size}")
     }
 
     private fun handleDebugState(ev: ServerEvent.DebugState) {
