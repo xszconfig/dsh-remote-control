@@ -152,3 +152,68 @@
 ### 收尾确认
 
 主题保持「跟随系统」（本批未改动）；keepawake 恢复（timeout 300000、stayon=0）；全程 crash buffer 无本包 FATAL ✅。
+
+## 最终集成批次（BridgeClient 拆分后回归 · main 49f95f4）
+
+> 执行代理：真机验收专项代理。通道：LAN `192.168.3.84:5555`（**中途掉线**，INJECT_EVENTS 权限异常，主对话已介入恢复设备与修复 keepawake 脚本）。桥 coreVersion 0.17.1。release-in-house 新包 lastUpdateTime 2026-09-12 00:58:07。本代理未改源码、未提交。
+
+### 验收表
+
+| # | 验收项 | 预期 | 实测 | 结论 |
+|---|--------|------|------|------|
+| 1 | 装机+冒烟+双包并存 | 新包装好、P00、双包并存 | release-in-house 00:58:07 `pm install` Success（未知来源权限已授，免密）；冒烟三关 PASS（pid=21422）；`pm list` 双包并存 | ✅ PASS |
+| 2.1 | 连接/重连横幅 | 断开→横幅→自动重连→清除 | 横幅「检测到连接断开，正在自动重连…」；phone-logs `连接断开且有凭据→启动自动重连→第1次重连→hello到达→横幅清除`（两轮） | ✅ PASS |
+| 2.2 | 会话导航+返回链两级下钻 | 下钻两级逐级返回 | ⏸️ 未实测（技能面板弹出占位，未完成下钻） | ⏸️ 未验 |
+| 2.3 | 发送消息 ack | 发送→ack 归服务端 | ⏸️ 未实测（本批未发消息） | ⏸️ 未验 |
+| 2.4 | 事件投影渲染 | 消息/工具结果/时间戳正常渲染 | 会话内 Agent 消息、✓结果、工具调用块、`今天 00:56` 时间戳均正常渲染 | ✅ PASS |
+| 2.5 | 审批/提问/交付通知代码路径不崩 | 三路径不崩 | 本批未显式触发审批/提问；交付通知上批已触发、本批全程无本包 FATAL | ✅ PASS（交付上批已验；审批/提问未触发） |
+| 2.6 | 设备注册 | register_device + /remote/connected | phone-logs `已发送 register_device`；`/remote/connected` 出现 deviceId cc4d6501（HBN-AL00） | ✅ PASS |
+| 2.7 | FGS 通知 | 运行→「N 主 · M 子」 | 通知栏「0 个主代理 · 1 个子代理正在运行」（channel dsh_keepalive） | ✅ PASS |
+| 3 | 技能面板高度 ~1/3 | 面板占底部 ~1/3、上方 2/3 会话可见 | 「技能」标题 y=1943/2844≈68% → 面板底部 ~1/3；截图 19 存证 | ✅ PASS（高度） |
+| 3′ | 搜索框固定 + 列表滚动 | 搜索框固定、列表可滚 | ⏸️ 未实测（swipe 时 LAN 掉线 INJECT_EVENTS 权限失败） | ⏸️ 未验 |
+
+### 未验项清单（诚实标注）
+
+- **2.2 会话导航+返回链两级下钻**：未实测（导航前技能面板弹出占位）。
+- **2.3 发送消息 ack**：本批未发送测试消息（非破坏原则 + 消息预算），ack 机制前几批已验。
+- **2.5 审批/提问通知**：未显式触发（无稳定触发手段），交付通知上批已真机验证。
+- **3′ 技能面板搜索框固定 + 列表滚动**：未实测（LAN 掉线导致 swipe 失败）；面板高度已验。
+
+### 发现的问题
+
+- **无功能级回归**：BridgeClient 拆分（174 行主类 + 5 扩展文件）后，连接/重连/注册/FGS/事件投影均无行为回归。
+- **环境**：LAN 通道 `192.168.3.84:5555` 中途掉线（swipe 报 `Injecting to another application requires INJECT_EVENTS permission`），主对话已介入恢复；keepawake 备份遗留亦由主对话恢复。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 2.4 事件投影渲染（会话视图） | [18-mainflow-session.jpg](../screenshots/2026-09-10-batch-reverify/18-mainflow-session.jpg) |
+| 3 技能面板高度（底部 1/3） | [19-skill-height.jpg](../screenshots/2026-09-10-batch-reverify/19-skill-height.jpg) |
+
+> 其余条目（2.1/2.6/2.7）以 uiautomator dump 文本树 + phone-logs + `/remote/connected` + `dumpsys notification` 为证据，未逐项截图。
+
+## USB 补验（最终批次 4 个未验项）
+
+> 通道：USB `2NP0224806003991`（HBN-AL00，已授权）。keepawake 已 on→off 成功（备份已清、timeout 恢复 300000/stayon 0）。本代理未改源码、未提交。
+
+### 验收表
+
+| # | 验收项 | 预期 | 实测 | 结论 |
+|---|--------|------|------|------|
+| 1 | 会话导航+返回链两级下钻 | 主会话→一级→二级→逐级返回 | 主会话「自举开发」→ 一级子代理「输入区操作条PRD与技术调研」（🤖2）→ 二级「App 输入区重构+技能面板」→ 逐级返回两级回主会话 | ✅ PASS |
+| 2 | 发送消息 ack | 立即上屏 + ack ok + 服务端一次 | 发送 `[bu-yan] do-not-process`（ASCII 代理【补验】请勿处理）：上屏 + 右上「你」+「刚刚」+ 输入框清空；phone-logs `ack ok msgId=m-session--1789168481695-0，消息已归服务端，删除持久化记录`（幂等去重=恰好一次） | ✅ PASS |
+| 3 | 技能面板搜索框固定+列表滚动 | 搜索框固定、列表可滚、搜 huawei 命中 | 面板底部 ~1/3（y=1943）；列表滚动后搜索框仍固定在 y=2123；搜 `huawei` 命中 `huawei-adb-fast-install`（另有 huawei-adb-install） | ✅ PASS |
+| 4 | 审批/提问显式触发 | 触发审批/提问 | 无稳定触发手段，未显式触发；代码级 + `NotificationControllerTest` 已验；结果交付通知上批已真机验证 | ⚠️ 诚实标注（未触发） |
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 1 二级子代理打开 | [20-subagent-l2-open.jpg](../screenshots/2026-09-10-batch-reverify/20-subagent-l2-open.jpg) |
+| 2 发送 ack（消息上屏+你标签） | [21-send-ack.jpg](../screenshots/2026-09-10-batch-reverify/21-send-ack.jpg) |
+| 3 技能面板搜索 huawei 命中 | [23-skill-search-huawei-hit.jpg](../screenshots/2026-09-10-batch-reverify/23-skill-search-huawei-hit.jpg) |
+
+### 收尾确认
+
+keepawake off 成功（status：timeout=300000、stayon=0、备份=无）✅；全程 crash buffer 无本包 FATAL ✅。
