@@ -57,10 +57,10 @@
 
 ### 2.2 切换模型入口
 
-- **入口形态**：显示当前模型名（短标签，如 provider 展示名 + 模型名，过长截断），右侧带下拉/切换指示；点击弹出**模型选择弹窗（半屏 Sheet 或对话框，移动端优先）**。
-- **弹窗内容**（对齐 `SessionModels` wire）：
+- **入口文案**：显示「**模型显示名 · 推理强度显示名**」（如「Deepseek V4 Pro · Max」）。取法：`current = {provider, model, reasoningEffort}` → 从目录 `groups[].models[]` 按 `model == current.model` 取该模型**显示名 `name`**，再从该模型 `reasoning.efforts[]` 按 `id == current.reasoningEffort` 取 effort **显示名 `name`**，拼接为「模型名 · 强度名」；无 effort 只显示模型名。**绝不显示 provider 名或 model id**（「Deepseek」重复两次是 provider+model-id 的渲染 bug）。查不到回退「选择模型」占位。过长截断。
+- **弹窗内容**（对齐 `SessionModels` wire，**全部服务端拉取、客户端零硬编码**）：
   - 按 provider 分组（`ModelProviderGroup[]`），组内列出模型（`ModelCatalogModel[]`：`id/name/description`）。
-  - 选中某模型后，若该模型带 `reasoning` 元数据（`efforts/defaultEffort`），进一步列出 effort 档位供选。
+  - 选中某模型后，该模型带 `reasoning` 元数据（`efforts/defaultEffort`）时，进一步列出**该模型的 effort 档位**供选——**档位列表 `reasoning.efforts[]`（id/name）随 `models_update` 下发**，与 DSH Web 的 `buildModelCatalog`（`ctx.llm.resolveModelInfo().reasoning.efforts`）**同源**；客户端**不硬编码任何模型名/档位**（服务端当前 3 模型：Deepseek V4 Flash / Pro / Flash Vision EXP，档位 off/low/high/max，随时可增删，手机实时反映）。
   - provider 级失败（`ModelCatalogFailure[]`）在该组内联展示错误，不影响其它可用组（对齐 Web）。
 - **当前项高亮**：以 `SessionModels.current`（provider/model/reasoningEffort）为准；若 current 不在目录组内（目录是 advisory），入口显示「选择模型」占位，不合成过期行（对齐 Web 语义）。
 - **生效方式（范围与时机）**：**下一步生效**——选择只在「下一次 prompt 组装边界」被快照，**正在运行的 step 保留其组装时的选择**，绝不打断当前推理；选择只有被后续请求消费后才持久化（`installModelSelection` 语义，见附录 B）。即：**仅影响新消息/下一轮，不影响已发出的消息与当前推理**。
