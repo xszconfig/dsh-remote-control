@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -47,6 +49,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +104,22 @@ internal fun ConversationComposer(
     // 发送可点 = 输入非空；发送点击后立即清空输入框 → 自然置灰（PRD 2.5 解 A，不新增提交锁）。
     val canSend = input.trim().isNotEmpty()
 
+    // 发送逻辑共享：下方发送按钮 onClick 与键盘 ImeAction.Send 都走这里。
+    // 内部已含非空守卫（text.isNotEmpty()）——发送后输入清空 → canSend 回 false → 按钮回灰、
+    // imeAction 回 Default（回车恢复换行），自然置灰保护，不新增提交锁。
+    val onSend: () -> Unit = {
+        ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length} trimLen=${input.trim().length}")
+        val text = input.trim()
+        if (text.isNotEmpty()) {
+            onFollowBottom() // 发送后重新跟随底部（要看到自己的消息与回复）
+            client.sendMessage(text)
+            onInputChange("")
+            // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        }
+    }
+
     // 输入框上方入口列表：数据驱动（后续加新入口只加数据项，不改容器结构）。
     val composerEntries = remember { listOf(ComposerEntry(id = "skills", label = "技能")) }
 
@@ -134,6 +153,11 @@ internal fun ConversationComposer(
             placeholder = { Text("发指令给DeepSeek Harness") },
             shape = RoundedCornerShape(22.dp),
             maxLines = 4,
+            // 键盘发送：非空时回车/换行键变为「发送」，点击触发与下方发送按钮相同的 onSend 流程；
+            // 空态保持 Default（回车换行）。多行取舍：非空 ImeAction.Send 下换行需 Shift+Enter
+            //（Android 标准行为，部分 IME 可能不提供换行）——按用户要求「非空回车即发」优先。
+            keyboardOptions = KeyboardOptions(imeAction = if (canSend) ImeAction.Send else ImeAction.Default),
+            keyboardActions = KeyboardActions(onSend = { onSend() }),
             // 无焦点也常显蓝色边框，让用户一眼知道这里是输入框；
             // 聚焦时全亮蓝，未聚焦用半透明蓝区分状态。
             colors = OutlinedTextFieldDefaults.colors(
@@ -191,20 +215,9 @@ internal fun ConversationComposer(
                 StopIcon()
             }
             Spacer(Modifier.width(8.dp))
-            // ④ 发送按钮（最右 · 核心）：非空可点、空/发送后置灰
+            // ④ 发送按钮（最右 · 核心）：非空可点、空/发送后置灰；onClick 与键盘 ImeAction.Send 共用 onSend。
             Button(
-                onClick = {
-                    ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length} trimLen=${input.trim().length}")
-                    val text = input.trim()
-                    if (text.isNotEmpty()) {
-                        onFollowBottom() // 发送后重新跟随底部（要看到自己的消息与回复）
-                        client.sendMessage(text)
-                        onInputChange("")
-                        // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                    }
-                },
+                onClick = onSend,
                 enabled = canSend,
                 modifier = Modifier.size(48.dp),
                 shape = CircleShape,
