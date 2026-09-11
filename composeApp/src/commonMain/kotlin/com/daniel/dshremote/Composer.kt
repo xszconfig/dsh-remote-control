@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -63,6 +62,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 
 /** 输入区：入口列表（上，横向 chips，可扩展）+ 输入框（中）+ 操作条（下：模型入口 / 上下文环 / 终止 / 发送）。 */
@@ -366,14 +366,16 @@ internal fun ContextRing(usage: ContextUsageWire?, onClick: () -> Unit) {
 internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var query by remember { mutableStateOf("") }
-    // 面板最大高度 = 屏幕 1/3（用户反馈：不要全屏挡住，留出 2/3 屏幕可见）；搜索框固定顶部、列表内部滚动。
-    val maxHeight = (LocalConfiguration.current.screenHeightDp / 3).dp
+    // 面板固定高度 = 屏幕 1/2（用户拍板：半屏，不高不矮）；搜索框固定顶部、列表内部滚动。
+    // 用固定 height 而非 heightIn：heightIn 下 weight(1f) 在列表从「少量过滤结果」恢复为全量时
+    // 不会重新撑满剩余高度，导致清空 query 后列表不恢复（见 2026-09-12 USB 补验反馈）。
+    val panelHeight = (LocalConfiguration.current.screenHeightDp / 2).dp
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+        Column(Modifier.fillMaxWidth().height(panelHeight)) {
             Text(
                 "技能",
                 style = MaterialTheme.typography.titleMedium,
@@ -391,21 +393,26 @@ internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             val filtered = filterSkills(skills, query)
-            if (filtered.isEmpty()) {
-                Box(
-                    Modifier.fillMaxWidth().weight(1f).padding(vertical = 32.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        if (skills.isEmpty()) "暂无可用技能（桌面端未上报）" else "没有匹配的技能",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                    items(filtered, key = { it.name }) { skill ->
-                        SkillRow(skill)
+            // 用 key(query) 强制列表子树在 query 变化时整体重建：清空搜索词时 filtered 从
+            // 「少量命中」变回「全量」，若不重建 LazyColumn 会沿用旧 item 集合不刷新
+            // （2026-09-12 USB 补验：清空 query 列表不恢复）。
+            key(query) {
+                if (filtered.isEmpty()) {
+                    Box(
+                        Modifier.fillMaxWidth().weight(1f).padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (skills.isEmpty()) "暂无可用技能（桌面端未上报）" else "没有匹配的技能",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                        items(filtered, key = { it.name }) { skill ->
+                            SkillRow(skill)
+                        }
                     }
                 }
             }

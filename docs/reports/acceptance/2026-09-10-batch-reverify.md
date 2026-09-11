@@ -217,3 +217,34 @@
 ### 收尾确认
 
 keepawake off 成功（status：timeout=300000、stayon=0、备份=无）✅；全程 crash buffer 无本包 FATAL ✅。
+
+## 技能面板修复 + 审批/提问触发（用户反馈跟进）
+
+> 用户反馈三点：① 技能面板高度 1/3 太矮，改成屏幕一半；② 输入「华为」搜索后清空 query 列表不恢复（bug）；③ 审批/提问可以用 ask_user_question 直接触发。执行代理：真机验收专项代理，直接改 Composer.kt + 复验。
+
+### 修复
+
+| 问题 | 根因 | 修复 | commit |
+|------|------|------|--------|
+| 面板高度 1/3 → 1/2 | `maxHeight = screenHeightDp / 3` | 改为 `/ 2`，且 `heightIn(max)` 改固定 `height()` | Composer.kt SkillPanel |
+| 清空 query 列表不恢复 | LazyColumn 在 filtered 从「少量命中」变回「全量」时沿用旧 item 集合不刷新 | 列表子树加 `key(query)`，query 变化强制整体重建 | Composer.kt SkillPanel |
+
+- lint：`detektP0` 全绿（99 kotlin files，0 违规）；`assembleRelease-in-house` BUILD SUCCESSFUL（DEX registers max=39，无告警/报错）。
+- 复验：面板「技能」标题 y=1494（≈52.5% 屏高，半屏）；搜 `huawei` 命中 2 条 → 清空后列表恢复全量（首屏 arkui-scoring-workflow / ask-matt / batch-grill-me）。截图 24/25/26 存证。
+
+### 审批/提问触发（已验证）
+
+- 用 `ask_user_question` 直接触发：phone-logs `QUESTION 收到提问 rpc=86d4ab73 questions=1`；前台浏览当前会话时 `NOTIFY 抑制 QUESTION 原因=BROWSING_CURRENT`（防打扰硬规则，正确）；退后台后再触发 → 通知栏出现「需要你回答」（用户已人工确认通知出现）。
+- **新发现（待路由）**：用户反馈「app 缩后台时通知栏出现测试内容，但 app 未自动拉回前台」，期望审批/提问到达时 app 自动回前台展示半屏强提醒。属 Android 12+ 后台启动限制 + 行为决策，本代理未擅自改，待主对话路由「通知/保活」域评估（full-screen intent 或 FGS 全屏通知）。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 面板半屏高度 | [24-skill-halfheight.jpg](../screenshots/2026-09-10-batch-reverify/24-skill-halfheight.jpg) |
+| 清空 query 恢复全量（修复后） | [26-skill-clear-fixed.jpg](../screenshots/2026-09-10-batch-reverify/26-skill-clear-fixed.jpg) |
+| 清空 query 未恢复（修复前证据） | [25-skill-clear-restored.jpg](../screenshots/2026-09-10-batch-reverify/25-skill-clear-restored.jpg) |
+
+### 收尾确认
+
+keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅；代码未提交（本代理只改 Composer.kt，待主对话决定是否 commit）。
