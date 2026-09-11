@@ -100,6 +100,7 @@
 ### 2.5 发送按钮（最右 · 核心）
 
 - **位置/形态**：按钮行最右（第 4 项），**正圆形** 48dp 圆钮（`CircleShape` + `contentPadding=0`，现状尺寸/图标不变）。
+- **键盘发送（用户拍板）**：输入框**有内容时**，键盘换行/回车键展示为「发送」（`KeyboardOptions(imeAction = ImeAction.Send)`），点击触发与发送按钮**同一发送流程**（`KeyboardActions(onSend)`，共享 `onSend` lambda）；**无内容时** `ImeAction.Default`（回车换行）。**多行取舍**：输入框 `maxLines=4` 多行，非空态回车即发、换行需 Shift+Enter（Android 标准行为，部分 IME 可能不提供换行）；空态保留回车换行。发送后输入清空 → 空 → imeAction 自然回 Default、按钮回灰。
 - **可点条件**：`input.trim().isNotEmpty()`（输入非空即可点，**不置灰**）。
 - **置灰条件**：输入为空（`trim()` 后为空）时置灰不可点；**发送点击后立即置灰**。
 - **✅ 已拍板（原铁律 14 冲突点，用户确认）**：「发送后立即变置灰」与现有「输入框立即清空」（IM 模式既定决策⑤）取**解 A（自然置灰）**：
