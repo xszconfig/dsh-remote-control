@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -59,6 +60,7 @@ import com.daniel.dshremote.protocol.ModelProviderGroupWire
 import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SkillWire
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -364,47 +366,51 @@ internal fun ContextRing(usage: ContextUsageWire?, onClick: () -> Unit) {
 internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var query by remember { mutableStateOf("") }
+    // 面板最大高度 = 屏幕 1/3（用户反馈：不要全屏挡住，留出 2/3 屏幕可见）；搜索框固定顶部、列表内部滚动。
+    val maxHeight = (LocalConfiguration.current.screenHeightDp / 3).dp
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Text(
-            "技能",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            placeholder = { Text("搜索技能（名称 / 描述）") },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-        )
-        Spacer(Modifier.height(8.dp))
-        val filtered = filterSkills(skills, query)
-        if (filtered.isEmpty()) {
-            Box(
-                Modifier.fillMaxWidth().weight(1f).padding(vertical = 32.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (skills.isEmpty()) "暂无可用技能（桌面端未上报）" else "没有匹配的技能",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else {
-            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-                items(filtered, key = { it.name }) { skill ->
-                    SkillRow(skill)
+        Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+            Text(
+                "技能",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                placeholder = { Text("搜索技能（名称 / 描述）") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            val filtered = filterSkills(skills, query)
+            if (filtered.isEmpty()) {
+                Box(
+                    Modifier.fillMaxWidth().weight(1f).padding(vertical = 32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (skills.isEmpty()) "暂无可用技能（桌面端未上报）" else "没有匹配的技能",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    items(filtered, key = { it.name }) { skill ->
+                        SkillRow(skill)
+                    }
                 }
             }
+            Spacer(Modifier.height(28.dp))
         }
-        Spacer(Modifier.height(28.dp))
     }
 }
 
