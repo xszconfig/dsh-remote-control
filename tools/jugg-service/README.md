@@ -82,24 +82,25 @@ JUGG_DEVICE=100.71.236.18:5555 JUGG_PACKAGE=com.daniel.dshremote.debug \
 
 | 场景 | 耗时 |
 |---|---|
-| Gradle 热 daemon（无改动 UP-TO-DATE） | 2.7s |
-| Gradle 热 daemon（改小文件增量） | 8.9s |
-| Gradle 冷启动 --no-daemon（改小文件） | 16.3s |
+| Gradle 热 daemon `compileDebugKotlin`（改一行，3 次中位数） | 0.52s |
+| Gradle 热 daemon `assembleDebug`（改一行，3 次中位数） | 8.06s |
 | Jugg 按需 CLI（改小文件，含冷启动） | 13.2s |
-| Jugg 按需 CLI（改 App.kt 3481 行） | 15.8s（编译 11.8s） |
-| **Jugg 常驻 daemon（改小文件）** | **≈2-3s（见下方验证）** |
+| Jugg 常驻 daemon `/compile`（改小文件） | 1.0–1.6s |
+| **Jugg 常驻 daemon `/apply` 热应用（改 MessageBubbles 一行，真机）** | **4.1s**（compile 1.5s + mergeDex 0.02s + overlay 写 2.0s + 重启 0.6s） |
+| Jugg 常驻 daemon `/apply` 热应用（首次，改 LandingScreen） | 8.2s（compile 5.0s + mergeDex 0.4s + overlay 写 2.0s + 重启 0.8s） |
+| **全链路对比（assembleDebug + 华为装机确认 + 重启）** | **≈40–60s**（打包 8s + 华为确认 20–30s + 重启） |
 | Jugg 建基线（一次性） | 3m11s |
 
-> 注：`App.kt` 是 3481 行巨型文件（detekt P0 也在催拆分），改它即使常驻 daemon 也需 ~12s
-> 单文件编译硬成本；改普通小文件才是秒级。建议逐步拆分 App.kt/BridgeClient 等大文件。
+> 热应用端到端结论（2026-09-11 真机实测）：`jugg-apply` 把「改一行 → 设备可见」压到 **4–8 秒**，
+> 比全链路（≈40–60s）快 **5–15 倍**。overlay dex 已确认写入 `code_cache/.overlay/base.apk/classes.dex`
+> 且含改动类（`MessageBubblesKt`）+ 新文案 UTF-8 字节，冷启动正常。
 
 ## 已知限制（诚实标注）
 
-- **`App.kt`（4098 行，重度 Compose）增量编译会报大量 `unresolved reference 'androidx.compose.*'` 假错误**。
-  根因：Jugg 对 KMP + Compose Multiplatform 的 compose 编译器插件加载链有多处兼容性缺陷
-  （`isNeedCompileCompose` 依赖 `androidExt.buildFeatures.compose`，KMP 工程该值为 false → compose 插件不加载；
-  另有 Kotlin 2.x `pluginClasspath` 混入 `-Xplugin` 假参数，已修一部分）。**改 App.kt 的编译检查暂不可用**，
-  需下一步修复 Jugg 的 KMP/CMP 插件加载链。普通小文件（含少量 Compose import）编译检查正常、秒级。
+- **compose 假错误已修复**：Kotlin 2.x 把整个编译器 classpath（stdlib/reflect/daemon/trove4j 等）混进
+  `kotlinPlugins` 并全部当 `-Xplugin` 传，导致 compose 插件加载被干扰（表现为 `unresolved reference 'androidx.compose.*'`）。
+  已在 Jugg `KotlinCompilerInvoker` 修复（只对真插件传 `-Xplugin`），`App.kt`（4098 行重度 Compose）编译 `ok:True errors:0`。
+- **热应用需 debug 包（debuggable）**：overlay dex 写入走 `run-as`，仅 debuggable 包可用；`release-in-house`（非 debuggable）不可用。
 - 基线过期需重跑 `jugg-init`：基线建立后若源码新增类/依赖（如新 commit），增量编译会因旧 classpath 缺符号报假错误，
   重跑 `jugg-init` 即可。
 
