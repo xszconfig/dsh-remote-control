@@ -959,6 +959,7 @@ class BridgeClient(
             is ServerEvent.CommandsUpdate -> handleCommandsUpdate(ev)
             is ServerEvent.ModelsUpdate -> handleModelsUpdate(ev)
             is ServerEvent.ContextUsage -> handleContextUsage(ev)
+            is ServerEvent.SkillsUpdate -> ConnLog.debug("SKILL", "技能目录（占位，App UI 子代理落状态）skills=${ev.skills.size}")
             is ServerEvent.DebugState -> handleDebugState(ev)
             is ServerEvent.DebugOutput -> handleDebugOutput(ev)
             is ServerEvent.DebugVariables -> handleDebugVariables(ev)

@@ -353,5 +353,32 @@ class ProtocolTest {
         assertEquals("gpt-4o", s.model)
         assertNull(s.reasoningEffort)
     }
+
+    @Test
+    fun decode_skills_update() {
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"skills_update","skills":[
+                {"name":"code-lint","description":"一键跑 lint 拿结构化结果"},
+                {"name":"dsh-restart","description":"重启本机 DSH 服务端","whenToUse":"用户说重启时"}]}""",
+        )
+        val s = assertIs<ServerEvent.SkillsUpdate>(ev)
+        assertEquals(2, s.skills.size)
+        assertEquals("code-lint", s.skills[0].name)
+        assertEquals("一键跑 lint 拿结构化结果", s.skills[0].description)
+        assertNull(s.skills[0].whenToUse)
+        assertEquals("重启本机 DSH 服务端", s.skills[1].description)
+        assertEquals("用户说重启时", s.skills[1].whenToUse)
+    }
+
+    @Test
+    fun decode_skills_update_empty() {
+        // 旧 bridge 无 skills_update 字段/空列表 → 空列表，客户端显示空态
+        val ev = BridgeJson.decodeFromString(
+            ServerEvent.serializer(),
+            """{"type":"skills_update","skills":[]}""",
+        )
+        assertEquals(emptyList(), assertIs<ServerEvent.SkillsUpdate>(ev).skills)
+    }
 }
 

@@ -1,6 +1,6 @@
 # 输入区改版（输入框 + 操作条）PRD
 
-> **一句话总结**：把会话底部输入区从「单行输入框 + 条件渲染的中断/发送按钮」改版为「上输入框、下操作条」两行结构；操作条从左到右常驻四项——**切换模型入口**（点开模型选择）、**上下文窗口环形进度**（占用百分比，点击弹分类 Token 明细）、**终止按钮**（始终存在，未运行灰色、运行中红色可点）、**发送按钮**（最右核心，输入非空即可点、发送后立即置灰）——对齐 DSH Web 的模型选择与上下文占用交互，把「当前用什么模型、上下文还剩多少」从桌面端专属能力下沉到手机遥控面。
+> **一句话总结**：把会话底部输入区重构为「**输入框撑满一整行 + 下方按钮行**」两行结构；输入框行内右侧内嵌**上下文窗口环形进度**（占用百分比，点击弹分类 Token 明细）；按钮行从左到右固定四项——**选择模型**、**查看技能**（新面板，浏览电脑端全部技能 + 可搜索）、**终止循环**（未运行置灰、运行中红色可点）、**发送消息**（最右核心，输入非空即可点、发送后自然置灰）——对齐 DSH Web 的模型选择 / 技能目录 / 上下文占用交互，把「当前用什么模型、电脑端有哪些技能、上下文还剩多少」从桌面端专属能力下沉到手机遥控面。
 
 ---
 
@@ -39,17 +39,19 @@
 
 | 术语 | 定义 |
 |---|---|
-| **操作条** | 输入框下方的一行横向工具条（新布局），四项从左到右：模型入口、上下文环、终止、发送 |
-| **agentRunning** | 现有终止/运行态判定信号：`sessions.firstOrNull{it.id==sessionId}?.status == "running" \|\| modelWaitingSince != null`（`App.kt` L1895–1896） |
-| **输入非空** | `input.trim().isNotEmpty()`（与现有发送 onClick 的空值判定一致，`App.kt` L1922–1923） |
+| **按钮行（操作条）** | 输入框下方的一行横向工具条，四项从左到右固定：选择模型、查看技能、终止循环、发送消息 |
+| **agentRunning** | 现有终止/运行态判定信号：`sessions.firstOrNull{it.id==sessionId}?.status == "running" \|\| modelWaitingSince != null`（`App.kt` 现 `Conversation.kt`） |
+| **输入非空** | `input.trim().isNotEmpty()`（与现有发送 onClick 的空值判定一致） |
 | **上下文占用百分比** | `projectedTokens / contextWindow × 100%`，向上 clamp 至 100%（对齐 Web `contextOccupancy()`） |
 | **当前模型** | 会话最近一次记录的选择（provider/model/reasoningEffort），无记录回退部署默认 |
+| **技能目录** | 电脑端 DSH 全部技能（`ctx.skills.list()` 全局层，name=kebab-case id + description + whenToUse） |
 
 ### 2.1 布局
 
-- **两行结构**：`Column` 包 `Row(输入框)` + `Row(操作条)`。输入框独占一行（`weight(1f)` 横排），操作条在其下方一行。
-- **操作条从左到右固定顺序**：① 切换模型入口 → ② 上下文窗口环形进度 → ③ 终止按钮 → ④ 发送按钮（最右）。
-- 现有输入框样式（`OutlinedTextField` 圆角 22dp、蓝边、`maxLines=4`、placeholder「发指令给DeepSeek Harness」）**保持不变**；仅把按钮从输入框行拆出到操作条行。
+- **两行结构**：`Column` 包 `输入框行` + `按钮行`。**输入框从左到右撑满一整行**（`fillMaxWidth`）；按钮行在其下方一行。
+- **上下文进度环落位**：输入框行内右侧（`OutlinedTextField` 的 `trailingIcon` 槽），小尺寸约 36dp，内嵌不占独立列；点击仍弹分类 Token 明细弹窗（见 2.3）。
+- **按钮行从左到右固定顺序**：① 选择模型 → ② 查看技能（新） → ③ 终止循环 → ④ 发送消息（最右）。
+- 输入框样式（`OutlinedTextField` 圆角 22dp、蓝边、`maxLines=4`、placeholder「发指令给DeepSeek Harness」）**保持不变**；仅按钮全部下沉到按钮行、上下文环移入输入框 trailingIcon。
 
 ### 2.2 切换模型入口
 
@@ -97,6 +99,15 @@
 
 - **现状差异标注**：现状发送按钮「始终可点、空输入点击 no-op」→ 改为「空输入置灰不可点」。这是交互变更（去掉无反馈的可点态），非逻辑冲突。
 
+### 2.6 技能面板（新功能）
+
+- **入口**：按钮行第 2 项「技能」按钮，点击弹出**半屏技能面板**（移动端优先）。
+- **数据面**：**服务端投影权威**（铁律 6）——bridge 连接即下发 `skills_update`（全量技能目录）+ `skills/change` 时增量广播；客户端**零本地枚举**、只渲染。wire `SkillWire { name, description, whenToUse? }`，`name` 即 DSH 的 kebab-case id（DSH 无独立显示名）。
+- **数据源调研结论（已拍板 #42）**：DSH 暴露**官方技能目录接口 `ctx.skills.list()`**（`@deepseek-ai/dsh-skill` 的 `SkillRegistry`），返回全部胜出 `SkillSummary`（name/description/whenToUse/invocation/source），按名排序——这正是 DSH Web 技能面板（`dsh-client-ui-skill` → `skill.list` RPC）所用；shipped `dsh-skill-filesystem` 读取 `~/.agents/skills/*/SKILL.md` frontmatter + 内置技能。**故无需「扫描本机技能目录」回退**，桥直接 `ctx.get('skills').list()` 即得「电脑端全部技能」，与 Web 一一对应。
+- **列表展示**：每项**技能名（加粗）+ 描述**（次要色）；`whenToUse` 有则附一行小字；**可搜索**（顶部搜索框按 name/description 过滤）；空列表/无匹配显示空态文案。
+- **范围**：仅浏览（只读），**不做技能调用**（技能调用仍走发送框的 `/技能名` 斜杠通道，与 Web composer 同链，本面板不承担）。
+- **实时性**：桌面端增删/改技能 → `skills/change` 失效通知 → bridge refetch `ctx.skills.list()` 全量广播 `skills_update` → 手机面板即时反映。
+
 ---
 
 ## 三、涉及产品改动
@@ -105,18 +116,19 @@
 
 | # | 改动 | 现状 → 目标 | 备注 |
 |---|---|---|---|
-| 1 | **输入区两行布局** | `Row(输入框 + 按钮)` 单行 → `Column(Row(输入框) + Row(操作条))` | `App.kt` `ConversationComposer` L1867–1941 |
-| 2 | **模型入口 + 选择弹窗（新增）** | 无 → 操作条第 1 项，弹窗选 provider/模型/effort，`set_model` 命令下发 | 数据源 = bridge 下发的 `models`（附录 C） |
-| 3 | **上下文环形进度 + 明细弹窗（新增）** | 无 → 操作条第 2 项，渲染 `contextUsage` 百分比，点开分类明细 | 数据源 = bridge 下发的 `contextUsage` |
-| 4 | **终止按钮常驻两态** | 仅 running 渲染红色圆钮 → 常驻；running 红可点 / 非 running 灰不可点 | `enabled = agentRunning`，信号复用 L1895 |
-| 5 | **发送按钮两态** | 始终可点（空输入 no-op）→ 非空可点、空/发送后置灰 | 置灰条件见 2.5 解 A |
-| 6 | **协议模型（Protocol.kt 新增 wire 类型）** | 无 → `ModelSelectionWire`/`ModelProviderGroupWire`/`ModelCatalogModelWire`/`ContextUsageWire` 等 + `models`/`context_usage` 事件 + `set_model` 命令 | 详见附录 C |
-| 7 | **状态字段（SessionUiState 新增）** | 无 → `models`（目录+当前+routable）、`contextUsage`（每会话） | `BridgeClient.kt` `SessionUiState` L118 |
+| 1 | **输入区两行布局（重构）** | `Column(Row(输入框+按钮) + 无)` → 输入框**撑满一整行**（`fillMaxWidth`）+ 下方按钮行四项 | `ConversationComposer` |
+| 2 | **模型入口 + 选择弹窗** | 无 → 按钮行第 1 项，弹窗选 provider/模型/effort，`set_model` 命令下发 | 数据源 = bridge `models`（附录 C） |
+| 3 | **上下文环形进度 + 明细弹窗** | 原操作条第 2 项 → **移入输入框 `trailingIcon`（行内右侧，约 36dp）**，渲染 `contextUsage.percent`，点开分类明细 | 数据源 = bridge `contextUsage` |
+| 4 | **技能面板（新增）** | 无 → 按钮行第 2 项「技能」，弹半屏面板浏览全部技能（name+description+whenToUse）+ 可搜索 | 数据源 = bridge `skills_update`（全局） |
+| 5 | **终止循环按钮常驻两态** | 仅 running 渲染红色圆钮 → 按钮行第 3 项常驻；running 红可点 / 非 running 灰不可点 | `enabled = agentRunning` |
+| 6 | **发送按钮两态** | 始终可点（空输入 no-op）→ 按钮行第 4 项（最右）；非空可点、空/发送后置灰 | 置灰条件见 2.5 解 A |
+| 7 | **协议模型（Protocol.kt 新增 wire 类型）** | 无 → `SessionModelsWire`/`ContextUsageWire`/`SkillWire` 等 + `models_update`/`context_usage`/`skills_update` 事件 + `set_model` 命令 | 详见附录 C |
+| 8 | **状态字段（SessionUiState 新增）** | 无 → `models`/`contextUsage`（每会话）、`skills`（全局） | `BridgeClient.kt` `SessionUiState` |
 
 ### 3.2 Bridge（dsh-remote-control-bridge）
 
-- **必改**：新增下发 `models`（模型目录 + 当前选择 + routable）与 `contextUsage`（占用总量 + 分类 + 占比），新增接收 `set_model` 命令（详见附录 C）。桥侧已具备全部前置（已读 `sessionProjections` 快照、已挂 `installModelSelection`，仅差「可变选择 ref + 目录读取 + set_model 路由」）。
-- **版本**：`BRIDGE_VERSION` 0.13.0 → 0.14.0（新增消息），协议向后兼容（见附录 C 兼容策略）。
+- **必改**：新增下发 `models`（模型目录 + 当前选择 + routable）、`contextUsage`（占用总量 + 分类 + 占比）、`skills_update`（全部技能目录，`ctx.skills.list()` 官方接口 + `skills/change` 增量广播），新增接收 `set_model` 命令（详见附录 C）。
+- **版本**：`BRIDGE_VERSION` 0.16.0 → 0.17.0（新增 `skills_update`），协议向后兼容（见附录 C 兼容策略）。
 
 ---
 
@@ -351,6 +363,23 @@ export interface CmdSetModel {
 - **bridge 处理**：`resolveCallConfig` 校验 → 写 per-agent 可变 selection ref（`WeakMap`）→ 回 `models_update`（含新 current）给手机端确认。**已拍板：不调用 `saveDefaultModelSelection`（仅当前会话生效，不存默认）**。
 - **响应/错误**：失败复用现有 `{ type:'error', code:'model_unavailable', message }`；成功以 `models_update`（current 更新）体现（对齐「服务端投影为准」），**不新增专用 ack 类型**（保持协议瘦）。
 
+### C.5 下发：`skills_update`（全部技能目录）
+
+```ts
+export interface SkillWire {
+  name: string        // kebab-case id（DSH SkillSummary.name，无独立显示名）
+  description: string
+  whenToUse?: string  // 可选额外路由指引
+}
+export interface EvSkillsUpdate {
+  type: 'skills_update'
+  skills: SkillWire[]  // 全局全部技能（ctx.skills.list()），无 sessionId
+}
+```
+
+- **数据源**：`ctx.get('skills').list()`（`@deepseek-ai/dsh-skill` 官方 SkillRegistry，对齐 Web `skill.list` RPC），全局层全部技能按名排序；`name` 即 id。
+- **携带位置/触发**：连接即下发（随 `hello`/`server_boot` 之后）+ 订阅 `skills/change` 失效通知 → refetch 全量广播（桌面端增删技能实时反映）。无 `skills` 服务（headless 部署）→ 空数组，客户端显示空态。
+
 ---
 
-*（本 PRD 事实依据均来自已读代码与 DSH 包源码，未臆造新事实；两处产品取舍已由用户拍板——2.5 发送置灰 = 解 A 自然置灰、2.2 模型切换 = 仅当前会话不存默认——已回填至正文。）*
+*（本 PRD 事实依据均来自已读代码与 DSH 包源码，未臆造新事实；产品取舍已由用户拍板——2.5 发送置灰 = 解 A 自然置灰、2.2 模型切换 = 仅当前会话不存默认、#42 技能面板数据面 = `ctx.skills.list()` 官方接口无回退——已回填至正文。）*

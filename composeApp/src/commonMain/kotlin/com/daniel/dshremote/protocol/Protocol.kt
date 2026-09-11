@@ -387,6 +387,14 @@ data class ContextUsageWire(
     val breakdown: ContextBreakdownWire? = null,
 )
 
+/** 技能目录条目（对齐 DSH `ctx.skills.list()` 的 SkillSummary）：name 即 kebab-case id，DSH 无独立显示名。 */
+@Serializable
+data class SkillWire(
+    val name: String,
+    val description: String,
+    val whenToUse: String? = null,
+)
+
 // ---- 结果交付通知（服务端补投递，0.15.0；对齐 bridge protocol.ts）----
 
 /** 单条结果交付通知（服务端权威幂等键 (sessionId, turnKey)，重连补发不丢）。 */
@@ -563,6 +571,11 @@ sealed interface ServerEvent {
     @Serializable
     @SerialName("context_usage")
     data class ContextUsage(val sessionId: String, val usage: ContextUsageWire) : ServerEvent
+
+    /** 技能目录全量推送（全部技能，含 name/description/whenToUse；skills/change 或订阅时下发）。 */
+    @Serializable
+    @SerialName("skills_update")
+    data class SkillsUpdate(val skills: List<SkillWire> = emptyList()) : ServerEvent
 
     /** 调试断点（1-based 行号）。 */
     @Serializable
