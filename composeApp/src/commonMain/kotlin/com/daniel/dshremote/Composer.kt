@@ -154,7 +154,7 @@ internal fun ConversationComposer(
                     ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-lost", 500) { "输入框失去焦点 sessionId=$sessionId" }
                 }
             },
-            placeholder = { Text("发指令给DeepSeek Harness") },
+            placeholder = { Text("给智能体发消息") },
             shape = RoundedCornerShape(22.dp),
             maxLines = 4,
             // 键盘发送：非空时回车/换行键变为「发送」，点击触发与下方发送按钮相同的 onSend 流程；
