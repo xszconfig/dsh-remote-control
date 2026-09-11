@@ -278,3 +278,24 @@ keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer �
 ### 收尾确认
 
 keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅；代码未提交。
+
+## 审批/提问「自服务回答」验证（手机端自动作答，无需人工）
+
+> 用户指出：提问/审批可以直接在手机端自服务回答（找到输入框/选项，自己点一下），无需人工介入。本代理验证了完整链路。
+
+### 流程与结论
+
+| 步骤 | 实测 |
+|------|------|
+| 触发 | `ask_user_question`（带 2 个选项）→ 服务端生成待回答提问 rpc=8c77c992 |
+| 手机端弹窗 | 手机自动弹出「等待回答」半屏弹窗（QuestionSheet），含选项行（◉/○）+「提交」 |
+| 自服务作答 | 后台 adb 脚本轮询 dump → 检测到弹窗 → 点选第一个选项「选项A」→ 点「提交」（无需人工） |
+| 回传 | phone-logs：`提交提问答案 answers=1` → `已发送 answer_question` → `提问已解决 outcome=answered` |
+| 结果 | `ask_user_question` 返回 `selected:["选项A"]`（手机端作答答案回传桌面端 Agent） |
+
+**结论**：审批/提问可在手机端自服务回答，全程无需人工介入。上批「审批/提问未显式触发」的诚实标注在此闭环。
+
+### 说明
+
+- 提问通知（presence=BACKGROUND/OTHER_SESSION）也随弹窗同时触发，通知 + 弹窗双通道。
+- 后台脚本 `/tmp/answer-question.sh`：轮询 dump → 点选首个选项 → 点「提交」，可复用于后续审批/提问回归。
