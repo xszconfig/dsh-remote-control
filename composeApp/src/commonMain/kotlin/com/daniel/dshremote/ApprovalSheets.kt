@@ -76,19 +76,22 @@ internal fun ApprovalSheet(
     }
 }
 
-/** 审批弹窗警示条（镜像桌面端「等待审批」strip）。 */
+/** 审批/提问警示条共享骨架：徽章 + 标题 + 排队计数（徽章/文案参数化，两处渲染逐像素一致）。 */
 @Composable
-internal fun ApprovalDragHandle(queueCount: Int) {
+private fun DragHandleShell(
+    icon: @Composable () -> Unit,
+    title: String,
+    countLabel: String,
+    queueCount: Int,
+) {
     Row(
         Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier.size(9.dp).clip(CircleShape).background(StatusAmber),
-        )
+        icon()
         Spacer(Modifier.width(8.dp))
         Text(
-            "等待审批",
+            title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             color = StatusAmber,
@@ -96,7 +99,7 @@ internal fun ApprovalDragHandle(queueCount: Int) {
         )
         if (queueCount > 1) {
             Text(
-                "还有 ${queueCount - 1} 个待审批",
+                "还有 ${queueCount - 1} 个$countLabel",
                 style = MaterialTheme.typography.labelSmall,
                 color = StatusAmber,
                 modifier = Modifier
@@ -106,6 +109,17 @@ internal fun ApprovalDragHandle(queueCount: Int) {
             )
         }
     }
+}
+
+/** 审批弹窗警示条（镜像桌面端「等待审批」strip）。 */
+@Composable
+internal fun ApprovalDragHandle(queueCount: Int) {
+    DragHandleShell(
+        icon = { Box(Modifier.size(9.dp).clip(CircleShape).background(StatusAmber)) },
+        title = "等待审批",
+        countLabel = "待审批",
+        queueCount = queueCount,
+    )
 }
 
 /** 审批弹窗正文：会话上下文 / 主文案 / 工具徽章 / 命令文本 / 裁决按钮。 */
@@ -302,31 +316,12 @@ internal fun QuestionSheet(
 /** 提问弹窗警示条（镜像审批「等待审批」strip）。 */
 @Composable
 internal fun QuestionDragHandle(queueCount: Int) {
-    Row(
-        Modifier.fillMaxWidth().background(StatusAmber.copy(alpha = 0.16f)).padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("💬", fontSize = 14.sp)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "等待回答",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = StatusAmber,
-            modifier = Modifier.weight(1f),
-        )
-        if (queueCount > 1) {
-            Text(
-                "还有 ${queueCount - 1} 个待回答",
-                style = MaterialTheme.typography.labelSmall,
-                color = StatusAmber,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(StatusAmber.copy(alpha = 0.18f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-        }
-    }
+    DragHandleShell(
+        icon = { Text("💬", fontSize = 14.sp) },
+        title = "等待回答",
+        countLabel = "待回答",
+        queueCount = queueCount,
+    )
 }
 
 /** 单个提问：header / question / detail / options（label + description）或自由文本输入。 */
