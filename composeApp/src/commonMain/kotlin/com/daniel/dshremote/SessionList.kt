@@ -54,6 +54,9 @@ internal fun SessionList(client: BridgeClient, state: SessionUiState) {
             else -> s.workspaceId == selected
         }
     }
+    // 每个会话的后代总数（含孙代，沿 parentSessionId 链递归累加，铁律 6 服务端投影）；
+    // 一次性算好，卡片徽标只查表，避免在 LazyColumn 逐项 O(n) 重复建树。
+    val descendants = remember(state.sessions) { descendantCounts(state.sessions) }
     val title = when (selected) {
         null -> "全部会话"
         UNGROUPED_KEY -> "未分组"
@@ -89,8 +92,9 @@ internal fun SessionList(client: BridgeClient, state: SessionUiState) {
                         // 已进入某个工作区时不再显示 cwd——上下文已明确
                         showWorkspace = selected == null && s.workspaceId != null,
                         workspaceTitle = state.workspaces.firstOrNull { it.id == s.workspaceId }?.title,
-                        // 挂载的子代理数（含冷会话），与服务端 live 计数无关
-                        subagentCount = state.sessions.count { it.parentSessionId == s.id },
+                        // 挂载的子代理后代总数（含孙代，对齐 DSH Web 的 🤖N 语义），
+                        // 与服务端 live 计数无关
+                        subagentCount = descendants[s.id] ?: 0,
                         queuedCount = state.queuedCounts[s.id] ?: 0,
                         onClick = { ConnLog.info("ACTION", "会话点击 id=${s.id} 标题=${sessionName(s)}"); client.openSession(s.id) },
                         onInterrupt = { mode -> client.interrupt(s.id, mode) },

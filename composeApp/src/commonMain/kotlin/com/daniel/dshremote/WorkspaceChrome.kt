@@ -1,6 +1,7 @@
 package com.daniel.dshremote
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,7 +17,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -213,17 +213,23 @@ internal fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> U
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            // 子代理入口（右上角）：主会话挂载的子代理下拉列表
-            if (session != null && session.parentSessionId == null) {
-                val subagents = state.sessions.filter { it.parentSessionId == session.id }
-                if (subagents.isNotEmpty()) {
+            // 子代理入口（右上角）：当前会话（主会话或子代理会话）的后代树，对齐 DSH Web 嵌套浏览。
+            // 全量会话已由 hello 下发（parentSessionId = 直接父），客户端按 parentSessionId 归组建树，
+            // 展开/折叠是 UI 本地状态、零请求（铁律 6：数据以服务端投影为准）。
+            if (session != null) {
+                val childrenByParent = remember(state.sessions) { childrenByParent(state.sessions) }
+                val counts = remember(state.sessions) { descendantCounts(state.sessions) }
+                val totalDescendants = counts[session.id] ?: 0
+                if (totalDescendants > 0) {
                     var subagentMenuOpen by remember { mutableStateOf(false) }
+                    // 展开态随当前会话变化重置（键控 session.id），避免跨会话串树
+                    var expandedIds by remember(session.id) { mutableStateOf(setOf<String>()) }
                     Box {
                         TextButton(onClick = {
-                            ConnLog.info("ACTION", "子代理下拉打开 parentId=${session.id} 子代理数=${subagents.size}")
+                            ConnLog.info("ACTION", "子代理下拉打开 parentId=${session.id} 后代数=$totalDescendants")
                             subagentMenuOpen = true
                         }) {
-                            Text("🤖${subagents.size}", fontWeight = FontWeight.SemiBold)
+                            Text("🤖$totalDescendants", fontWeight = FontWeight.SemiBold)
                         }
                         DropdownMenu(
                             expanded = subagentMenuOpen,
@@ -238,31 +244,34 @@ internal fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> U
                             // 最多同时展示 10 条，超过则列表内上下滚动（高度上限 + 滚动）。
                             // 注意：不能用 LazyColumn——DropdownMenu 内容区以 width(IntrinsicSize.Max)
                             // 做固有尺寸测量，LazyColumn 是 SubcomposeLayout，固有测量会抛
-                            // IllegalStateException；26 条以内用非懒布局无性能问题。
+                            // IllegalStateException；嵌套树用 DFS 预展平为单层列表渲染，任意深度。
+                            val nodes = flattenSubagentTree(session.id, childrenByParent, counts, expandedIds)
                             Column(
                                 modifier = Modifier
                                     .heightIn(max = SUBAGENT_MENU_MAX_HEIGHT)
                                     .verticalScroll(rememberScrollState()),
                             ) {
-                                subagents.forEach { sub ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Column {
-                                                Text(
-                                                    sessionName(sub),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                )
-                                                // 副标题：状态标志 + 元信息（最后消息时间 / 运行时长 / token），
-                                                // 各段用 · 分隔；过长可换行成多段（服务端投影为准，客户端不做推算）。
-                                                SubagentSubtitle(sub)
-                                            }
+                                if (nodes.isEmpty()) {
+                                    Text(
+                                        "暂无子代理",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                    )
+                                }
+                                nodes.forEach { node ->
+                                    SubagentNodeRow(
+                                        node = node,
+                                        expanded = node.session.id in expandedIds,
+                                        onToggle = {
+                                            val willExpand = node.session.id !in expandedIds
+                                            expandedIds = if (willExpand) expandedIds + node.session.id else expandedIds - node.session.id
+                                            ConnLog.info("ACTION", "子代理展开切换 id=${node.session.id} 展开=$willExpand")
                                         },
-                                        onClick = {
+                                        onOpen = {
                                             subagentMenuOpen = false
-                                            ConnLog.info("ACTION", "子代理点击 subagentId=${sub.id} parentId=${session.id}")
-                                            client.openSubagent(sub.id)
+                                            ConnLog.info("ACTION", "子代理点击 subagentId=${node.session.id} parentId=${session.id}")
+                                            client.openSubagent(node.session.id)
                                         },
                                     )
                                 }
@@ -275,4 +284,59 @@ internal fun TopBar(client: BridgeClient, state: SessionUiState, onMenu: () -> U
         }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/**
+ * 嵌套树单行：缩进（depth 层级）+ 展开箭头（仅「有后代」的节点显示，点击切换展开/折叠）
+ * + 会话名/副标题 + 后代计数。点击行主体打开该子代理；箭头是独立热区，不会误触打开。
+ */
+@Composable
+private fun SubagentNodeRow(
+    node: SubagentNode,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onOpen: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(start = (4 + node.depth * 16).dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 展开箭头区：固定 24dp 占位，保证各层级名称左对齐；无后代时留白。
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .then(if (node.hasChildren) Modifier.clickable(onClick = onToggle) else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (node.hasChildren) {
+                Text(
+                    if (expanded) "▾" else "▸",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                sessionName(node.session),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            // 副标题：状态标志 + 元信息（最后消息时间 / 运行时长 / token），
+            // 各段用 · 分隔；过长可换行成多段（服务端投影为准，客户端不做推算）。
+            SubagentSubtitle(node.session)
+        }
+        if (node.hasChildren) {
+            Text(
+                "🤖${node.descendantCount}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+    }
 }
