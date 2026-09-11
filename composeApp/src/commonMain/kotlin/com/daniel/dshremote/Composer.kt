@@ -103,6 +103,8 @@ internal fun ConversationComposer(
     }
     // 终止/运行态信号复用现状（PRD 2.0 术语 agentRunning）：不新增信号源。
     val agentRunning = isAgentRunning(state.sessions, sessionId, state.modelWaitingSince)
+    // 子会话只继承主会话模型，不提供切换（模型入口 readOnly，不显示 ▾、不可点开）。
+    val isSubagent = state.sessions.firstOrNull { it.id == sessionId }?.parentSessionId != null
     // 发送可点 = 输入非空；发送点击后立即清空输入框 → 自然置灰（PRD 2.5 解 A，不新增提交锁）。
     val canSend = input.trim().isNotEmpty()
 
@@ -169,13 +171,15 @@ internal fun ConversationComposer(
         )
         Spacer(Modifier.height(6.dp))
         // 下：操作条（从左到右固定顺序：模型入口 → 上下文环 → 终止 → 发送）。
+        // 高度 48dp 与终止/发送 48dp 圆钮一致；不要加 padding(bottom)——会把按钮压成 42dp 高椭圆。
         Row(
-            Modifier.fillMaxWidth().height(48.dp).padding(bottom = 6.dp),
+            Modifier.fillMaxWidth().height(48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ① 切换模型入口
+            // ① 切换模型入口（子会话 readOnly：只展示继承模型，不可点开）
             ModelEntry(
-                label = modelEntryLabel(state.models),
+                parts = modelEntryParts(state.models),
+                readOnly = isSubagent,
                 onClick = {
                     ConnLog.info("MODEL", "模型入口点击 sessionId=$sessionId placeholder=${state.models?.current == null}")
                     showModelSheet = true
@@ -308,25 +312,37 @@ internal fun ComposerEntryChip(label: String, onClick: () -> Unit, modifier: Mod
     }
 }
 
-/** 操作条① 模型入口：当前模型短标签（无则「选择模型」占位）+ 切换指示，≥40dp 触达。 */
+/** 操作条① 模型入口：模型显示名（可截断）+ 推理强度（固定恒显，不被挤压）+ 切换指示，≥40dp 触达。
+ * [readOnly]（子会话）：只展示继承自主会话的模型，不可点开切换（不显示 ▾、clickable 置 disabled）。 */
 @Composable
-internal fun ModelEntry(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ModelEntry(parts: ModelEntryParts, readOnly: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
-        onClick = onClick,
-        modifier = modifier.height(40.dp),
+        modifier = modifier.height(40.dp).clickable(enabled = !readOnly, onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
     ) {
-        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                label,
+                parts.name,
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                // 模型名占剩余空间、可截断；强度与「▾」固定恒显，不再出现「· Max」被挤成三个点。
                 modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(4.dp))
-            Text("▾", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (parts.effort != null) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "· ${parts.effort}",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
+            if (!readOnly) {
+                Spacer(Modifier.width(4.dp))
+                Text("▾", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

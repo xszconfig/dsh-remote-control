@@ -248,3 +248,33 @@ keepawake off 成功（status：timeout=300000、stayon=0、备份=无）✅；�
 ### 收尾确认
 
 keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅；代码未提交（本代理只改 Composer.kt，待主对话决定是否 commit）。
+
+## 输入区操作条修复（模型入口 Max 恒显 + 终止/发送正圆 + 子会话只读）
+
+> 用户反馈：①「推力强度 Max」被挤成三个小点；② 终止/发送按钮仍是椭圆；③ 模型选择只留主会话、子会话继承（readOnly）。执行代理直接改 Composer.kt + InputBarLogic.kt 并复验。
+
+### 修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 「· Max」被挤成 `...` | 模型名+强度拼成单串、`weight(1f)`+`Ellipsis` 整串截断，长模型名时强度被截 | `modelEntryParts` 拆出「模型名 + 强度」，入口渲染：模型名可截断 + 「· Max」固定恒显 |
+| 终止/发送按钮椭圆 | 操作条 Row `height(48.dp).padding(bottom=6.dp)` 把 48dp 按钮压成 42dp 高椭圆 | 移除 Row 的 `padding(bottom=6.dp)`，按钮恢复 48×48 正圆 |
+| 子会话模型入口可点开 | 入口无条件 `onClick` | 加 `isSubagent`（parentSessionId!=null）→ `ModelEntry(readOnly=true)`：`clickable(enabled=false)` + 隐藏「▾」 |
+
+- lint：`detektP0` 全绿；`assembleRelease-in-house` BUILD SUCCESSFUL（DEX max=39 无告警）。冒烟 PASS；crash buffer 无 FATAL。
+- 复验：主会话入口「DeepSeek-V4-Pro」+「· Max」分行恒显、按钮 162×162px=48dp 正圆；子会话入口「选择模型」只读（无 ▾、不可点）。截图 27/28 存证。
+
+### 已知遗留（待主对话/通知域）
+
+- 子会话模型入口显示「选择模型」占位（`state.models` 仅主会话有），未展示「继承自主会话的模型名」——服务端继承已生效（子代理用父会话模型），客户端展示父模型名需数据下沉，未在本轮做。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 主会话模型入口 Max 恒显 + 正圆按钮 | [27-modelentry-max-circle.jpg](../screenshots/2026-09-10-batch-reverify/27-modelentry-max-circle.jpg) |
+| 子会话模型入口只读（无 ▾） | [28-subagent-model-readonly.jpg](../screenshots/2026-09-10-batch-reverify/28-subagent-model-readonly.jpg) |
+
+### 收尾确认
+
+keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅；代码未提交。
