@@ -16,7 +16,7 @@ P0 = 「超大函数 / 类过大 / 超长参数列表」等高风险项，**任�
 | 规则（detekt id） | 含义 | 起步阈值 | 目标值 | 收紧方式 |
 | --- | --- | --- | --- | --- |
 | `complexity/LongMethod` | 超大函数 | 200 行 | 60 行 | 按季度下调（200→120→80→60） |
-| `complexity/LargeClass` | 类过大 | 1200 行 | 600 行 | 拆分 `BridgeClient` 等大类后下调 |
+| `complexity/LargeClass` | 类过大 | 1200 行 | **600 行（2026-09-10 已收紧）** | 拆分 `BridgeClient` 等大类后下调 |
 | `complexity/LongParameterList` | 超长参数列表 | 函数 10 / 构造器 10 | 函数 6 / 构造器 7 | 参数对象化后下调 |
 
 ### 为什么起步阈值这么宽
@@ -26,7 +26,7 @@ P0 = 「超大函数 / 类过大 / 超长参数列表」等高风险项，**任�
 
 ## 收紧路径（roadmap）
 
-1. **拆大类**：`BridgeClient`（~1091 行）按职责拆成连接/会话/事件投影等模块 → `LargeClass` 阈值下调到 600。
+1. **拆大类（✅ 已完成 2026-09-10）**：`BridgeClient`（~1500 行类体）按职责拆成连接/会话/发送/事件投影/审批交互 5 个扩展函数文件（主类收敛到 174 行）→ `LargeClass` 阈值已从 1200 下调到 600，`detektP0` 99 文件 0 命中。
 2. **拆长函数**：对 `detekt` 全量报告中 `LongMethod` 命中的函数逐个拆分 → `LongMethod` 阈值下调到 60。
 3. **参数对象化**：把 6+ 参数的 Compose 函数改成 data class 入参 → `LongParameterList` 阈值下调到 6/7。
 4. **扩充 P0 集**：稳定后把 `complexity/CyclomaticComplexMethod`、`complexity/NestedBlockDepth` 等纳入 P0。

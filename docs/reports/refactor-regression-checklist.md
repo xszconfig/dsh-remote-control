@@ -62,6 +62,21 @@
 
 ---
 
+## BridgeClient 类体拆分后主流程（phase2，refactor/arch-split-phase2）
+
+> BridgeClient 类体按职责下沉为 5 个扩展函数文件（Connect/Session/Send/Events/Interactions），主类仅保留字段+init。以下主流程逐条目验，确保下沉后语义原样。
+
+- [ ] **连接/断开/重连**：扫码连接、手动连接、冷启动自动连接、多设备切换、断开后凭据有效则自动重连（指数退避）、凭据失效熔断——全部与拆分前一致。
+- [ ] **会话打开/关闭/子代理导航**：点会话打开、关闭退回列表、子代理下钻压栈/返回弹栈、通知直达打开会话、草稿持久化——语义原样。
+- [ ] **发送/重发/中断/模型切换**：消息乐观上屏+ack、失败红❗重发（同 msgId 幂等）、中断二选一、切换模型、翻页加载历史——语义原样。
+- [ ] **事件投影**：hello 对账（会话增删改/审批/提问快照重建）、历史/事件/排队/模型等待/深度潜水/调试/诊断/skills 更新——会话级隔离与清空语义原样。
+- [ ] **审批/提问/交付通知**：审批裁决（bridge-held vs mux answer_approval）、提问提交、delivery_notice 去重消费 + confirm_delivery、goal 终态主动通知——语义原样。
+- [ ] **设备注册/撤销/错误处理**：DeviceRegistered 拿到长期 token 后可自动重连、DeviceRevoked 移除设备、服务端错误码分类（鉴权熔断/审批竞争清理/队列操作刷新）——语义原样。
+- [ ] **FGS/KeepAlive 三路 combine**：会话投影+连接态+前台态 → running 代理计数 → 前台服务启停——语义原样。
+
+---
+
 ## 说明
 - 本清单只做**行为目验**；纯结构拆分的正确性已由「编译 + 单测 + detektP0 + assembleDebug + DEX registers 门禁」在 commit 级验证（见实施记录 `docs/reports/refactor-implementation.md`）。
-- 任何一条目验失败 → 视为回归，回退 `refactor/arch-split` 对应 commit。
+- phase2 拆分行级多集 diff：BridgeClient 类体 1370 非空行 before==after，0 增删改；DragHandle 合一为参数化（渲染逐像素一致）。
+- 任何一条目验失败 → 视为回归，回退对应分支 commit（phase1 `refactor/arch-split` / phase2 `refactor/arch-split-phase2`）。
