@@ -60,7 +60,23 @@ JUGG_DEVICE=100.71.236.18:5555 JUGG_PACKAGE=com.daniel.dshremote.debug \
 - **HTTP**（daemon 内）：
   - `GET  /health` → `{"status":"ready","baseline":"..."}`
   - `POST /compile`，body `{"files":["/abs/App.kt"]}` → 编译结果 JSON。
-  - `POST /apply`，body `{"files":["/abs/App.kt"],"deviceSerial":"...","packageName":"com.daniel.dshremote.debug"}` → 三段计时 JSON。
+  - `POST /apply`，body `{"files":["/abs/App.kt"],"deviceSerial":"...","packageName":"com.daniel.dshremote.debug"}` → 五段计时 JSON（compile/mergeDex/classify/apply/restart）。
+
+## 热应用三通道路由（第二阶段）
+
+`/apply` 按改动类别自动路由（`routeChannel` 纯函数，Jugg `ClassNodeComparator.isCanHotReload` 判定）：
+
+| 通道 | 改动类别 | 应用方式 | 是否重启 |
+|---|---|---|---|
+| **A**（`A_JVMIT_HOT_RELOAD`） | 纯方法体（类结构未变） | overlay dex 写入 + `JuggJvmtiAgentManager` `am attach-agent` → JVMTI `RedefineClasses` | **否** |
+| **C**（`C_OVERLAY_RESTART`） | 结构性（签名/新类/字段/Compose 大改） | overlay dex 写入 + `am force-stop/start` | 是 |
+| **D**（`D_RESOURCE_OVERLAY`） | 仅资源/asset | 资源 overlay 写入 + 重启 | 是 |
+
+> **A 通道状态（诚实）**：实现已完成（分类判定 + agent push + attach-agent + fallback C），单测通过；
+> 但端到端「不重启生效」在真机（华为 HBN-AL00）与模拟器（emulator-5556）实测中**未稳定复现**——根因是
+> `am attach-agent` 要求目标进程运行中，而分类阶段（首次 33s 编译 + 影响扩散）期间 app 进程被系统回收，
+> attach 时报 `Unknown process`，故自动 fallback C（重启加载 overlay，代码仍生效）。A 通道「不重启」需在
+> 「编译耗时 < app 保活窗口」时才有收益，后续可优化为「attach 前先 am start 拉起 app 再立即 attach」。
 
 ## 输出契约
 
