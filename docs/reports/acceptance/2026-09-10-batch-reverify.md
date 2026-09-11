@@ -57,3 +57,98 @@
 
 - 截图：`docs/screenshots/2026-09-10-batch-reverify/03-queue-collapsed.jpg`
 - UI dump（断连前）：`adb -s 100.71.236.18:5555 shell uiautomator dump` → `⏳ 排队中的消息（3）` + `展开 ▼`
+
+## 统一装机验收批次（双包 + 输入区 6 项 + FGS + 你标签 + 转盘深色 + Deep Diving）
+
+> 执行代理：真机验收专项代理。首选 LAN `192.168.3.84:5555`，**中途 LAN 掉线**（offline / No route to host），已回退 Tailscale `100.71.236.18:5555` 完成收尾。桥 coreVersion 0.17.0。main HEAD `2643625`。锁屏密码用技能脚本留存密码（用户已授权）两次装机一次成功。本代理未改源码、未建 worktree、未提交。
+
+### 装机（双包）
+
+| 包 | 包名 | lastUpdateTime | 结果 |
+|----|------|----------------|------|
+| release-in-house | com.daniel.dshremote | 2026-09-11 22:42:50 | ✅ Success |
+| debug | com.daniel.dshremote.debug | 2026-09-11 22:44:20 | ✅ Success |
+
+双包并存：`pm list packages` 同时返回两包 ✅。冒烟 P00（release-in-house）三关 PASS ✅。
+
+### 验收表
+
+| # | 验收项 | 预期 | 实测 | 结论 |
+|---|--------|------|------|------|
+| 1 | 双包装机 + 并存 | 两包装好、pm list 都在 | 两包 Success，双包并存 | ✅ PASS |
+| 2 | 冒烟 P00 | 存活≥5s、无 FATAL | 三关全 PASS（pid=15784） | ✅ PASS |
+| 3a | 技能 chip→半屏面板 | 搜索+列表+空态（桥 skills_update） | 半屏 Sheet + 搜索框 + 列表；搜 `vis`→vision-skills、`zzzznomatch`→「没有匹配的技能」 | ✅ PASS |
+| 3b | 输入框撑满 + 回车 | 撑满；非空回车=发送、空态=换行 | 输入框全宽 `[41,2462][1219,2662]`；非空=Send / 空=Default（代码级）；真机 `keyevent 66` 为硬件回车插入换行，非软键盘 Send 键 | ⚠️ 回车=代码级 |
+| 3c | 按钮行顺序+正圆 | ①模型②上下文③终止④发送；终止/发送正圆 | 顺序确认；终止+发送 162×162=48dp 圆钮 | ✅ PASS |
+| 3d | 置灰两态 | 终止=红/灰、发送=空/非空 | 终止 `enabled=false`（idle 灰）、发送空 `enabled=false`→输入 `test` 后 `enabled=true`；红态=代码级（containerColor=error） | ✅ PASS（灰态实测+红态代码级） |
+| 3e | 模型入口+两档面板 | 「显示名 · 强度名」；模型+强度两档，服务端拉取 | 入口「DeepSeek-V4-Pro · Max」；provider→模型→推理档位（Off/Low/High/Max/不指定）；phone-logs `模型目录快照 groups=2` | ✅ PASS |
+| 3f | 上下文弹层 | 大百分比+已用/总量+三色分段+三行图例 | 「39%」+「~389.7K / 1M」+ 图例（系统提示词 ~1.9K / 工具 ~8.3K / 对话消息 ~266.6K） | ✅ PASS |
+| 4 | 排队面板 ②③ | 只用户消息、顺序一致 | 代码+单测已验（见上「排队面板」小节）；真机未稳定触发 | ⚠️ 代码级+单测 |
+| 5 | FGS 通知 | 运行→「N 主 · M 子」+ 设置页后台保活 | 设置页「后台保活」小节+电池按钮 ✅；**FGS 通知未触发**（2 子代理运行中无 dsh_keepalive） | ❌ FAIL（见问题1） |
+| 6 | 「你」标签 | 发送→右上「你」+时间戳 | 发送 `[mu-yan] do-not-process` 后右上「刚刚」+「你」同屏（中文【目验】无法 adb 输入，ASCII 替代） | ✅ PASS |
+| 7 | 转盘深色 | 深色转盘收起钮+跳底同屏 | 深色（avg RGB 31/40/54）转盘+跳底同屏截图 `10-dial-dark.jpg` | ✅ PASS |
+| 8 | Deep Diving 文案 | 运行会话纯时长（无「本轮」） | 代码 `DeepDivingBar`「只显示时长，不含『本轮』」；真机运行窗口短未稳定捕获 | ⚠️ 代码级 |
+
+### 发现的问题
+
+**问题 1（FAIL，需路由）FGS 前台服务不启动**：验收期间 2 个子代理运行（「真机验收全流程」「客户端行为日志埋点实现」），但无 `dsh_keepalive` 通知/服务/日志。佐证：同期 `delivery_notice` 日志均 `presence=BACKGROUND`（本代理正前台操作）。根因假设：`AppForeground.foreground` 初始 false + ProcessLifecycleOwner 观察者注册时序未回填当前前台态 → `decideFgsAction` 因 `foreground=false` 返回 NOOP（且 `combine(_session, connection.info)` 缺前台/后台转场触发）。路由「通知/保活」域排查。
+
+**问题 2（环境）LAN adb 通道中途掉线**：`192.168.3.84:5555` 变 offline/No route to host，已回退 Tailscale 完成收尾，keepawake 经 Tailscale 恢复（timeout 300000ms、stayon=0）。
+
+**问题 3（观察）技能面板仅 1 个技能**：列表只显示 `vision-skills`，可能 `skills_update` 只广播 1 个或面板未完整渲染。
+
+**问题 4（低优先级）设备名陈旧**：侧边栏显示 `MacBook-Air-119.local`，服务端曾回报 `MacBook-Air-M2.local`（宿主名变更后缓存未更新）。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 冷启动 | [01-coldstart.jpg](../screenshots/2026-09-10-batch-reverify/01-coldstart.jpg) |
+| 3b/c/d 输入区空闲态 | [02-input-idle.jpg](../screenshots/2026-09-10-batch-reverify/02-input-idle.jpg) |
+| 3a 技能面板 | [03-skill-panel.jpg](../screenshots/2026-09-10-batch-reverify/03-skill-panel.jpg) |
+| 3a 技能空态 | [04-skill-empty.png](../screenshots/2026-09-10-batch-reverify/04-skill-empty.png) |
+| 3e 模型面板（目录层） | [05-model-panel.jpg](../screenshots/2026-09-10-batch-reverify/05-model-panel.jpg) |
+| 3e 模型面板（档位层） | [06-model-effort.jpg](../screenshots/2026-09-10-batch-reverify/06-model-effort.jpg) |
+| 3f 上下文弹层 | [07-context.jpg](../screenshots/2026-09-10-batch-reverify/07-context.jpg) |
+| 6 「你」标签 | [08-you-label.jpg](../screenshots/2026-09-10-batch-reverify/08-you-label.jpg) |
+| 5 设置页后台保活 | [09-settings-keepalive.jpg](../screenshots/2026-09-10-batch-reverify/09-settings-keepalive.jpg) |
+| 7 转盘深色 | [10-dial-dark.jpg](../screenshots/2026-09-10-batch-reverify/10-dial-dark.jpg) |
+| 8 Deep Diving（运行态尝试） | [11-running-deepdiving.jpg](../screenshots/2026-09-10-batch-reverify/11-running-deepdiving.jpg) |
+
+### 收尾确认
+
+主题恢复「跟随系统」✅；keepawake 恢复（timeout 300000、stayon=0）✅；测试消息已 ack 归服务端（未清理）✅；全程 crash buffer 无本包 FATAL ✅。
+
+## 收口装机批次（最终 · FGS 修复 c7f14a6 / 技能全集桥 0.17.1 / 嵌套子代理 c82122a）
+
+> 执行代理：真机验收专项代理。通道：Tailscale `100.71.236.18:5555`（LAN 已不可用）。桥 coreVersion 0.17.1。main HEAD `bdfe4e8`。release-in-house 新包 lastUpdateTime 2026-09-11 23:28:35。本代理未改源码、未提交。
+
+### 验收表（四项收口 + 抽查）
+
+| # | 验收项 | 预期 | 实测 | 结论 |
+|---|--------|------|------|------|
+| 1 | 装机+冒烟+双包并存 | 新包装好、P00、双包并存 | release-in-house 23:28:35 Success；冒烟三关 PASS（pid=21046）；`pm list` 双包并存 | ✅ PASS |
+| 2 | FGS 通知 | 运行→「N 主 · M 子」+ 持续 | 通知栏「0 个主代理 · 1 个子代理正在运行」（channel dsh_keepalive「后台保活」）；phone-logs `FGS 启动/更新前台服务 main=0 sub=1`；轮询 6 次（23:29:43→23:32:16，≥2.5min）持续 | ✅ PASS（上批 FAIL 已修复） |
+| 3 | 技能面板全集 | 几十个技能 + 搜索 | 面板 21+ 去重技能（huawei-adb-install/fast-install、device-keepawake、lark-* 等）；搜 `huawei`→huawei-adb 系列 | ✅ PASS（上批仅 1 个已修复） |
+| 4 | 嵌套子代理 | 🤖N=后代总数、▸展开、二/三级 | 顶部 🤖62=后代总数；一级平铺；「输入区操作条PRD与技术调研」带 ▸+🤖2，点 ▸ 展开二级「App 输入区重构+技能面板」「App 操作条 UI 实施」；三级无此数据；空态「暂无子代理」代码已实现（WorkspaceChrome.kt L254-260） | ✅ PASS（二级实测；三级=无此数据；空态=代码级） |
+| 5 | 快速抽查 | 模型文案/上下文/发送圆按钮 | 「DeepSeek-V4-Pro · Max」模型入口；上下文 40% 环；终止+发送 162×162=48dp 圆按钮 | ✅ PASS |
+
+### 发现的问题
+
+- **无新增 FAIL**。上批「FGS 不启动」已修复（c7f14a6）并真机复验通过；「技能面板仅 1 个」已修复（桥 0.17.1）并复验通过。
+- **观察（低优先级）**：嵌套子代理「暂无子代理」空态代码已实现，但在 `if (totalDescendants > 0)` 守卫下（🤖 按钮仅在有后代时渲染）该空态为防御性兜底、实际不可达；不影响功能。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 2 FGS 通知 | [12-fgs-notification.jpg](../screenshots/2026-09-10-batch-reverify/12-fgs-notification.jpg) |
+| 3 技能面板全集 | [13-skill-full.jpg](../screenshots/2026-09-10-batch-reverify/13-skill-full.jpg) |
+| 3 技能搜索 huawei | [14-skill-search-huawei.jpg](../screenshots/2026-09-10-batch-reverify/14-skill-search-huawei.jpg) |
+| 4 子代理一级平铺 | [15-subagent-l1.jpg](../screenshots/2026-09-10-batch-reverify/15-subagent-l1.jpg) |
+| 4 子代理二级展开 | [16-subagent-l2.jpg](../screenshots/2026-09-10-batch-reverify/16-subagent-l2.jpg) |
+| 5 快速抽查（底部操作条） | [17-quickcheck-bottom.jpg](../screenshots/2026-09-10-batch-reverify/17-quickcheck-bottom.jpg) |
+
+### 收尾确认
+
+主题保持「跟随系统」（本批未改动）；keepawake 恢复（timeout 300000、stayon=0）；全程 crash buffer 无本包 FATAL ✅。
