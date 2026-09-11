@@ -58,6 +58,9 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** 应用级 Context 持有者（MainActivity.onCreate 注入；振动等平台能力使用）。 */
 object AppContext {
@@ -136,36 +139,43 @@ actual fun platformVibrateTick(boundary: Boolean) {
 
 // ---- 前台/后台状态跟踪（ProcessLifecycleOwner）+ 主动通知发送 ----
 
-/** 应用前台状态：onStart 起算为前台，onStop 为后台/锁屏（ProcessLifecycleOwner 观测）。 */
+/** 应用前台状态：onStart 起算为前台，onStop 为后台/锁屏（ProcessLifecycleOwner 观测，StateFlow 驱动）。 */
 internal object AppForeground {
-    @Volatile
-    private var foreground = false
-    @Volatile
-    private var registered = false
+    private val _flow = MutableStateFlow(false)
+    val flow: StateFlow<Boolean> = _flow.asStateFlow()
 
-    private fun ensureRegistered() {
-        if (registered) return
+    @Volatile
+    private var initialized = false
+
+    /**
+     * 主线程调用（MainActivity.onCreate）：注册 ProcessLifecycleOwner 观察者并**立即回填当前态**。
+     * 回填保证「首帧即正确」——观察者注册的 replay 时序不可靠时，读 currentState 兜底，
+     * 避免 App 启动即前台却误判后台（导致 FGS 不启动 / 通知误报 BACKGROUND）。
+     */
+    fun init() {
+        if (initialized) return
         synchronized(this) {
-            if (registered) return
-            registered = true
+            if (initialized) return
+            initialized = true
             try {
-                ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-                    override fun onStart(owner: LifecycleOwner) { foreground = true }
-                    override fun onStop(owner: LifecycleOwner) { foreground = false }
+                val lifecycle = ProcessLifecycleOwner.get().lifecycle
+                lifecycle.addObserver(object : DefaultLifecycleObserver {
+                    override fun onStart(owner: LifecycleOwner) { _flow.value = true }
+                    override fun onStop(owner: LifecycleOwner) { _flow.value = false }
                 })
+                _flow.value = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
             } catch (_: Exception) {
-                // 观测失败不阻塞通知流程；保守按后台处理（宁可发通知也不漏）
+                initialized = false // 注册失败允许下次重试
             }
         }
     }
 
-    fun isForeground(): Boolean {
-        ensureRegistered()
-        return foreground
-    }
+    fun isForeground(): Boolean = _flow.value
 }
 
 internal actual fun platformIsAppForeground(): Boolean = AppForeground.isForeground()
+
+internal actual fun platformAppForegroundFlow(): StateFlow<Boolean> = AppForeground.flow
 
 /** 通知渠道 + 发送/撤销（平台 Notification.Builder 直用，零 androidx.core 依赖）。 */
 internal object NotificationPoster {

@@ -111,7 +111,6 @@ class BridgeClient(
 
     /** 按需前台服务编排器（running 代理保活；宿主平台能力见 androidMain）。 */
     private val keepAlive = KeepAliveController(object : KeepAliveHost {
-        override fun isForeground() = platformIsAppForeground()
         override fun startOrUpdate(mainCount: Int, subCount: Int) = platformStartKeepAliveService(mainCount, subCount)
         override fun stop() = platformStopKeepAliveService()
     })
@@ -146,12 +145,13 @@ class BridgeClient(
                 }
             }
         }
-        // 前台服务保活：会话投影 + 连接态变化 → 计数 → 启停（断连维持、重连校正）
+        // 前台服务保活：会话投影 + 连接态 + 前台态三路 combine → 计数 → 启停
+        // （前台/后台转场也触发重算：转前台且 counts>0 → 启动/更新；转后台 → NOOP 维持；断连维持、重连校正）
         scope.launch {
-            combine(_session, connection.info) { s, info ->
-                s.sessions to (info.state == ConnectionState.Connected)
-            }.collect { (sessions, connected) ->
-                keepAlive.onProjectionChanged(sessions, connected)
+            combine(_session, connection.info, platformAppForegroundFlow()) { s, info, foreground ->
+                Triple(s.sessions, info.state == ConnectionState.Connected, foreground)
+            }.collect { (sessions, connected, foreground) ->
+                keepAlive.onProjectionChanged(sessions, connected, foreground)
             }
         }
     }

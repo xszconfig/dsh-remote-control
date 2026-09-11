@@ -18,6 +18,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AppContext.context = applicationContext
         AppContext.activity = this
+        // 前台状态跟踪：主线程注册 + 回填当前态（首帧即正确，供 FGS 启动判定与通知门控）
+        AppForeground.init()
         // 通知点击直达：冷启动读取 sessionId extra（BridgeClient 消费后打开对应会话）
         NotificationLaunch.requestedSessionId.value = intent?.getStringExtra(EXTRA_NOTIFY_SESSION_ID)
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)

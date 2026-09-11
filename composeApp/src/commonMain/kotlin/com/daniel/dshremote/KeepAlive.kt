@@ -1,6 +1,7 @@
 package com.daniel.dshremote
 
 import com.daniel.dshremote.protocol.SessionSummary
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 按需前台服务（保活）纯逻辑与编排。
@@ -53,19 +54,22 @@ fun keepAliveNotificationBody(mainCount: Int, subCount: Int): String =
 
 /** 前台服务宿主（androidMain 实现）。 */
 interface KeepAliveHost {
-    fun isForeground(): Boolean
     fun startOrUpdate(mainCount: Int, subCount: Int)
     fun stop()
 }
 
-/** 按需前台服务编排器：投影变化 → 计数 → 决策 → 执行（计数未变时跳过更新，避免通知刷屏）。 */
+/**
+ * 按需前台服务编排器：投影变化 → 计数 → 决策 → 执行（计数未变时跳过更新，避免通知刷屏）。
+ * 前台态作为 [onProjectionChanged] 的显式入参传入——由调用方用「前台态流」驱动，
+ * 保证「前台/后台转场」也触发重算（转前台且 counts>0 → 启动/更新；转后台 → NOOP 维持）。
+ */
 class KeepAliveController(private val host: KeepAliveHost) {
     private var lastCounts: RunningAgents? = null
 
-    /** 会话投影 / 连接态变化时调用。 */
-    fun onProjectionChanged(sessions: List<SessionSummary>, connected: Boolean) {
+    /** 会话投影 / 连接态 / 前台态任一变化时调用。 */
+    fun onProjectionChanged(sessions: List<SessionSummary>, connected: Boolean, foreground: Boolean) {
         val counts = countRunningAgents(sessions)
-        when (decideFgsAction(counts, connected, host.isForeground())) {
+        when (decideFgsAction(counts, connected, foreground)) {
             FgsAction.START_OR_UPDATE -> {
                 if (counts != lastCounts) {
                     host.startOrUpdate(counts.mainCount, counts.subCount)
@@ -86,6 +90,9 @@ class KeepAliveController(private val host: KeepAliveHost) {
 }
 
 // ---- 平台能力（expect/actual；androidMain 落地）----
+
+/** 平台：应用前台态流（onStart 起算前台；初始化即回填当前态，前台/后台转场都会发射）。 */
+internal expect fun platformAppForegroundFlow(): StateFlow<Boolean>
 
 /** 平台：启动/更新前台服务（connectedDevice 类型；已运行时更新通知计数）。 */
 internal expect fun platformStartKeepAliveService(mainCount: Int, subCount: Int)
