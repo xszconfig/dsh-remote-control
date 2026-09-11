@@ -3,6 +3,8 @@ package com.daniel.dshremote
 import com.daniel.dshremote.protocol.ContextUsageWire
 import com.daniel.dshremote.protocol.ModelCatalogModelWire
 import com.daniel.dshremote.protocol.ModelProviderGroupWire
+import com.daniel.dshremote.protocol.ModelReasoningEffortWire
+import com.daniel.dshremote.protocol.ModelReasoningWire
 import com.daniel.dshremote.protocol.ModelSelectionWire
 import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SessionSummary
@@ -45,7 +47,12 @@ class InputBarLogicTest {
         assertFalse(isAgentRunning(listOf(session("s2", "running")), "s1", null))
     }
 
-    // ---- 模型入口短标签 ----
+    // ---- 模型入口短标签（模型显示名 · 推理强度显示名） ----
+
+    private fun model(id: String, name: String, reasoning: ModelReasoningWire? = null) =
+        ModelCatalogModelWire(id = id, name = name, reasoning = reasoning)
+
+    private fun effort(id: String, name: String) = ModelReasoningEffortWire(id = id, name = name)
 
     @Test
     fun modelEntryLabel_nullModels_isPlaceholder() {
@@ -58,37 +65,72 @@ class InputBarLogicTest {
     }
 
     @Test
-    fun modelEntryLabel_currentInCatalog_showsProviderAndModel() {
+    fun modelEntryLabel_modelNameOnly_whenNoEffort() {
         val models = SessionModelsWire(
             current = ModelSelectionWire("p1", "m1"),
-            groups = listOf(
-                ModelProviderGroupWire("p1", "DeepSeek", listOf(ModelCatalogModelWire("m1", "Chat"))),
-            ),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
         )
-        assertEquals("DeepSeek · Chat", modelEntryLabel(models))
+        assertEquals("DeepSeek V4 Pro", modelEntryLabel(models))
     }
 
     @Test
-    fun modelEntryLabel_currentNotInCatalog_isPlaceholder() {
-        // 目录是 advisory：current 不在目录组内时不合成过期行
+    fun modelEntryLabel_modelAndEffortDisplayNames() {
+        // 修复根因：显示「模型显示名 · 推理强度显示名」，不拼 provider 名（避免「Deepseek · Deepseek」重复）
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1", "max"),
+            groups = listOf(
+                ModelProviderGroupWire(
+                    "p1",
+                    "DeepSeek",
+                    listOf(
+                        model(
+                            "m1",
+                            "DeepSeek V4 Pro",
+                            ModelReasoningWire(efforts = listOf(effort("off", "Off"), effort("max", "Max")), defaultEffort = "off"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals("DeepSeek V4 Pro · Max", modelEntryLabel(models))
+    }
+
+    @Test
+    fun modelEntryLabel_modelMissing_isPlaceholder() {
+        // 目录是 advisory：model id 不在任何分组内 → 占位
         val models = SessionModelsWire(
             current = ModelSelectionWire("p1", "m9"),
-            groups = listOf(
-                ModelProviderGroupWire("p1", "DeepSeek", listOf(ModelCatalogModelWire("m1", "Chat"))),
-            ),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
         )
         assertEquals(MODEL_ENTRY_PLACEHOLDER, modelEntryLabel(models))
     }
 
     @Test
-    fun modelEntryLabel_currentProviderMissing_isPlaceholder() {
+    fun modelEntryLabel_effortMissing_showsModelOnly() {
+        // effort 查不到 → 只显示模型名，不合成过期档位
         val models = SessionModelsWire(
-            current = ModelSelectionWire("unknown-provider", "m1"),
+            current = ModelSelectionWire("p1", "m1", "unknown-effort"),
             groups = listOf(
-                ModelProviderGroupWire("p1", "DeepSeek", listOf(ModelCatalogModelWire("m1", "Chat"))),
+                ModelProviderGroupWire(
+                    "p1",
+                    "DeepSeek",
+                    listOf(
+                        model("m1", "DeepSeek V4 Pro", ModelReasoningWire(efforts = listOf(effort("max", "Max")))),
+                    ),
+                ),
             ),
         )
-        assertEquals(MODEL_ENTRY_PLACEHOLDER, modelEntryLabel(models))
+        assertEquals("DeepSeek V4 Pro", modelEntryLabel(models))
+    }
+
+    @Test
+    fun modelEntryLabel_matchesByModelId_ignoresProvider() {
+        // 查找按 model id 全量匹配，不依赖 provider 名
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("unknown-provider", "m1"),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
+        )
+        assertEquals("DeepSeek V4 Pro", modelEntryLabel(models))
     }
 
     // ---- 技能搜索过滤（filterSkills） ----

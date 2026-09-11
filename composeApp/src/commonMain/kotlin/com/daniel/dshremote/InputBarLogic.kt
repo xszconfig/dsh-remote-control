@@ -24,14 +24,19 @@ internal fun isAgentRunning(sessions: List<SessionSummary>, sessionId: String, m
     sessions.firstOrNull { it.id == sessionId }?.status == "running" || modelWaitingSince != null
 
 /**
- * 模型入口短标签：current 在目录组内 → 「provider 展示名 · 模型名」；否则回退占位。
- * 目录是 advisory：current 不在任何分组内时不合成过期行（对齐 DSH Web 语义）。
+ * 模型入口短标签：current 在目录内 → 「模型显示名 · 推理强度显示名」；否则回退占位。
+ * 查找：按 model id 在 groups[].models[] 全量找模型显示名，再按 reasoningEffort 找 effort 显示名；
+ * 不显示 provider 名 / model id（旧实现拼「provider 展示名 · 模型名」，出现「Deepseek · Deepseek …」重复）。
+ * 目录是 advisory：模型查不到 → 占位；effort 查不到（或未指定）→ 只显示模型名。
  */
 internal fun modelEntryLabel(models: SessionModelsWire?): String {
     val current = models?.current ?: return MODEL_ENTRY_PLACEHOLDER
-    val group = models.groups.firstOrNull { it.id == current.provider } ?: return MODEL_ENTRY_PLACEHOLDER
-    val model = group.models.firstOrNull { it.id == current.model } ?: return MODEL_ENTRY_PLACEHOLDER
-    return "${group.name} · ${model.name}"
+    val model = models.groups.asSequence()
+        .flatMap { it.models }
+        .firstOrNull { it.id == current.model } ?: return MODEL_ENTRY_PLACEHOLDER
+    val effort = current.reasoningEffort
+        ?.let { eff -> model.reasoning?.efforts?.firstOrNull { it.id == eff }?.name }
+    return if (effort != null) "${model.name} · $effort" else model.name
 }
 
 /**

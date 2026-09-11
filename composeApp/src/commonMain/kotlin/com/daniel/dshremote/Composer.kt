@@ -497,7 +497,7 @@ internal fun ModelSelectSheet(
                     ModelOptionRow(
                         name = e.name + if (e.id == defaultEffort) "（默认）" else "",
                         description = e.description,
-                        selected = false,
+                        selected = current != null && current.reasoningEffort == e.id,
                         onClick = { onSelect(group.id, model.id, e.id) },
                     )
                 }
