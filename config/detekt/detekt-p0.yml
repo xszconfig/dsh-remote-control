@@ -36,7 +36,7 @@ output-reports:
 complexity:
   LargeClass:
     active: true
-    threshold: 1200
+    threshold: 600
   LongMethod:
     active: true
     threshold: 200
