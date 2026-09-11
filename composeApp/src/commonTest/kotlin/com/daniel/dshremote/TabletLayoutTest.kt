@@ -16,7 +16,7 @@ class TabletLayoutTest {
 
     @Test
     fun paneState_subagentOpen() {
-        val p = tabletPaneState(currentSessionId = "sub-1", subagentReturnTo = "main-1")
+        val p = tabletPaneState(currentSessionId = "sub-1", subagentReturnStack = listOf("main-1"))
         assertFalse(p.leftVisible)
         assertTrue(p.midVisible)
         assertTrue(p.rightVisible)
@@ -25,7 +25,7 @@ class TabletLayoutTest {
 
     @Test
     fun paneState_mainSessionOpen() {
-        val p = tabletPaneState(currentSessionId = "main-1", subagentReturnTo = null)
+        val p = tabletPaneState(currentSessionId = "main-1", subagentReturnStack = emptyList())
         assertTrue(p.leftVisible)
         assertTrue(p.midVisible)
         assertFalse(p.rightVisible)
@@ -34,7 +34,7 @@ class TabletLayoutTest {
 
     @Test
     fun paneState_listView() {
-        val p = tabletPaneState(currentSessionId = null, subagentReturnTo = null)
+        val p = tabletPaneState(currentSessionId = null, subagentReturnStack = emptyList())
         assertTrue(p.leftVisible)
         assertFalse(p.midVisible)
         assertFalse(p.rightVisible)

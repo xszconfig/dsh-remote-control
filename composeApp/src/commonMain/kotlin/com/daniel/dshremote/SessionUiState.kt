@@ -24,9 +24,12 @@ data class SessionUiState(
     /** null = 全部；UNGROUPED_KEY = 未分组。 */
     val selectedWorkspaceId: String? = null,
     val currentSessionId: String? = null,
-    /** 查看子代理会话时记录的返回目标（主会话 id）；返回键/← 回到主会话。 */
-    val subagentReturnTo: String? = null,
-    /** 子会话打开时，主会话（subagentReturnTo）的 live 投影；平板中栏渲染，手机忽略。 */
+    /**
+     * 查看子代理会话时的多级返回链（栈底=根主会话，栈顶=立即父会话）。
+     * 下钻 openSubagent 压栈、返回 closeSession 弹栈，逐级 C→B→A→主会话；空 = 无子代理打开。
+     */
+    val subagentReturnStack: List<String> = emptyList(),
+    /** 子会话打开时，根主会话（subagentReturnStack 栈底）的 live 投影；平板中栏渲染，手机忽略。 */
     val parentView: SessionViewState = SessionViewState(),
     val events: List<EventProjection> = emptyList(),
     /** 是否还有更早历史可翻页。 */
@@ -102,10 +105,10 @@ data class SessionUiState(
         diagnostics = diagnostics,
     )
 
-    /** 取某会话的 live 投影：当前会话→内联字段；主会话(子会话打开时)→parentView；其余→空。 */
+    /** 取某会话的 live 投影：当前会话→内联字段；根主会话(子会话打开时)→parentView；其余→空。 */
     fun viewOf(sessionId: String): SessionViewState = when (sessionId) {
         currentSessionId -> currentView()
-        subagentReturnTo -> parentView
+        subagentReturnStack.firstOrNull() -> parentView
         else -> SessionViewState()
     }
 
@@ -129,6 +132,35 @@ data class SessionUiState(
         debugVars = v.debugVars,
         diagnostics = v.diagnostics,
     )
+
+    /**
+     * 切换到指定会话：重置全部会话级状态（Deep Diving/思考流/诊断/目标/调试/队列/分页等），
+     * 并携带子代理返回栈与父视图投影（BridgeClient 导航统一入口，切会话清栈由此保证）。
+     */
+    fun forSession(sessionId: String, subagentReturnStack: List<String>, parentView: SessionViewState): SessionUiState = copy(
+        currentSessionId = sessionId,
+        subagentReturnStack = subagentReturnStack,
+        parentView = parentView,
+        events = emptyList(),
+        queueItems = emptyList(),
+        pendingMessages = emptyList(),
+        modelWaitingSince = null,
+        divingTurnStart = null,
+        deepDivingElapsed = null,
+        todos = emptyList(),
+        commands = emptyList(),
+        models = null,
+        contextUsage = null,
+        liveThink = null,
+        goal = null,
+        debug = null,
+        debugOutput = emptyList(),
+        debugVars = emptyMap(),
+        diagnostics = emptyList(),
+        hasMore = false,
+        loadingOlder = false,
+        historyTotal = 0,
+    )
 }
 
 /**
@@ -142,7 +174,7 @@ internal fun SessionUiState.clearedForDisconnect(): SessionUiState = copy(
     agents = emptyList(),
     workspaces = emptyList(),
     currentSessionId = null,
-    subagentReturnTo = null,
+    subagentReturnStack = emptyList(),
     parentView = SessionViewState(),
     events = emptyList(),
     hasMore = false,

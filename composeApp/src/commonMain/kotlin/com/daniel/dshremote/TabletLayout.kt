@@ -26,12 +26,12 @@ data class TabletPaneState(
 
 /**
  * 由导航状态推导三栏可见性与返回档位。
- * - 子代理打开（subagentReturnTo != null）：左栏收起、中栏主会话 + 右栏子会话、返回档 1。
+ * - 子代理打开（subagentReturnStack 非空）：左栏收起、中栏根主会话 + 右栏子会话、返回档 1。
  * - 主会话打开（currentSessionId != null）：左栏 + 中栏、返回档 2。
  * - 会话列表（currentSessionId == null）：仅左栏、返回档 3。
  */
-fun tabletPaneState(currentSessionId: String?, subagentReturnTo: String?): TabletPaneState = when {
-    subagentReturnTo != null ->
+fun tabletPaneState(currentSessionId: String?, subagentReturnStack: List<String>): TabletPaneState = when {
+    subagentReturnStack.isNotEmpty() ->
         TabletPaneState(leftVisible = false, midVisible = true, rightVisible = true, backLevel = 1)
     currentSessionId != null ->
         TabletPaneState(leftVisible = true, midVisible = true, rightVisible = false, backLevel = 2)

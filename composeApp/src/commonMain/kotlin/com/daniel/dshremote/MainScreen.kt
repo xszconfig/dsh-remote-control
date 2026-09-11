@@ -143,9 +143,9 @@ internal fun TabletMainScreen(
     onOpenDevices: () -> Unit,
     onOpenSettings: () -> Unit = {},
 ) {
-    val pane = tabletPaneState(state.currentSessionId, state.subagentReturnTo)
-    // 中栏渲染的会话：无子会话=当前主会话；有子会话=主会话（subagentReturnTo）。
-    val midSessionId = state.subagentReturnTo ?: state.currentSessionId
+    val pane = tabletPaneState(state.currentSessionId, state.subagentReturnStack)
+    // 中栏渲染的会话：无子会话=当前主会话；有子会话=根主会话（返回栈底，subagentReturnStack.first）。
+    val midSessionId = state.subagentReturnStack.firstOrNull() ?: state.currentSessionId
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         // 连接/重启横幅与手机一致
         when (val n = notice) {

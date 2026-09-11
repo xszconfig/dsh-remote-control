@@ -461,36 +461,16 @@ class BridgeClient(
         _session.update { it.copy(selectedWorkspaceId = workspaceId) }
     }
 
-    fun openSession(sessionId: String) {
+    /** 打开会话（会话列表点击 / 通知直达 / 自动打开）：切换会话清空子代理返回栈。 */
+    fun openSession(sessionId: String) = navigateToSession(sessionId, emptyList(), SessionViewState())
+    /** 内部导航：切到指定会话 + 重置会话级状态 + 携带给定子代理返回栈/父视图投影。 */
+    private fun navigateToSession(sessionId: String, subagentReturnStack: List<String>, parentView: SessionViewState) {
         if (sessionId.isBlank()) return
-        ConnLog.info("CMD", "打开会话 sessionId=$sessionId 前会话=${_session.value.currentSessionId}")
+        ConnLog.info("CMD", "打开会话 sessionId=$sessionId 前会话=${_session.value.currentSessionId} 栈深=${subagentReturnStack.size}")
         sessionOpenStartAt[sessionId] = nowMillis()
-        // 关键：切换会话必须清空全部会话级状态（Deep Diving/思考流/诊断/目标/调试/队列/分页），
-        // 否则上个会话的指示条/诊断/目标/调试状态会串到新会话里展示。
-        _session.update {
-            it.copy(
-                currentSessionId = sessionId,
-                events = emptyList(),
-                queueItems = emptyList(),
-                pendingMessages = emptyList(),
-                modelWaitingSince = null,
-                divingTurnStart = null,
-                deepDivingElapsed = null,
-                todos = emptyList(),
-                commands = emptyList(),
-                models = null,
-                contextUsage = null,
-                liveThink = null,
-                goal = null,
-                debug = null,
-                debugOutput = emptyList(),
-                debugVars = emptyMap(),
-                diagnostics = emptyList(),
-                hasMore = false,
-                loadingOlder = false,
-                historyTotal = 0,
-            )
-        }
+        // 切换会话必须清空全部会话级状态（避免上个会话的指示条/诊断/目标/调试串到新会话），
+        // 由 SessionUiState.forSession 统一重置并携带返回栈/父视图投影。
+        _session.update { it.forSession(sessionId, subagentReturnStack, parentView) }
         scope.launch {
             // 恢复本地待发送消息：断线/杀进程/切换视图后不丢（P00）。sending 一律转 failed
             // （发送结果未知，避免自动重发导致重复投递，交用户点 ❗ 手动决定）。
@@ -633,27 +613,35 @@ class BridgeClient(
      * 在 handle() 里按 sessionId 过滤丢弃，无需通知服务端。
      */
     fun closeSession() {
-        ConnLog.info("CMD", "关闭会话 current=${_session.value.currentSessionId} returnTo=${_session.value.subagentReturnTo}")
-        // 子代理视图的关闭 = 回到主会话（返回键与 ← 按钮共用此路径）
-        val returnTo = _session.value.subagentReturnTo
+        val stack = _session.value.subagentReturnStack
+        ConnLog.info("CMD", "关闭会话 current=${_session.value.currentSessionId} 返回栈深=${stack.size}")
+        // 子代理视图的关闭 = 逐级返回：弹栈回到立即父会话（C→B→A→主会话→列表）
+        val returnTo = subagentReturnPeek(stack)
         if (returnTo != null) {
-            _session.update { it.copy(subagentReturnTo = null, parentView = SessionViewState()) }
-            openSession(returnTo)
+            val newStack = subagentReturnPop(stack)
+            val newParentView = if (newStack.isEmpty()) SessionViewState() else _session.value.parentView
+            navigateToSession(returnTo, newStack, newParentView)
             return
         }
         // 真正退回列表：标记本连接生命周期内用户手动关闭过会话，抑制后续 hello 自动打开
         userClosedSessionThisConnection = true
-        _session.update { it.copy(currentSessionId = null, events = emptyList()) }
+        _session.update {
+            it.copy(currentSessionId = null, events = emptyList(), parentView = SessionViewState())
+        }
     }
 
-    /** 从主会话进入子代理会话：记录返回目标，返回键/← 回到主会话。 */
+    /** 从当前会话进入子代理会话：把当前会话压入返回栈，返回键/← 逐级弹栈回主会话。 */
     fun openSubagent(subagentId: String) {
-        val parentId = _session.value.currentSessionId ?: return
+        val cur = _session.value
+        val parentId = cur.currentSessionId ?: return
         if (parentId == subagentId) return
-        ConnLog.info("CMD", "打开子代理 subagentId=$subagentId parentId=$parentId")
-        // 平板 route B：快照主会话投影到 parentView，子会话打开后中栏仍能 live 渲染主会话。
-        _session.update { it.copy(subagentReturnTo = parentId, parentView = it.currentView()) }
-        openSession(subagentId)
+        // 平板 route B：首次下钻（栈空）时快照根主会话投影到 parentView，
+        // 之后中栏持续 live 渲染根主会话（栈底），更深下钻不再覆盖。
+        val firstDrill = cur.subagentReturnStack.isEmpty()
+        val newStack = subagentReturnPush(cur.subagentReturnStack, parentId)
+        val newParentView = if (firstDrill) cur.currentView() else cur.parentView
+        ConnLog.info("CMD", "打开子代理 subagentId=$subagentId parentId=$parentId 返回栈深=${newStack.size}")
+        navigateToSession(subagentId, newStack, newParentView)
     }
 
     fun sendMessage(text: String) {
@@ -984,14 +972,14 @@ class BridgeClient(
 
     /**
      * 把一次「会话详情投影」变换路由到正确目标：currentSessionId → 内联字段；
-     * subagentReturnTo（子会话打开时的主会话）→ parentView；其余 → 丢弃。
-     * 平板 route B「双 live」的事件路由核心（手机无子会话时 subagentReturnTo 恒 null，行为不变）。
+     * 根主会话（subagentReturnStack 栈底，子会话打开时）→ parentView；其余 → 丢弃。
+     * 平板 route B「双 live」的事件路由核心（手机无子会话时栈恒空，行为不变）。
      */
     private fun updateView(sessionId: String, transform: (SessionViewState) -> SessionViewState) {
         _session.update { s ->
             when (sessionId) {
                 s.currentSessionId -> s.copyCurrentView(transform(s.currentView()))
-                s.subagentReturnTo -> s.copy(parentView = transform(s.parentView))
+                s.subagentReturnStack.firstOrNull() -> s.copy(parentView = transform(s.parentView))
                 else -> s
             }
         }
@@ -1046,9 +1034,11 @@ class BridgeClient(
                 // 打开中的会话已被删除 → 关闭视图，避免停留幽灵会话
                 currentSessionId = it.currentSessionId
                     ?.takeIf { cid -> ev.sessions.any { s -> s.id == cid } },
-                // 子代理返回目标同样以服务端快照为准校验
-                subagentReturnTo = it.subagentReturnTo
-                    ?.takeIf { p -> ev.sessions.any { s -> s.id == p } },
+                // 子代理返回链同样以服务端快照为准校验：栈中某层会话被删则其后代层一并失效
+                subagentReturnStack = pruneSubagentReturn(
+                    it.subagentReturnStack,
+                    ev.sessions.map { s -> s.id }.toSet(),
+                ),
                 events = it.currentSessionId
                     ?.takeIf { cid -> ev.sessions.none { s -> s.id == cid } }
                     ?.let { emptyList() } ?: it.events,
