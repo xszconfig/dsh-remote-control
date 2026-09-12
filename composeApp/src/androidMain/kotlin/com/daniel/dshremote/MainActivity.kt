@@ -20,8 +20,9 @@ class MainActivity : ComponentActivity() {
         AppContext.activity = this
         // 前台状态跟踪：主线程注册 + 回填当前态（首帧即正确，供 FGS 启动判定与通知门控）
         AppForeground.init()
-        // 通知点击直达：冷启动读取 sessionId extra（BridgeClient 消费后打开对应会话）
+        // 通知点击直达：冷启动读取 sessionId + tag extra（BridgeClient 打开会话，App.kt 挂载对应弹窗）
         NotificationLaunch.requestedSessionId.value = intent?.getStringExtra(EXTRA_NOTIFY_SESSION_ID)
+        NotificationLaunch.requestedTag.value = intent?.getStringExtra(EXTRA_NOTIFY_TAG)
         val deviceStore = AndroidDeviceStore(applicationContext.filesDir)
         val eventCache = AndroidEventCache(File(applicationContext.filesDir, "event-cache"))
         val sessionCache = AndroidSessionCache(File(applicationContext.filesDir, "session-cache"))
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         NotificationLaunch.requestedSessionId.value = intent.getStringExtra(EXTRA_NOTIFY_SESSION_ID)
+        NotificationLaunch.requestedTag.value = intent.getStringExtra(EXTRA_NOTIFY_TAG)
     }
 
     /** 通知权限申请结果：同意 → 隐藏引导；拒绝 → 转「去设置」。 */

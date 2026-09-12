@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 /** 通知点击直达的 intent extra key。 */
 const val EXTRA_NOTIFY_SESSION_ID = "notify_session_id"
 
+/** 通知点击直达的 sheet 目标 extra key（通知 tag：approval:<id> / question:<rpcId>）。 */
+const val EXTRA_NOTIFY_TAG = "notify_tag"
+
 /** POST_NOTIFICATIONS 运行时申请的 requestCode（MainActivity 与平台层共用）。 */
 const val NOTIFY_PERMISSION_REQ_CODE = 8201
 
@@ -36,6 +39,26 @@ object NotificationPermissionState {
 /** 通知点击直达的目标会话 id（MainActivity 写入，BridgeClient 消费后置空）。 */
 object NotificationLaunch {
     val requestedSessionId = MutableStateFlow<String?>(null)
+    /** 通知点击直达的 sheet 目标（MainActivity 写入，App.kt 读取；sticky + 自愈回退 firstOrNull）。 */
+    val requestedTag = MutableStateFlow<String?>(null)
+}
+
+/** 通知点击直达的 sheet 目标（从通知 tag 解析）。 */
+sealed interface NotificationSheetTarget {
+    data class Approval(val approvalId: String) : NotificationSheetTarget
+    data class Question(val rpcId: String) : NotificationSheetTarget
+    data object None : NotificationSheetTarget
+}
+
+/**
+ * 从通知 tag 解析 sheet 目标：`approval:<id>` → 审批、`question:<rpcId>` → 提问、其余（delivery 等）→ None。
+ * 纯函数，可单测。
+ */
+fun parseNotificationSheetTarget(tag: String?): NotificationSheetTarget = when {
+    tag == null -> NotificationSheetTarget.None
+    tag.startsWith("approval:") -> NotificationSheetTarget.Approval(tag.removePrefix("approval:"))
+    tag.startsWith("question:") -> NotificationSheetTarget.Question(tag.removePrefix("question:"))
+    else -> NotificationSheetTarget.None
 }
 
 /**

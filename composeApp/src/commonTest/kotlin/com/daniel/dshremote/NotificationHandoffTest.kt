@@ -38,4 +38,29 @@ class NotificationHandoffTest {
     fun emptyList_returnsNull() {
         assertNull(resolveNotificationOpenTarget("s1", emptyList()))
     }
+
+    // ---- parseNotificationSheetTarget ----
+
+    @Test
+    fun parseTag_approval() {
+        assertEquals(
+            NotificationSheetTarget.Approval("appr-1"),
+            parseNotificationSheetTarget("approval:appr-1"),
+        )
+    }
+
+    @Test
+    fun parseTag_question() {
+        assertEquals(
+            NotificationSheetTarget.Question("q-1"),
+            parseNotificationSheetTarget("question:q-1"),
+        )
+    }
+
+    @Test
+    fun parseTag_deliveryOrNull_isNone() {
+        assertEquals(NotificationSheetTarget.None, parseNotificationSheetTarget(null))
+        assertEquals(NotificationSheetTarget.None, parseNotificationSheetTarget("delivery:s1:tk-1"))
+        assertEquals(NotificationSheetTarget.None, parseNotificationSheetTarget(""))
+    }
 }

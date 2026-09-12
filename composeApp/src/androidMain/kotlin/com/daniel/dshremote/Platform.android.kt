@@ -186,7 +186,11 @@ internal object NotificationPoster {
     private fun ensureChannels(nm: NotificationManager) {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_APPROVAL, "审批与提问", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "需要你及时响应的审批与提问"
+                description = "需要你及时响应的审批与提问（横幅强提醒）"
+                enableVibration(true)
+                enableLights(true)
+                setSound(Settings.System.DEFAULT_NOTIFICATION_URI, null)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
         )
         nm.createNotificationChannel(
@@ -225,10 +229,11 @@ internal object NotificationPoster {
             if (!isGranted(context)) return
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
             ensureChannels(nm)
-            // 点击直达：PendingIntent 带 sessionId extra，拉起 MainActivity 后解析并打开对应会话
+            // 点击直达：PendingIntent 带 sessionId + tag extra，拉起 MainActivity 后解析并打开对应会话/弹窗
             val launch = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 spec.sessionId?.let { putExtra(EXTRA_NOTIFY_SESSION_ID, it) }
+                putExtra(EXTRA_NOTIFY_TAG, spec.tag)
             }
             val contentIntent = PendingIntent.getActivity(
                 context, 0, launch,
@@ -242,6 +247,8 @@ internal object NotificationPoster {
                 .setContentIntent(contentIntent)
                 .setAutoCancel(true)
                 .setCategory(Notification.CATEGORY_REMINDER)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setPriority(Notification.PRIORITY_HIGH)
                 .build()
             nm.notify(spec.tag, spec.tag.hashCode(), notification)
         } catch (_: Exception) {

@@ -22,6 +22,8 @@ fun App(client: BridgeClient) {
     val notice by client.notice.collectAsState()
     // 通知权限引导状态（未授权时首次触发通知被拦截 → 提示 rationale）
     val permPrompt by NotificationPermissionState.prompt.collectAsState()
+    // 通知点击直达的 sheet 目标（sticky + 自愈回退 firstOrNull）
+    val sheetTag by NotificationLaunch.requestedTag.collectAsState()
     // 重连态派生自统一槽（用于 keepSessionUi 的「断线/重连不跳页」判断）
     val reconnecting = notice is ConnectionNotice.Reconnecting
     var showLogs by remember { mutableStateOf(false) }
@@ -109,8 +111,20 @@ fun App(client: BridgeClient) {
         }
         // 审批/提问都是中断式强提醒：半屏弹窗覆盖所有界面（含首页/扫码/会话），
         // 不可下滑/返回关闭，直到裁决/回答或服务端解决。审批优先于提问。
-        val approval = session.approvals.firstOrNull()
-        val question = if (approval == null) session.questions.firstOrNull() else null
+        // 通知点击直达：优先挂载通知 tag 指向的审批/提问，缺失则回退队首（自愈）。
+        val target = parseNotificationSheetTarget(sheetTag)
+        val approval = when (target) {
+            is NotificationSheetTarget.Approval ->
+                session.approvals.firstOrNull { it.approvalId == target.approvalId } ?: session.approvals.firstOrNull()
+            else -> session.approvals.firstOrNull()
+        }
+        val question = if (approval == null) {
+            when (target) {
+                is NotificationSheetTarget.Question ->
+                    session.questions.firstOrNull { it.rpcId == target.rpcId } ?: session.questions.firstOrNull()
+                else -> session.questions.firstOrNull()
+            }
+        } else null
         if (approval != null) {
             ApprovalSheet(
                 approval = approval,
