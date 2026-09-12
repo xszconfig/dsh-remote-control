@@ -57,4 +57,31 @@ class MarkdownTableScrollTest {
         assertEquals(2, model.rows.size)
         assertEquals(listOf(2, 2), model.rows.map { it.size })
     }
+
+    // —— 列宽限界（用户拍板 #62）：长内容限宽、短内容自适应 ——
+
+    @Test
+    fun clampColumnWidths_longContent_clampedToMax() {
+        // 内容宽超过上限 → 列宽 = 上限 + 左右内边距（不再无限拉长）
+        val widths = clampColumnWidthsPx(listOf(5000f), maxContentWidthPx = 360f, cellPaddingPx = 16f)
+        assertEquals(listOf(360f + 32f), widths)
+    }
+
+    @Test
+    fun clampColumnWidths_shortContent_keepsAdaptive() {
+        // 内容宽未超上限 → 保持自适应（内容宽 + 左右内边距）
+        val widths = clampColumnWidthsPx(listOf(100f, 200f), maxContentWidthPx = 360f, cellPaddingPx = 16f)
+        assertEquals(listOf(132f, 232f), widths)
+    }
+
+    @Test
+    fun clampColumnWidths_mixed_shortAdaptiveLongClamped() {
+        val widths = clampColumnWidthsPx(listOf(50f, 9999f, 300f), maxContentWidthPx = 360f, cellPaddingPx = 10f)
+        assertEquals(listOf(70f, 380f, 320f), widths)
+    }
+
+    @Test
+    fun clampColumnWidths_empty_returnsEmpty() {
+        assertEquals(emptyList(), clampColumnWidthsPx(emptyList(), maxContentWidthPx = 360f, cellPaddingPx = 16f))
+    }
 }

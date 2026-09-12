@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -44,9 +45,10 @@ import org.intellij.markdown.flavours.gfm.GFMTokenTypes.CELL
  * 只能滑动一个被截断的固定宽表格，右侧真实内容永远看不见。
  *
  * 这里通过库的 `markdownComponents { table = ... }` 扩展点，用一个最小复制版表格替换默认
- * 表格：单元格 `softWrap = false`、`maxLines = 1`、`overflow = Clip`，用 TextMeasurer 按
- * 真实内容宽度量出每列宽度（表头加粗、表体常规分别计量后取最大值），再整体包一层
- * horizontalScroll。这样表格以真实内容宽度测量，超宽部分在气泡宽度内左右滑动查看。
+ * 表格：用 TextMeasurer 按真实内容宽度量出每列宽度（表头加粗、表体常规分别计量后取最大值），
+ * 并把每列内容宽 clamp 到「屏幕宽度上限」（用户拍板 #62）——长内容单元格在限宽内换行
+ * （softWrap=true），短内容保持自适应；再整体包一层 horizontalScroll。这样超宽表格仍可
+ * 左右滑动，但每格有界、横滑距离可控，不再出现「单格撑成一条超长线」。
  *
  * 视觉样式（背景/圆角/单元格内边距/表头加粗/正文字号/配色）全部沿用库的
  * LocalMarkdownColors / LocalMarkdownDimens 与传入的 typography.text，与替换前一致，
@@ -63,12 +65,16 @@ internal fun ScrollableMarkdownTable(model: MarkdownComponentModel) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val cellPadding = dimens.tableCellPadding
+    // 每格列宽上限 = 屏幕宽度（用户拍板 #62）：长内容单元格在限宽内换行，
+    // 表格整体变窄、横滑距离可控；短内容保持自适应（不因限宽挤压字号/内边距）。
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
 
-    // 表结构 + 每列宽度都只随内容变化（样式/字号在本 App 内固定），按 content 记忆即可。
+    // 表结构随内容变化；列宽随内容 + 屏幕宽度变化（样式/字号在本 App 内固定）。
     val table = remember(content) { parseTableNode(model.node) }
-    val columnWidthsPx = remember(content) {
+    val columnWidthsPx = remember(content, screenWidthDp) {
         val padPx = with(density) { cellPadding.toPx() }
-        computeColumnWidthsPx(content, table, headerStyle, bodyStyle, measurer, padPx)
+        val maxContentPx = with(density) { (screenWidthDp.dp - cellPadding * 2).coerceAtLeast(0.dp).toPx() }
+        computeColumnWidthsPx(content, table, headerStyle, bodyStyle, measurer, padPx, maxContentPx)
     }
     val columnWidths = columnWidthsPx.map { with(density) { it.toDp() } }
     val totalWidth = with(density) { columnWidthsPx.sum().toDp() }
@@ -111,7 +117,7 @@ internal fun parseTableNode(node: ASTNode): MarkdownTableModel {
 internal fun findTableNode(root: ASTNode): ASTNode? =
     root.children.firstOrNull { it.type == TABLE }
 
-/** 按真实内容宽度计算每列宽度（px）：表头/表体同列取最大，再加左右单元格内边距。 */
+/** 按真实内容宽度计算每列宽度（px）：表头/表体同列取最大，再限宽 + 加左右内边距。 */
 private fun computeColumnWidthsPx(
     content: String,
     table: MarkdownTableModel,
@@ -119,22 +125,33 @@ private fun computeColumnWidthsPx(
     bodyStyle: TextStyle,
     measurer: TextMeasurer,
     cellPaddingPx: Float,
+    maxContentWidthPx: Float,
 ): List<Float> {
     val columnCount = table.header.size
     if (columnCount == 0) return emptyList()
-    val widths = FloatArray(columnCount)
+    val natural = FloatArray(columnCount)
     table.header.forEachIndexed { i, cell ->
-        widths[i] = maxOf(widths[i], measureCellPx(content, cell, headerStyle, measurer))
+        natural[i] = maxOf(natural[i], measureCellPx(content, cell, headerStyle, measurer))
     }
     table.rows.forEach { row ->
         row.forEachIndexed { i, cell ->
             if (i < columnCount) {
-                widths[i] = maxOf(widths[i], measureCellPx(content, cell, bodyStyle, measurer))
+                natural[i] = maxOf(natural[i], measureCellPx(content, cell, bodyStyle, measurer))
             }
         }
     }
-    return widths.map { it + 2 * cellPaddingPx }
+    return clampColumnWidthsPx(natural.toList(), maxContentWidthPx, cellPaddingPx)
 }
+
+/**
+ * 纯函数：每列内容宽 clamp 到 [maxContentWidthPx]（≤ 屏幕宽），再加左右内边距得到列宽。
+ * 短内容（natural < max）保持自适应；长内容被限宽，配合渲染端 softWrap=true 在限宽内换行。
+ */
+internal fun clampColumnWidthsPx(
+    naturalContentWidths: List<Float>,
+    maxContentWidthPx: Float,
+    cellPaddingPx: Float,
+): List<Float> = naturalContentWidths.map { minOf(it, maxContentWidthPx) + 2 * cellPaddingPx }
 
 private fun measureCellPx(content: String, cell: ASTNode, style: TextStyle, measurer: TextMeasurer): Float =
     measurer.measure(content.buildMarkdownAnnotatedString(cell, style), style = style, softWrap = false)
@@ -157,8 +174,8 @@ private fun TableCellsRow(
                         text = content.buildMarkdownAnnotatedString(cell, style),
                         style = style,
                         color = { color },
-                        softWrap = false,
-                        maxLines = 1,
+                        // 限宽内换行：短内容仍单行，长内容在列宽上限内换行（#62）。
+                        softWrap = true,
                         overflow = TextOverflow.Clip,
                     )
                 }
