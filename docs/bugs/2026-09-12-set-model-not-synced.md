@@ -77,6 +77,15 @@ const installModelSelectionPrepend = (agentCtx, selection) => {
 - **提交哈希**：`1c082e5`（bridge v0.17.2）。
 - **回归测试**：smoke 增断言「set_model 后 `system-prompt/assemble` 与 `agent/request` 均以 `prepend:true` 挂载」；163/163 全绿。
 
+## Web 选择器 UI 显示滞后（验收口径澄清，2026-09-12 追问）
+
+用户补充验收口径：手机切换后，**DSH Web 输入框下方的模型/强度选择器要看到变化**，而不只是「下一轮实际生效」。经只读调研，结论是**平台限制，无公开权威写入口让 Web UI 即时反映**：
+
+- **Web UI 数据源**：`dsh-client-ui-model-selection` 的 `ModelDirectory.load()` → apiproxy `session.models` RPC（`api-proxy.js` L1895-1903）→ `selectionFor(agent).current`。该 getter 三级回退：`picked`（apiproxy 闭包内存，Web 自己切时写）→ `agent.session.requestHeader()?.config`（最近请求 header，只读，从日志折叠）→ `defaults.defaultModelSelection()`（部署默认）。
+- **权威写入口**：**无公开入口**。① apiproxy 的 `selections` WeakMap / `selectionFor` 是 `apply` 内闭包，不暴露到 cordis context（grep 仅 3 处内部引用）；② `session.requestHeader()` 是只读 getter（`headerFold` 私有缓存，从 `request/header` 事件折叠）；③ `defaultModelSelection`（`ctx.agentDefaultModel`）桥可写，但被 requestHeader 覆盖，仅对「尚未跑过任何请求的空会话」有即时效果，且**违背已拍板「仅当前会话、不存默认」决策**，故不可用。
+- **实际生效面（0.17.2）**：桥 prepend 抢占 waterfall 链头，保证「下一轮 prompt 组装/agent 请求用新值」，下一轮后 `request/header` 记录新值 → 之后 Web UI（在其 refetch 时）才显示新值。smoke 已断言「set_model 后以 prepend:true 挂载 system-prompt/assemble + agent/request」；「下一轮 requestHeader 变为新值」属 prepend waterfall 语义推论，**未真机核验**（本环境无真机，需装机批次验证）。
+- **可选 workaround（均不根治，供决策，不擅自做）**：① 桥切后 emit `llm/adapters-updated` 触发 Web refetch——但 refetch 读的 apiproxy ref 的 fallback 仍要到下一轮 requestHeader 更新才变，只缩短「下一轮后」的显示延迟，不能「立即」显示；② 桥写 `agentDefaultModel.saveSelection`——被 requestHeader 覆盖且违背已拍板决策。故**如实报告为平台限制**，根治需 DSH 上游提供「单一权威 selection registry」供 apiproxy/桥共享读写。
+
 ## 后续改进计划
 
 - **语义边界（已向主对话说明）**：本修复满足「仅当前会话、下一步 prompt 组装边界生效」语义；一个已知边缘——桥 prepend 抢占后，若用户**随后又回到 Web 切换模型**，桥的 picked 会暂时覆盖 Web 的切换（直到桥再次 set_model 或下一轮 requestHeader 记录 Web 选择）。用户主场景是「手机遥控、模型在手机切」，此边缘可接受；若需「双端任意切换都即时生效」，需上位到 DSH 的「单一权威 selection registry」（跨 apiproxy/桥共享），属 DSH 上游架构改动。
