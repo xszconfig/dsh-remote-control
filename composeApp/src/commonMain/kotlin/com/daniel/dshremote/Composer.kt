@@ -40,11 +40,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -78,6 +81,8 @@ internal fun ConversationComposer(
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    // 输入框焦点请求器：技能选用后把焦点拉回输入框（用户接续输入提示词）时用。
+    val inputFocusRequester = remember { FocusRequester() }
     var showInterruptConfirm by remember { mutableStateOf(false) }
     // 点「中断」那一刻的排队数快照：弹框正文必须用它，不能渲染时再读 queuedCounts——
     // 否则「点中断时队列非空 → 弹框出现 → 队列恰好被消费」会在正文显示「0 条」与用户所见不符。
@@ -86,6 +91,16 @@ internal fun ConversationComposer(
     var showEffortSheet by remember { mutableStateOf(false) }
     var showContextDetail by remember { mutableStateOf(false) }
     var showSkillPanel by remember { mutableStateOf(false) }
+    // 技能选用后需把焦点拉回输入框：面板收起（showSkillPanel=false）且本标记为 true 时才请求焦点，
+    // 避免面板首次组合 / 手势关闭（onDismiss 无 pendingSkillFocus）时误抢焦点。
+    var pendingSkillFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(showSkillPanel) {
+        if (!showSkillPanel && pendingSkillFocus) {
+            pendingSkillFocus = false
+            inputFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
@@ -145,7 +160,7 @@ internal fun ConversationComposer(
         OutlinedTextField(
             value = input,
             onValueChange = onInputChange,
-            modifier = Modifier.fillMaxWidth().onFocusChanged {
+            modifier = Modifier.fillMaxWidth().focusRequester(inputFocusRequester).onFocusChanged {
                 onInputFocusedChange(it.isFocused)
                 if (it.isFocused) {
                     ConnLog.throttled(ConnLogLevel.INFO, "ACTION", "input-focus-gain", 500) { "输入框获得焦点 sessionId=$sessionId" }
@@ -281,6 +296,14 @@ internal fun ConversationComposer(
     if (showSkillPanel) {
         SkillPanel(
             skills = state.skills,
+            onPick = { name ->
+                ConnLog.info("SKILL", "技能选用 name=$name sessionId=$sessionId")
+                // 选中技能 → 把「/技能名 」字面量写入输入框（带尾空格，就绪输入提示词），
+                // 收起面板，焦点拉回输入框让用户接续输入提示词再发送。
+                onInputChange("/$name ")
+                showSkillPanel = false
+                pendingSkillFocus = true
+            },
             onDismiss = { showSkillPanel = false },
         )
     }
@@ -452,10 +475,10 @@ internal fun ContextRing(usage: ContextUsageWire?, onClick: () -> Unit) {
     }
 }
 
-/** 技能面板：半屏 Sheet，顶部搜索框 + LazyColumn 浏览电脑端 DSH 全部技能（仅浏览，条目无点击动作）。 */
+/** 技能面板：半屏 Sheet，顶部搜索框 + LazyColumn 浏览电脑端 DSH 全部技能；点某技能即 [onPick]（写入「/技能名 」到输入框）。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
+internal fun SkillPanel(skills: List<SkillWire>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var query by remember { mutableStateOf("") }
     // 面板固定高度 = 屏幕 1/2（用户拍板：半屏，不高不矮）；搜索框固定顶部、列表内部滚动。
@@ -503,7 +526,7 @@ internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
                 } else {
                     LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                         items(filtered, key = { it.name }) { skill ->
-                            SkillRow(skill)
+                            SkillRow(skill = skill, onClick = { onPick(skill.name) })
                         }
                     }
                 }
@@ -513,10 +536,14 @@ internal fun SkillPanel(skills: List<SkillWire>, onDismiss: () -> Unit) {
     }
 }
 
-/** 技能单行：名称（加粗）+ 描述（次要色）+ 适用（whenToUse，有则附一行小字）。 */
+/** 技能单行：名称（加粗）+ 描述（次要色）+ 适用（whenToUse，有则附一行小字）；点击整行触发 [onClick] 选用该技能。 */
 @Composable
-private fun SkillRow(skill: SkillWire) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+private fun SkillRow(skill: SkillWire, onClick: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
         Text(skill.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
         Text(
             skill.description,
