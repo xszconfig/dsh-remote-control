@@ -361,3 +361,68 @@ keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer �
 ### 收尾确认
 
 keepawake off 成功（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅。
+
+## 模型/强度切换「服务端是否真正生效」硬证据核验
+
+> 用户实测怀疑「手机切模型/强度 → 发新消息 → 服务端仍没变化」。自动化核验，证据源：桥日志（`/remote/logs`）+ 会话日志（`~/.dsh/sessions/.../session.jsonl.zstd` 的 agent request header）+ 桥投影（models_update current）。
+
+### 数据流与根因背景
+
+- `set_model` → 桥 `case 'set_model'` 解析后 `installSelectionFor(a).current = selected`（写桥侧可变 ref）。
+- 桥 `installModelSelectionPrepend`（`{ prepend: true }`）在 `agent/request` 钩子里用 selected 覆盖 provider/model/reasoningEffort——**这是修复「apiproxy 链头覆盖桥 ref、set_model 被覆盖不切换」的根因补丁**（bridge 0.17.2 已含）。
+
+### 结论表
+
+| 切换动作 | 入口回显 | 新一轮实际用值（会话日志 request header） | Web 显示值（桥投影 current） |
+|---------|---------|------------------------------------------|------------------------------|
+| High→Max | 「· Max」✅ | `reasoningEffort:"max"` ✅（切换后新一轮实用了 max） | deepseek-v4-pro + max ✅（models_update 广播） |
+| Max→Off | 「· Off」✅ | 未完成新一轮（重装打断）⏸️ | deepseek-v4-pro + off ✅（桥日志 effort=off 已下发） |
+
+### 判定
+
+- **「实际生效」成立**：桥日志逐条记录 `切换模型 ... effort=max / effort=off`（set_model 被处理并写 ref）；会话日志证实 High→Max 之后的新一轮 request header 为 `reasoningEffort:"max"`（agent 实际用了新值）。
+- **「仅显示滞后」不成立**：不是只有客户端入口变，服务端 request header 同步变。
+- Max→Off 的「新一轮实际用值」因中途重装打断未完成 round 核验，但切换本身已确认下发（桥日志 effort=off）。
+
+### 证据链
+
+- 桥日志 `/remote/logs`（tag=MODEL）：`1789174775677 effort=high`（基线）→ `1789174824970 effort=max`（High→Max）→ `1789174978097 effort=off`（Max→Off）。
+- 会话日志 session-ab787050 的 `session.jsonl.zstd`：最后一条 `"reasoningEffort":"max"`。
+- 代码 `src/core.ts` `installModelSelectionPrepend`（agent/request prepend 覆盖 provider/model/reasoningEffort）。
+
+### 说明（诚实标注）
+
+- Web 界面「选择器显示」未直接读 Web DOM（无浏览器）；以桥投影 current（models_update 广播给 Web）为准——该值已随 set_model 同步更新。
+- 测试消息 `[verify-model] reply OK only`（因输入框残留草稿拼接成 65 字符，但 ack ok、已触发新一轮，不影响核验）。
+
+## #57 技能点选（85321e4）装机 + 验收
+
+> debug 包 `com.daniel.dshremote.debug`（13:49 构建，含 85321e4 技能点选）。USB `2NP0224806003991`。桥 coreVersion 0.17.5。
+
+### 验收表
+
+| 验收项 | 预期 | 实测 | 结论 |
+|--------|------|------|------|
+| 装机+冒烟 | 装 debug 包、P00 | 13:51:42 装机 Success；冒烟三关 PASS（pid=19812） | ✅ PASS |
+| 技能面板搜索点选 | 搜 `code-lint` → 点选 | 面板打开（01）；搜 code-lint 命中（02）；点选后输入框预填 `/code-lint `（03） | ✅ PASS |
+| 预填回显 | 输入框 `/code-lint ` + 焦点回输入框 | EditText 预填 `/code-lint `、focused=true | ✅ PASS（键盘未自动弹起，见下） |
+| 发送送达 | 消息含 `/code-lint` 送达 | `发送点击 输入长度=35` → `发送消息 首20字="/code-lint /code-lin"` → `ack ok msgId=…` | ✅ PASS |
+| 技能 pre-step 注入 | 服务端识别 `/code-lint` 注入技能 | 桥日志 `斜杠 token 命中 user-invocable 技能 name=/code-lint …（放行 followup，pre-step 注入）` | ✅ PASS |
+
+### 发现的小问题（建议修）
+
+1. **预填后光标在位置 0（开头）而非末尾**：点选技能预填 `/code-lint ` 后，光标落在文本开头，导致补输入提示词会插到前面（实测首次补输入得到 ` run P0/code-lint `，需手动 KEYCODE_MOVE_END 才能正确追加到末尾）。预期：`onInputChange("/$name ")` 后应把选区/光标置到文本末尾（TextRange(length)）。
+2. **键盘未自动弹起**：`onInputChange` 后虽 `pendingSkillFocus=true`（焦点回输入框），但实测 `mInputShown=false`（键盘未弹起）。与「焦点回输入框键盘弹起」预期不符。
+
+### 截图清单（docs/screenshots/2026-09-12-skill-pick/）
+
+| 步骤 | 截图 |
+|------|------|
+| 技能面板 | [01-skill-panel.jpg](../screenshots/2026-09-12-skill-pick/01-skill-panel.jpg) |
+| 搜索 code-lint | [02-search-code-lint.jpg](../screenshots/2026-09-12-skill-pick/02-search-code-lint.jpg) |
+| 点选后预填 | [03-prefilled.jpg](../screenshots/2026-09-12-skill-pick/03-prefilled.jpg) |
+| 追加提示词 | [04-appended.jpg](../screenshots/2026-09-12-skill-pick/04-appended.jpg) |
+
+### 收尾
+
+keepawake off 成功（timeout=300000、stayon=0、备份=无）；crash buffer 无 FATAL ✅。
