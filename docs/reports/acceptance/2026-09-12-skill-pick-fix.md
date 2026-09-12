@@ -40,13 +40,22 @@
 | 点「技能」chip 打开面板 | 半屏面板 + 技能列表 | 面板打开，列出 arkui-scoring-workflow / ask-matt / batch-grill-me 等 | PASS |
 | 点技能行写入输入框 | 输入框 = `/技能名 `（带尾空格） | `/arkui-scoring-workflow ` | PASS |
 | 光标在文本末尾 | 接续输入追加到技能名后 | 选技能后注入字符 q → 输入框 = `/arkui-scoring-workflow q`（q 在末尾，非 q/arkui…） | PASS |
-| 键盘自动弹起 | 选技能后 IME 弹出 | 选技能后 `dumpsys input_method`：`mInputShown=true mIsInputViewShown=true` | PASS（但见下「遗留」） |
+| 键盘自动弹起 | 选技能后 IME 弹出 | 选技能后 `dumpsys input_method`：`mInputShown=true mIsInputViewShown=true` | PASS（消歧复验见下） |
 
 说明：光标末尾目验采用「选技能 → `input text q` → dump 读输入框文本」间接取证——若光标在 0，结果应为 `q/arkui-scoring-workflow `；实测为 `/arkui-scoring-workflow q`，证明光标在末尾。
 
-## 遗留（诚实标注）
+## 键盘项消歧复验（refinement 接盘后，commit `755f3a3`）
 
-- 键盘弹起这一项，本代理首版用 `withFrameNanos{}` 等一帧再 `show()`（commit `c4b2bd7`）。目验 `mInputShown=true` 存在歧义：可能是技能面板搜索框键盘在面板收起时「延续」到输入框，而非 `show()` 真正生效。后续有并发代理进一步定位「一帧不够、IME 接管输入框异步」，在未提交的工作区把键盘唤起改为 `LaunchedEffect(inputFocused)` 在焦点真正落定后 `delay(120)` 再 `show()`（见 `Composer.kt` 工作区 diff）。该 refinement 尚未提交，由对应代理/主对话落 commit——本报告键盘项以「已修复但有更强 refinement 待提交」为准确口径。
+首版 `withFrameNanos{}` 的 `mInputShown=true` 存在歧义（可能是搜索框键盘延续）。接盘并发代理 refinement（`platformShowSoftInput()` = `InputMethodManager.showSoftInput`，`requestFocus()` 后 `delay(320)`）后做干净态消歧：
+
+| 步骤 | IME 状态 | 结论 |
+| --- | --- | --- |
+| 干净态（点中性区清焦点） | `mInputShown=false` | 键盘确实隐藏 |
+| 开技能面板（搜索框不自动聚焦） | `mInputShown=false` | 面板自身不弹键盘 |
+| 点选技能后 2.5s | `mInputShown=true mShowForced=true mIsInputViewShown=true`，`mServedInputConnectionWrapper=NullableInputConnectionWrapperApi25`（Compose 输入框 InputConnection） | 键盘由本次点选真实弹起，服务的是输入框 |
+| 注入字符 q | 输入框 = `/arkui-scoring-workflow q` | IME 确实服务于输入框 |
+
+「键盘是否真实弹起」以 `mServedInputConnectionWrapper` 指向 Compose 输入框 + `mIsInputViewShown=true` + 注入字符落在输入框三者为强证据，消除了「搜索框键盘延续」的歧义。
 
 ## 截图清单
 
