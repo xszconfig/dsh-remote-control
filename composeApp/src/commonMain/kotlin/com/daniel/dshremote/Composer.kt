@@ -65,8 +65,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.text.TextRange
+import kotlinx.coroutines.delay
 import androidx.compose.ui.text.input.TextFieldValue
 
 /** 输入区：入口列表（上，横向 chips，可扩展）+ 输入框（中）+ 操作条（下：模型入口 / 上下文环 / 终止 / 发送）。 */
@@ -101,10 +101,10 @@ internal fun ConversationComposer(
         if (!showSkillPanel && pendingSkillFocus) {
             pendingSkillFocus = false
             inputFocusRequester.requestFocus()
-            // requestFocus 只把焦点请求排到下一帧；立即 show() 会被吞掉（IME 还没起来）。
-            // 等一帧让焦点真正落定后再唤起键盘，键盘才会稳定弹出。
-            withFrameNanos { }
-            keyboardController?.show()
+            // 等焦点落定 + 面板收起动画完成（ModalBottomSheet 收起约 300ms）后再唤起键盘；
+            // 走平台 InputMethodManager.showSoftInput（SoftwareKeyboardController.show() 在华为 IME 下不稳定）。
+            delay(320)
+            platformShowSoftInput()
         }
     }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。

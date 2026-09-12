@@ -30,3 +30,6 @@ expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
 
 /** 退出应用回到桌面（等效系统返回键走到根：finish 当前 Activity）。 */
 expect fun platformExitApp()
+
+/** 唤起软键盘（技能选用后拉焦点回输入框再调用；SoftwareKeyboardController.show() 在华为 IME 下不稳定，走平台 InputMethodManager）。 */
+expect fun platformShowSoftInput()

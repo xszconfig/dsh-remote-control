@@ -374,6 +374,20 @@ actual fun platformExitApp() {
     }
 }
 
+actual fun platformShowSoftInput() {
+    try {
+        val activity = AppContext.activity ?: return
+        val imm = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager ?: return
+        // 优先用当前焦点 view（输入框）；无焦点则退回 decorView。
+        val view = activity.currentFocus ?: activity.window?.decorView ?: return
+        imm.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_FORCED)
+    } catch (e: Exception) {
+        // 唤起失败不阻塞主流程
+        android.util.Log.w("dshremote", "platformShowSoftInput 失败: ${e.message}")
+    }
+}
+
 actual fun createWsHttp(): HttpClient = HttpClient(OkHttp) {
     install(WebSockets)
     engine {
