@@ -57,11 +57,12 @@
 
 ### 2.2 切换模型入口
 
-- **入口文案**：显示「**模型显示名 · 推理强度显示名**」（如「Deepseek V4 Pro · Max」）。取法：`current = {provider, model, reasoningEffort}` → 从目录 `groups[].models[]` 按 `model == current.model` 取该模型**显示名 `name`**，再从该模型 `reasoning.efforts[]` 按 `id == current.reasoningEffort` 取 effort **显示名 `name`**，拼接为「模型名 · 强度名」；无 effort 只显示模型名。**绝不显示 provider 名或 model id**（「Deepseek」重复两次是 provider+model-id 的渲染 bug）。查不到回退「选择模型」占位。过长截断。
-- **弹窗内容**（对齐 `SessionModels` wire，**全部服务端拉取、客户端零硬编码**）：
-  - 按 provider 分组（`ModelProviderGroup[]`），组内列出模型（`ModelCatalogModel[]`：`id/name/description`）。
-  - 选中某模型后，该模型带 `reasoning` 元数据（`efforts/defaultEffort`）时，进一步列出**该模型的 effort 档位**供选——**档位列表 `reasoning.efforts[]`（id/name）随 `models_update` 下发**，与 DSH Web 的 `buildModelCatalog`（`ctx.llm.resolveModelInfo().reasoning.efforts`）**同源**；客户端**不硬编码任何模型名/档位**（服务端当前 3 模型：Deepseek V4 Flash / Pro / Flash Vision EXP，档位 off/low/high/max，随时可增删，手机实时反映）。
-  - provider 级失败（`ModelCatalogFailure[]`）在该组内联展示错误，不影响其它可用组（对齐 Web）。
+- **入口形态（已拍板 #51 左右分区可选）**：主会话入口显示「**模型显示名 · 推理强度显示名**」（如「Deepseek V4 Pro · Max」），拆成**左右两个独立点击区**：**左区（模型名）→ 模型选择面板**、**右区（强度名）→ 推理强度选择面板**；子会话入口保持**只读**（继承展示、不分区、不可点）。
+- **入口文案取法**：`current = {provider, model, reasoningEffort}` → 从目录 `groups[].models[]` 按 `model == current.model` 取该模型**显示名 `name`**，再从该模型 `reasoning.efforts[]` 按 `id == current.reasoningEffort` 取 effort **显示名 `name`**；无 effort 只显示模型名（右区不显示）。**绝不显示 provider 名或 model id**（「Deepseek」重复两次是 provider+model-id 的渲染 bug）。查不到回退「选择模型」占位。过长截断。
+- **模型选择面板**（左区点开）：按 provider 分组列出模型（`ModelCatalogModel[]`：`id/name/description`），点某模型 → **立即 `set_model(provider, model, null)`（不指定强度=用该模型默认档）并收起**，不再进入强度二级导航。
+- **推理强度选择面板**（右区点开）：对**当前模型**列其 `reasoning.efforts[]`（id/name/description + 默认档标记 + 当前高亮），点某档 → **立即 `set_model(current.provider, current.model, effId)` 并收起**；另给「不指定（用默认档）」→ `set_model(provider, model, null)`。当前模型无 `reasoning.efforts` 时右区不显示。
+- **选择即实时同步（已拍板）**：改模型/改强度都**立即发 `set_model`，无「保存」按钮、无二次确认**；入口显示与面板高亮随 `models_update` 回显（服务端投影为准，客户端不本地乐观改入口）。
+- **全部服务端拉取、客户端零硬编码**：模型列表（`groups[].models[]`）与强度档位（`reasoning.efforts[]`）均随 `models_update` 下发，与 DSH Web `buildModelCatalog`（`ctx.llm.resolveModelInfo().reasoning.efforts`）同源；服务端当前 3 模型 + off/low/high/max 档位，随时可增删，手机实时反映。provider 级失败（`ModelCatalogFailure[]`）在该组内联展示错误。
 - **当前项高亮**：以 `SessionModels.current`（provider/model/reasoningEffort）为准；若 current 不在目录组内（目录是 advisory），入口显示「选择模型」占位，不合成过期行（对齐 Web 语义）。
 - **生效方式（范围与时机）**：**下一步生效**——选择只在「下一次 prompt 组装边界」被快照，**正在运行的 step 保留其组装时的选择**，绝不打断当前推理；选择只有被后续请求消费后才持久化（`installModelSelection` 语义，见附录 B）。即：**仅影响新消息/下一轮，不影响已发出的消息与当前推理**。
 - **持久化（已拍板）**：切换**仅对当前会话生效，不保存为部署默认**（不调用 `saveDefaultModelSelection`，避免「切一次全局改默认」的副作用）；选择仍会被该会话后续消费它的请求记录为 durable（`installModelSelection` 语义）。
