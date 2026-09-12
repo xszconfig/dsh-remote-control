@@ -7,6 +7,7 @@
 
 > 2026-09-06 真机全面自测（HBN-AL00）：11 项中 9 项 PASS、3 项部分通过（新消息不打断转盘/宽表横滑/排队删除动作为时机依赖项，留待用户自然验收）；期间发现并修复中断弹框竞态 bug `ceb5c05`（点按快照排队数），该修复已进最新 APK、待手机解锁后装机复验。
 
+- [ ] 技能点选两小问题修复（光标置末尾 + 键盘弹起）—— `c4b2bd7`：input 状态 String→TextFieldValue、onPick 写 `TextFieldValue("/$name ", selection=末尾)`；光标末尾真机目验 PASS（点选→`/arkui-scoring-workflow `→注入 q 得 `/arkui-scoring-workflow q`）；键盘弹起首版 `withFrameNanos{}` 存在歧义、有并发代理进一步改 `LaunchedEffect(inputFocused)+delay(120)` 待提交；报告 `docs/reports/acceptance/2026-09-12-skill-pick-fix.md`；待用户人工复验
 - [ ] APK 瘦身（新增 release-in-house + release-store 两 buildType 开 R8 + arm64-only）—— `df750a9`，release-in-house 2.16MB（debug 12.6MB → −83%，目标 ≤6.3MB）；模拟器冒烟 PASS + 连接/hello/序列化/日志页 tab/问题弹层回归通过；待真机装机验收
 - [ ] 时间戳新格式（前缀+时刻恒显：今天/昨天/前天/M月d日/跨年）—— `688257e`，单测 22 例 + 模拟器 UI 已验证；待真机装机后验收
 - [ ] 转盘改版：左移 Deep Diving 上方 + 56dp 五线小转盘图标 —— `0543a32`，模拟器验证；待真机目验位置/图标
