@@ -54,17 +54,23 @@ class BridgeClientTest {
     /** 内存态待发送消息 store：纯 suspend（无 IO），runTest 下 runCurrent 可同步推进。 */
     private class InMemoryPendingStore : PendingStore {
         val data = mutableMapOf<String, List<PendingMessage>>()
-        override suspend fun load(sessionId: String): List<PendingMessage> = data[sessionId] ?: emptyList()
-        override suspend fun save(sessionId: String, pending: List<PendingMessage>) {
+        /** 模拟写失败（存储满）：置 true 后 save 返回 false、update 返回 persisted=false 且不落盘。 */
+        var failWrites = false
+        override suspend fun load(sessionId: String): List<PendingMessage> =
+            (data[sessionId] ?: emptyList()).map { it.copy(persisted = true) }
+        override suspend fun save(sessionId: String, pending: List<PendingMessage>): Boolean {
+            if (failWrites) return false
             if (pending.isEmpty()) data.remove(sessionId) else data[sessionId] = pending
+            return true
         }
         override suspend fun update(
             sessionId: String,
             transform: (List<PendingMessage>) -> List<PendingMessage>,
         ): List<PendingMessage> {
             val next = transform(data[sessionId] ?: emptyList())
+            if (failWrites) return next.map { it.copy(persisted = false) }
             if (next.isEmpty()) data.remove(sessionId) else data[sessionId] = next
-            return next
+            return next.map { it.copy(persisted = true) }
         }
     }
 
@@ -315,5 +321,28 @@ class BridgeClientTest {
         assertEquals(PendingStatus.Failed, client.session.value.pendingMessages.single().status)
         assertEquals(1, client.session.value.pendingMessages.single().retryCount)
         assertEquals(1, store.data["s1"]!!.single().retryCount)
+    }
+
+    @Test
+    fun writeFailure_marksPendingUnpersisted_inMemory() = runTest {
+        val store = InMemoryPendingStore()
+        store.failWrites = true // 模拟存储满
+        val client = newClient(backgroundScope, store)
+        client.handle(
+            ServerEvent.Hello(
+                version = "test",
+                sessions = listOf(
+                    SessionSummary(id = "s1", cwd = "/tmp", status = "idle", agentCount = 1, subagentCount = 0, updatedAt = 0),
+                ),
+                agents = emptyList(),
+            ),
+        )
+        client.openSession("s1")
+        client.sendMessage("hi")
+        runCurrent() // 无连接 send false → Failed；落盘失败 → persisted=false 回写内存
+        val p = client.session.value.pendingMessages.single()
+        assertEquals(PendingStatus.Failed, p.status)
+        assertEquals(false, p.persisted) // 未落盘标记已同步到内存（UI 显示 ⚠️）
+        assertTrue(store.data["s1"].isNullOrEmpty()) // 磁盘确实没写进去
     }
 }

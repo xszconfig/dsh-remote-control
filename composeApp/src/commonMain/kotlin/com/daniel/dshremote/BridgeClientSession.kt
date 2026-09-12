@@ -64,7 +64,7 @@ internal fun BridgeClient.navigateToSession(sessionId: String, subagentReturnSta
                 }
             }
             // 回写已转换状态（sending→failed），保证下次重启不再重复转换
-            pendingStore.save(sessionId, restored)
+            persistPendingSave(pendingStore, _session, sessionId, restored)
             ConnLog.info("PENDING", "会话 $sessionId 恢复待发送消息 ${restored.size} 条（sending→failed）")
         }
         // 断线自动重放：对恢复出的 failed 消息（retryCount < 上限）按序自动重发（同 msgId 幂等）

@@ -59,20 +59,20 @@ fun BridgeClient.sendMessage(text: String) {
         // P00 写前日志（write-ahead）：先原子落盘 sending 再真正发送——任何时刻断线/杀进程，
         // 该消息（含 msgId）都已持久化，恢复后自动重放/手动重发复用同一 msgId 幂等。
         if (pending != null) {
-            pendingStore.update(sid) { list -> list.filterNot { it.msgId == pending.msgId } + pending }
+            persistPendingUpdate(pendingStore, _session, sid) { list -> list.filterNot { it.msgId == pending.msgId } + pending }
         }
         if (connection.send(ClientCommand.SendMessage(sid, text, msgId))) {
             if (pending != null) {
                 ConnLog.info("ACTION", "发送送达 msgId=${pending.msgId}（sending→sent，等 ack/回显）")
                 _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, pending.msgId)) }
                 // 帧已写桥 → 从持久化记录删除该条（ack ok 或回显接棒，服务端历史承载）
-                pendingStore.update(sid) { list -> list.filterNot { it.msgId == pending.msgId } }
+                persistPendingUpdate(pendingStore, _session, sid) { list -> list.filterNot { it.msgId == pending.msgId } }
             }
         } else {
             ConnLog.error("CMD", "发送消息失败 sessionId=$sid textLen=${text.length} ws=${connection.info.value.state}")
             if (pending != null) {
                 _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, pending.msgId)) }
-                pendingStore.update(sid) { list ->
+                persistPendingUpdate(pendingStore, _session, sid) { list ->
                     list.filterNot { it.msgId == pending.msgId } + pending.copy(status = PendingStatus.Failed)
                 }
             }
@@ -93,17 +93,17 @@ fun BridgeClient.retryMessage(msgId: String) {
     _session.update { s -> s.copy(pendingMessages = markPendingSending(s.pendingMessages, msgId)) }
     scope.launch {
         // 重发前先原子落盘 sending（重置 retryCount=0），断线/杀进程后可恢复为 failed
-        pendingStore.update(p.sessionId) { list ->
+        persistPendingUpdate(pendingStore, _session, p.sessionId) { list ->
             list.filterNot { it.msgId == msgId } + p.copy(status = PendingStatus.Sending, retryCount = 0)
         }
         if (connection.send(ClientCommand.SendMessage(p.sessionId, p.text, msgId))) {
             ConnLog.info("ACTION", "重发送达 msgId=$msgId（sending→sent，等 ack/回显）")
             _session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, msgId)) }
-            pendingStore.update(p.sessionId) { list -> list.filterNot { it.msgId == msgId } }
+            persistPendingUpdate(pendingStore, _session, p.sessionId) { list -> list.filterNot { it.msgId == msgId } }
         } else {
             ConnLog.error("CMD", "重发失败 msgId=$msgId ws=${connection.info.value.state}")
             _session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, msgId)) }
-            pendingStore.update(p.sessionId) { list ->
+            persistPendingUpdate(pendingStore, _session, p.sessionId) { list ->
                 list.filterNot { it.msgId == msgId } + p.copy(status = PendingStatus.Failed)
             }
             pushConnectionError("「${p.text.take(20)}」未发送：连接已断开")

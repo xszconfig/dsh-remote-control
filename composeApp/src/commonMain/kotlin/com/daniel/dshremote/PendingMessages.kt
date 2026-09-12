@@ -36,6 +36,12 @@ data class PendingMessage(
     val createdAt: Long,
     /** 已自动重放次数；手动重发重置为 0。 */
     val retryCount: Int = 0,
+    /**
+     * 是否已成功落盘（false = 上次落盘失败，仅在内存，杀进程即丢）。
+     * 落盘失败时置 false 供 UI 显示 ⚠️；下一次状态变更机会式重试落盘成功后置回 true。
+     * 从磁盘 load 出来的消息恒为 true（能读出来即已落盘）。
+     */
+    val persisted: Boolean = true,
 )
 
 /** 回显去重匹配时间窗口（毫秒）：echo 时间戳与本地 createdAt 相差在此内视为同一条，容忍时钟偏移。 */

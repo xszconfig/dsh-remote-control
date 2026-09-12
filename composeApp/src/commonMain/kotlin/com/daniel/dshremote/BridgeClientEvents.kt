@@ -237,7 +237,7 @@ internal fun BridgeClient.handleEvent(ev: ServerEvent.Event) {
             _session.update { s -> s.copy(pendingMessages = removePending(s.pendingMessages, matched)) }
             // 回显已作为权威气泡上屏，同步清理该会话持久化记录（ack 已先行时此处多为 no-op）
             scope.launch {
-                pendingStore.update(ev.sessionId) { list -> list.filterNot { it.msgId == matched } }
+                persistPendingUpdate(pendingStore, _session, ev.sessionId) { list -> list.filterNot { it.msgId == matched } }
             }
         }
     }

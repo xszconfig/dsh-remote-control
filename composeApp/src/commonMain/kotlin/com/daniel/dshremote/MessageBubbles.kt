@@ -118,6 +118,15 @@ internal fun PendingBubble(p: PendingMessage, onRetry: () -> Unit) {
                 Spacer(Modifier.width(6.dp))
                 PendingStatusIcon(p.status, onRetry)
             }
+            if (!p.persisted) {
+                // 落盘失败未持久化：与「发送失败 ❗」语义区分，⚠️ 只提示「本地未落盘，重启可能丢」
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "⚠️",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = StatusAmber,
+                )
+            }
         }
         Spacer(Modifier.height(3.dp))
         Surface(

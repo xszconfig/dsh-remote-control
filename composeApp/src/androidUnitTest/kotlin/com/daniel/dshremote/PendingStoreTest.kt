@@ -17,6 +17,12 @@ class PendingStoreTest {
         return AndroidPendingStore(dir)
     }
 
+    /** 注入自定义落盘桩（可抛异常模拟存储满/写失败）。 */
+    private fun newStoreWithWriter(writeRaw: (File, String) -> Unit): AndroidPendingStore {
+        val dir = File(System.getProperty("java.io.tmpdir"), "dsh-pending-test-${System.nanoTime()}")
+        return AndroidPendingStore(dir, writeRaw)
+    }
+
     private fun p(
         msgId: String,
         sessionId: String = "s1",
@@ -102,5 +108,46 @@ class PendingStoreTest {
         store.save(weird, listOf(p("a", sessionId = weird)))
         // 不崩溃、能读回：非法字符被替换为下划线，文件名不越出目录
         assertEquals(1, store.load(weird).size)
+    }
+
+    // ---- 写失败显式化 + 机会式重试（混沌工程 #60-2）----
+
+    @Test
+    fun save_writeFailure_returnsFalse_notSwallowed() = runBlocking {
+        var fail = true
+        // 注入桩：fail 时抛异常模拟存储满；恢复后正常写文件
+        val store = newStoreWithWriter { f, body -> if (fail) throw java.io.IOException("disk full") else f.writeText(body) }
+        // 写失败不静默吞：save 返回 false，磁盘无记录
+        assertEquals(false, store.save("s1", listOf(p("a"))))
+        assertTrue(store.load("s1").isEmpty())
+        // 磁盘恢复后 save 成功
+        fail = false
+        assertEquals(true, store.save("s1", listOf(p("a"))))
+        assertEquals(1, store.load("s1").size)
+    }
+
+    @Test
+    fun update_writeFailure_marksPersistedFalse() = runBlocking {
+        var fail = true
+        val store = newStoreWithWriter { f, body -> if (fail) throw java.io.IOException("disk full") else f.writeText(body) }
+        val result = store.update("s1") { list -> list + p("a", status = PendingStatus.Sending) }
+        // 返回的列表标记 persisted=false（未落盘），磁盘空
+        assertEquals(false, result.single().persisted)
+        assertTrue(store.load("s1").isEmpty())
+    }
+
+    @Test
+    fun update_writeFailure_thenRetry_recoversDirty() = runBlocking {
+        var fail = true
+        val store = newStoreWithWriter { f, body -> if (fail) throw java.io.IOException("disk full") else f.writeText(body) }
+        // 第一次写失败：a 进脏写残留（未落盘）
+        val r1 = store.update("s1") { list -> list + p("a", status = PendingStatus.Sending) }
+        assertEquals(false, r1.single().persisted)
+        // 磁盘恢复 → 机会式重试：下次 update 把脏写残留 a 一并补落盘
+        fail = false
+        val r2 = store.update("s1") { list -> list + p("b", status = PendingStatus.Failed) }
+        assertEquals(2, store.load("s1").size)
+        assertEquals(setOf("a", "b"), store.load("s1").map { it.msgId }.toSet())
+        assertTrue(r2.all { it.persisted })
     }
 }

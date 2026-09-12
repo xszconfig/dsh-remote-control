@@ -50,16 +50,16 @@ class PendingSender(
             session.update { s ->
                 s.copy(pendingMessages = s.pendingMessages.map { if (it.msgId == msgId) next else it })
             }
-            pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == msgId } + next }
+            persistPendingUpdate(pendingStore, session, sessionId) { list -> list.filterNot { it.msgId == msgId } + next }
             if (connection.send(ClientCommand.SendMessage(sessionId, next.text, msgId))) {
                 ConnLog.info("ACTION", "自动重放送达 msgId=$msgId（第 ${next.retryCount} 次）")
                 session.update { s -> s.copy(pendingMessages = markPendingSent(s.pendingMessages, msgId)) }
-                pendingStore.update(sessionId) { list -> list.filterNot { it.msgId == msgId } }
+                persistPendingUpdate(pendingStore, session, sessionId) { list -> list.filterNot { it.msgId == msgId } }
                 return
             }
             ConnLog.warn("ACTION", "自动重放失败 msgId=$msgId（第 ${next.retryCount} 次）ws=${connection.info.value.state}")
             session.update { s -> s.copy(pendingMessages = markPendingFailed(s.pendingMessages, msgId)) }
-            pendingStore.update(sessionId) { list ->
+            persistPendingUpdate(pendingStore, session, sessionId) { list ->
                 list.filterNot { it.msgId == msgId } + next.copy(status = PendingStatus.Failed)
             }
         }
@@ -72,7 +72,7 @@ class PendingSender(
             ConnLog.info("ACTION", "ack ok msgId=${ev.msgId}，消息已归服务端，删除持久化记录")
             session.update { s -> s.copy(pendingMessages = ackPendingOk(s.pendingMessages, ev.msgId)) }
             if (p != null) {
-                scope.launch { pendingStore.update(p.sessionId) { list -> list.filterNot { it.msgId == ev.msgId } } }
+                scope.launch { persistPendingUpdate(pendingStore, session, p.sessionId) { list -> list.filterNot { it.msgId == ev.msgId } } }
             }
         } else {
             ConnLog.warn("ACTION", "ack fail msgId=${ev.msgId}，服务端拒绝，转 failed 计次")
@@ -85,7 +85,7 @@ class PendingSender(
         val p = session.value.pendingMessages.firstOrNull { it.msgId == msgId } ?: return
         session.update { s -> s.copy(pendingMessages = markPendingRejected(s.pendingMessages, msgId)) }
         scope.launch {
-            pendingStore.update(p.sessionId) { list ->
+            persistPendingUpdate(pendingStore, session, p.sessionId) { list ->
                 list.filterNot { it.msgId == msgId } + p.copy(status = PendingStatus.Failed, retryCount = p.retryCount + 1)
             }
         }
