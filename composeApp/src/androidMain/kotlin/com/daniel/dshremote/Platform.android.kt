@@ -248,7 +248,12 @@ internal object NotificationPoster {
                 .setAutoCancel(true)
                 .setCategory(Notification.CATEGORY_REMINDER)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setPriority(Notification.PRIORITY_HIGH)
+                .apply {
+                    // 仅审批/提问走高优 heads-up（横幅）；结果交付保持低打扰，不请求高优
+                    if (spec.kind == NotificationKind.APPROVAL || spec.kind == NotificationKind.QUESTION) {
+                        setPriority(Notification.PRIORITY_HIGH)
+                    }
+                }
                 .build()
             nm.notify(spec.tag, spec.tag.hashCode(), notification)
         } catch (_: Exception) {
