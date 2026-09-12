@@ -100,10 +100,14 @@ internal fun ConversationComposer(
     LaunchedEffect(showSkillPanel) {
         if (!showSkillPanel && pendingSkillFocus) {
             pendingSkillFocus = false
+            // 先等 ModalBottomSheet 退场动画（约 300ms）完成并释放焦点，再请求焦点。
+            // 若在面板还占着焦点时就 requestFocus，会被面板退场的焦点回收冲掉——
+            // 实测结果正是「focused=true 后立刻回 false、键盘唤不起」。
+            delay(380)
             inputFocusRequester.requestFocus()
-            // 等焦点落定 + 面板收起动画完成（ModalBottomSheet 收起约 300ms）后再唤起键盘；
-            // 走平台 InputMethodManager.showSoftInput（SoftwareKeyboardController.show() 在华为 IME 下不稳定）。
-            delay(320)
+            // FocusRequester 聚焦 → AndroidComposeView 拿到 window focus 是异步的，
+            // 再等一小段让焦点落定，platformShowSoftInput 才拿得到有效焦点 view。
+            delay(160)
             platformShowSoftInput()
         }
     }
