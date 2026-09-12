@@ -325,3 +325,39 @@ keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer �
 | 架构优化与App.kt拆分 | 空闲（冷会话） | 25% ✅ |
 
 截图：29-context-on-load.jpg。三例均在**未发消息**情况下加载即显示占用环。
+
+## debug 包功能验收（08:37:43，冒烟 PASS）
+
+> 设备 USB `2NP0224806003991`，debug 包 `com.daniel.dshremote.debug`。keepawake on→off 成功。
+
+### 验收表
+
+| # | 验收项 | 预期 | 实测 | 结论 |
+|---|--------|------|------|------|
+| 1 | 模型入口左右分区 | 左区=模型名→模型面板、右区=强度名→强度面板；选择即 set_model 回显 | 左区点「DeepSeek-V4-Flash」开「选择模型」面板；右区点「· Low」开「推理强度」面板；改强度→入口回显「· Max」、改模型→回显「DeepSeek-V4-Pro · High」 | ✅ PASS |
+| 2 | 占位文案 | 空态「给智能体发消息」 | dump 确认占位「给智能体发消息」 | ✅ PASS |
+| 3 | 按钮正圆 | 终止/发送 48dp 正圆 | 两按钮 bounds 162×162px=48dp 方形 | ✅ PASS |
+| 4 | 技能面板 | 半屏、搜索固定、清空恢复、搜 huawei | 面板顶部 y=1494≈半屏；搜 huawei 命中 huawei-adb-install/fast-install；清空恢复全量 | ✅ PASS |
+| 5 | C+ heads-up 通知 | 触发提问→高优横幅→点横幅回前台弹提问弹窗 | 通知出现（title「需要你回答」、specialType=floating_window_notification）；**但 FSI 未生效**（`topFullscreen=false`、`USE_FULL_SCREEN_INTENT` 未申请） | ⚠️ 部分（见下） |
+| 6 | 上下文加载即展示 | 冷子代理占用环立即显示 | 「架构优化与App.kt拆分」冷子代理加载即显 25% 环 | ✅ PASS |
+| 7 | 子代理模型继承 | 入口显示父会话「模型名 · 强度」只读 | 子代理入口「DeepSeek-V4-Pro · High」无 ▾、无点击区 | ✅ PASS |
+| 8 | 嵌套子代理+返回链 | 下钻两级→逐级返回 | 主会话→「输入区操作条PRD与技术调研」(🤖3)→「App 模型入口左右分区可选」→逐级返回两级回主会话 | ✅ PASS |
+
+### 项 5 未验/发现问题
+
+- **C+ heads-up（full-screen intent）未生效**：通知以 `floating_window_notification` 形态出现（heads-up 横幅），但 `topFullscreen=false`、`USE_FULL_SCREEN_INTENT` 权限未声明/未申请——用户已指出「这个权限要单独申请」。属「自动回前台半屏强提醒」的关键一环，需 manifest 加 `USE_FULL_SCREEN_INTENT` + 华为悬浮窗 app-op/Android 14+ 运行时申请，待路由「通知/保活」域。
+- 「点横幅回前台并自动弹提问弹窗」未自动化验证（通知栏 dump 未取到横幅文本节点）；通知点击直达（NotificationLaunch）代码已实现，上批已验提问弹窗自服务作答闭环。
+
+### 截图清单
+
+| 验收项 | 截图 |
+|--------|------|
+| 1/2/3 输入区（占位+左右分区+正圆按钮） | [30-debug-main-input.jpg](../screenshots/2026-09-10-batch-reverify/30-debug-main-input.jpg) |
+| 1 模型面板（左区） | [31-model-left-panel.jpg](../screenshots/2026-09-10-batch-reverify/31-model-left-panel.jpg) |
+| 1 强度面板（右区） | [32-strength-right-panel.jpg](../screenshots/2026-09-10-batch-reverify/32-strength-right-panel.jpg) |
+| 6 冷子代理上下文环 | [33-cold-subagent-context.jpg](../screenshots/2026-09-10-batch-reverify/33-cold-subagent-context.jpg) |
+| 8 二级子代理 | [34-subagent-l2.jpg](../screenshots/2026-09-10-batch-reverify/34-subagent-l2.jpg) |
+
+### 收尾确认
+
+keepawake off 成功（timeout=300000、stayon=0、备份=无）；crash buffer 无本包 FATAL ✅。
