@@ -57,6 +57,12 @@
 
 「键盘是否真实弹起」以 `mServedInputConnectionWrapper` 指向 Compose 输入框 + `mIsInputViewShown=true` + 注入字符落在输入框三者为强证据，消除了「搜索框键盘延续」的歧义。
 
+## 后续时序 tweak（commit `bd74cf2`，未真机复验）
+
+接盘并发代理又一版时序 tweak：`delay(320)` 拆成两段——`delay(380)` 等 ModalBottomSheet 退场动画完成并释放焦点 → `requestFocus()` → `delay(160)` 等 FocusRequester→window focus 异步落定 → `platformShowSoftInput()`。理由：面板还占焦点时 requestFocus 会被退场焦点回收冲掉（`focused=true 后立刻回 false`）。
+
+状态：**代码已 commit、闸门全绿；真机复验未完成**——设备在上一轮 keepawake off 后已锁屏（华为 face 识别锁，`deviceLocked=1`），adb 无法解锁，无法快速复验。低风险依据：上一轮已验证 `delay(320)` 版本键盘弹起；tweak 将等待加长（320→540ms）、只增稳健性不改已验证路径，待设备解锁后补一次快速复验即可。
+
 ## 截图清单
 
 | 序号 | 文件 | 对应验收项 |
