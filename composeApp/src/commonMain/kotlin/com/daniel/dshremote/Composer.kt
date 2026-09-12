@@ -65,6 +65,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 /** 输入区：入口列表（上，横向 chips，可扩展）+ 输入框（中）+ 操作条（下：模型入口 / 上下文环 / 终止 / 发送）。 */
 @Composable
@@ -73,8 +76,8 @@ internal fun ConversationComposer(
     state: SessionUiState,
     view: SessionViewState,
     sessionId: String,
-    input: String,
-    onInputChange: (String) -> Unit,
+    input: TextFieldValue,
+    onInputChange: (TextFieldValue) -> Unit,
     inputFocused: Boolean,
     onInputFocusedChange: (Boolean) -> Unit,
     onFollowBottom: () -> Unit,
@@ -98,20 +101,23 @@ internal fun ConversationComposer(
         if (!showSkillPanel && pendingSkillFocus) {
             pendingSkillFocus = false
             inputFocusRequester.requestFocus()
+            // requestFocus 只把焦点请求排到下一帧；立即 show() 会被吞掉（IME 还没起来）。
+            // 等一帧让焦点真正落定后再唤起键盘，键盘才会稳定弹出。
+            withFrameNanos { }
             keyboardController?.show()
         }
     }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
     // 候选清单来自服务端注册表（subscribe/commands_update 下发），与 Web composer 同源；
     // 选中即填入 "/命令名 "（带尾空格，就绪输入参数），弹窗随之收起。
-    val slashFragment = input.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
+    val slashFragment = input.text.takeIf { it.startsWith("/") && it.none { ch -> ch.isWhitespace() } }
     if (inputFocused && slashFragment != null && view.commands.isNotEmpty()) {
         val partial = slashFragment.removePrefix("/")
         val candidates = view.commands.filter { it.name.startsWith(partial) }
         if (candidates.isNotEmpty()) {
             CommandCandidatePopup(
                 candidates = candidates,
-                onPick = { name -> onInputChange("/$name ") },
+                onPick = { name -> onInputChange(TextFieldValue("/$name ", selection = TextRange("/$name ".length))) },
             )
         }
     }
@@ -120,18 +126,18 @@ internal fun ConversationComposer(
     // 子会话只继承主会话模型，不提供切换（模型入口 readOnly，不显示 ▾、不可点开）。
     val isSubagent = state.sessions.firstOrNull { it.id == sessionId }?.parentSessionId != null
     // 发送可点 = 输入非空；发送点击后立即清空输入框 → 自然置灰（PRD 2.5 解 A，不新增提交锁）。
-    val canSend = input.trim().isNotEmpty()
+    val canSend = input.text.trim().isNotEmpty()
 
     // 发送逻辑共享：下方发送按钮 onClick 与键盘 ImeAction.Send 都走这里。
     // 内部已含非空守卫（text.isNotEmpty()）——发送后输入清空 → canSend 回 false → 按钮回灰、
     // imeAction 回 Default（回车恢复换行），自然置灰保护，不新增提交锁。
     val onSend: () -> Unit = {
-        ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.length} trimLen=${input.trim().length}")
-        val text = input.trim()
+        ConnLog.info("ACTION", "发送点击 sessionId=$sessionId 输入长度=${input.text.length} trimLen=${input.text.trim().length}")
+        val text = input.text.trim()
         if (text.isNotEmpty()) {
             onFollowBottom() // 发送后重新跟随底部（要看到自己的消息与回复）
             client.sendMessage(text)
-            onInputChange("")
+            onInputChange(TextFieldValue(""))
             // 先清焦点再收键盘：焦点仍在输入框时直接 hide 会被 IME 拉回来，一闪一闪
             focusManager.clearFocus()
             keyboardController?.hide()
@@ -299,8 +305,9 @@ internal fun ConversationComposer(
             onPick = { name ->
                 ConnLog.info("SKILL", "技能选用 name=$name sessionId=$sessionId")
                 // 选中技能 → 把「/技能名 」字面量写入输入框（带尾空格，就绪输入提示词），
-                // 收起面板，焦点拉回输入框让用户接续输入提示词再发送。
-                onInputChange("/$name ")
+                // 光标放到文本末尾（用户接续输入的提示词追加到技能名后），
+                // 收起面板，焦点拉回输入框让用户继续输入提示词再发送。
+                onInputChange(TextFieldValue("/$name ", selection = TextRange("/$name ".length)))
                 showSkillPanel = false
                 pendingSkillFocus = true
             },

@@ -38,6 +38,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,17 +55,17 @@ import androidx.compose.runtime.setValue
 internal fun Conversation(client: BridgeClient, state: SessionUiState, sessionId: String) {
     // 会话详情投影：手机=currentSessionId；平板中栏=parentView（子会话打开时主会话 live）。
     val view = state.viewOf(sessionId)
-    var input by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf(TextFieldValue("")) }
     // 输入框焦点：斜杠命令候选弹窗只在聚焦时出现（草稿载入不误弹）
     var inputFocused by remember { mutableStateOf(false) }
     // 草稿：进入会话时从磁盘载入未发送文本；输入变化防抖落盘。
     // 断线/重连、切会话、App 重启都不丢用户打字。
     LaunchedEffect(sessionId) {
-        client.loadDraft(sessionId)?.takeIf { it.isNotEmpty() }?.let { input = it }
+        client.loadDraft(sessionId)?.takeIf { it.isNotEmpty() }?.let { input = TextFieldValue(it) }
         snapshotFlow { input }
             .drop(1) // 跳过载入草稿触发的那次
             .debounce(600)
-            .collect { text -> client.saveDraft(sessionId, text) }
+            .collect { text -> client.saveDraft(sessionId, text.text) }
     }
     // 返回键 = 左上角 ←：回到会话列表，不退出应用
     PlatformBackHandler(enabled = true) { client.closeSession() }
