@@ -426,3 +426,41 @@ keepawake off 成功（timeout=300000、stayon=0、备份=无）；crash buffer 
 ### 收尾
 
 keepawake off 成功（timeout=300000、stayon=0、备份=无）；crash buffer 无 FATAL ✅。
+
+## #57 技能点选「两个小问题」修复 + 真机复验（c4b2bd7 / bd74cf2）
+
+> 承接上一节发现的 2 个小问题。修复：光标置末尾 `c4b2bd7`（TextFieldValue + selection=TextRange(length)）；
+> 键盘自动弹起 `755f3a3`（InputMethodManager）+ `bd74cf2`（时序 tweak：退场释放焦点后再 requestFocus）。
+> 复验设备 LAN `192.168.3.84:5555`（华为 HBN-AL00 / Android 12），桥 coreVersion 0.17.5。
+
+### 验收表
+
+| 验收项 | 预期 | 实测 | 结论 |
+|--------|------|------|------|
+| 装机+冒烟 | 装新 debug 包、P00 | 14:43:40 装机 Success；冒烟 PASS（pid=11589 存活、crash 0） | ✅ PASS |
+| 光标置末尾 | 点选后补输入追加到 `/code-lint ` 末尾 | 追加 `run P0` 后 `text='/code-lint run P0'`（末尾追加，非前置） | ✅ PASS |
+| 键盘自动弹起 | 点选后焦点回输入框 + 键盘弹起 | `mShowRequested=true mShowForced=true mInputShown=true`，`mServedView=AndroidComposeView` | ✅ PASS |
+| 服务正确 view | showSoftInput 服务 Compose 输入框（非 DecorView） | `mServedInputConnectionWrapper=…NullableInputConnectionWrapperApi25… mServedView=AndroidComposeView` | ✅ PASS |
+
+### 根因（两问题）
+
+- **光标在开头**：`OutlinedTextField` 的 String 重载会重置 selection 到 0；改 `TextFieldValue` + `selection = TextRange(length)`。
+- **键盘不弹**：`requestFocus()` 在 `showSkillPanel=false` 同一帧执行，早于 `ModalBottomSheet` 退场动画（约 300ms）
+  结束；退场结束时的焦点回收把刚建立的焦点冲掉 → `activity.currentFocus==null` → `showSoftInput` 回退 `decorView`
+  （错误 view），键盘不弹。修法：`delay(380)` 等退场 → `requestFocus()` → `delay(160)` 等 window focus 落定 → `showSoftInput`。
+
+### 截图清单（docs/screenshots/2026-09-12-skill-pick/）
+
+| 步骤 | 截图 |
+|------|------|
+| 点选后键盘弹起 + 输入框预填并追加（光标末尾） | [06-keyboard-shown-cursor-end.png](../screenshots/2026-09-12-skill-pick/06-keyboard-shown-cursor-end.png) |
+
+### 取证路径
+
+- 键盘状态：`adb -s 192.168.3.84:5555 shell dumpsys input_method`（`mInputShown=true`、`mServedView=AndroidComposeView`）。
+- 输入框内容：`uiautomator dump` → `EditText '/code-lint run P0'`。
+- 疑难 bug 文档：[docs/bugs/2026-09-12-skill-pick-keyboard-not-shown.md](../bugs/2026-09-12-skill-pick-keyboard-not-shown.md)。
+
+### 收尾
+
+keepawake off 已恢复（LAN `192.168.3.84:5555`：timeout=300000、stayon=0）；crash buffer 无本包 FATAL ✅。
