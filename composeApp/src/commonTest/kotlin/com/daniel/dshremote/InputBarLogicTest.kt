@@ -133,6 +133,126 @@ class InputBarLogicTest {
         assertEquals("DeepSeek V4 Pro", modelEntryLabel(models))
     }
 
+    // ---- 当前模型定位 + effort 档位解析（右区 / 强度面板） ----
+
+    @Test
+    fun currentModelRef_nullModels_isNull() {
+        assertEquals(null, currentModelRef(null))
+    }
+
+    @Test
+    fun currentModelRef_nullCurrent_isNull() {
+        assertEquals(null, currentModelRef(SessionModelsWire(current = null)))
+    }
+
+    @Test
+    fun currentModelRef_resolvesProviderAndModel() {
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1", "max"),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
+        )
+        val ref = currentModelRef(models)
+        assertEquals("p1", ref?.provider)
+        assertEquals("m1", ref?.model?.id)
+    }
+
+    @Test
+    fun currentModelRef_modelMissing_isNull() {
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m9"),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
+        )
+        assertEquals(null, currentModelRef(models))
+    }
+
+    @Test
+    fun currentModelEffortOptions_noReasoning_isNull() {
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1"),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro")))),
+        )
+        assertEquals(null, currentModelEffortOptions(models))
+    }
+
+    @Test
+    fun currentModelEffortOptions_emptyEfforts_isNull() {
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1"),
+            groups = listOf(
+                ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "DeepSeek V4 Pro", ModelReasoningWire(efforts = emptyList())))),
+            ),
+        )
+        assertEquals(null, currentModelEffortOptions(models))
+    }
+
+    @Test
+    fun currentModelEffortOptions_returnsEffortsAndDefault() {
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1", "max"),
+            groups = listOf(
+                ModelProviderGroupWire(
+                    "p1",
+                    "DeepSeek",
+                    listOf(
+                        model(
+                            "m1",
+                            "DeepSeek V4 Pro",
+                            ModelReasoningWire(
+                                efforts = listOf(effort("off", "Off"), effort("max", "Max")),
+                                defaultEffort = "off",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val opts = currentModelEffortOptions(models)
+        assertEquals(listOf("off", "max"), opts?.efforts?.map { it.id })
+        assertEquals("off", opts?.defaultEffort)
+    }
+
+    @Test
+    fun currentModelHasEffortOptions_trueOnlyWithNonEmptyEfforts() {
+        val withEfforts = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1"),
+            groups = listOf(
+                ModelProviderGroupWire(
+                    "p1",
+                    "DeepSeek",
+                    listOf(model("m1", "M", ModelReasoningWire(efforts = listOf(effort("max", "Max"))))),
+                ),
+            ),
+        )
+        val without = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1"),
+            groups = listOf(ModelProviderGroupWire("p1", "DeepSeek", listOf(model("m1", "M")))),
+        )
+        assertTrue(currentModelHasEffortOptions(withEfforts))
+        assertFalse(currentModelHasEffortOptions(without))
+        assertFalse(currentModelHasEffortOptions(null))
+    }
+
+    @Test
+    fun modelEntryParts_hasEffortOptionsFlag_whenNoEffortSelected() {
+        // 有档位但未指定 → effort 为 null、hasEffortOptions=true（右区显示「强度」占位且可点）
+        val models = SessionModelsWire(
+            current = ModelSelectionWire("p1", "m1"),
+            groups = listOf(
+                ModelProviderGroupWire(
+                    "p1",
+                    "DeepSeek",
+                    listOf(model("m1", "DeepSeek V4 Pro", ModelReasoningWire(efforts = listOf(effort("max", "Max"))))),
+                ),
+            ),
+        )
+        assertEquals(ModelEntryParts("DeepSeek V4 Pro", null, hasEffortOptions = true), modelEntryParts(models))
+    }
+
+    @Test
+    fun modelEntryParts_placeholder_hasNoEffortOptions() {
+        assertEquals(ModelEntryParts(MODEL_ENTRY_PLACEHOLDER, null, hasEffortOptions = false), modelEntryParts(null))
+    }
+
     // ---- 技能搜索过滤（filterSkills） ----
 
     private val skillA = SkillWire("code-lint", "一键跑 lint 拿结构化结果")

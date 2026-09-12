@@ -54,8 +54,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.daniel.dshremote.protocol.ContextUsageWire
-import com.daniel.dshremote.protocol.ModelCatalogModelWire
-import com.daniel.dshremote.protocol.ModelProviderGroupWire
 import com.daniel.dshremote.protocol.SessionModelsWire
 import com.daniel.dshremote.protocol.SkillWire
 import androidx.compose.ui.platform.LocalFocusManager
@@ -85,6 +83,7 @@ internal fun ConversationComposer(
     // 否则「点中断时队列非空 → 弹框出现 → 队列恰好被消费」会在正文显示「0 条」与用户所见不符。
     var confirmQueuedCount by remember { mutableStateOf(0) }
     var showModelSheet by remember { mutableStateOf(false) }
+    var showEffortSheet by remember { mutableStateOf(false) }
     var showContextDetail by remember { mutableStateOf(false) }
     var showSkillPanel by remember { mutableStateOf(false) }
     // 斜杠命令候选弹窗：输入以 "/" 开头、还在敲命令名（未出现空白）且输入框聚焦时弹出。
@@ -176,13 +175,17 @@ internal fun ConversationComposer(
             Modifier.fillMaxWidth().height(48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ① 切换模型入口（子会话 readOnly：只展示继承模型，不可点开）
+            // ① 切换模型入口（子会话 readOnly：只展示继承模型，不可点开；主会话左右分区可选）
             ModelEntry(
                 parts = modelEntryParts(state.models),
                 readOnly = isSubagent,
-                onClick = {
-                    ConnLog.info("MODEL", "模型入口点击 sessionId=$sessionId placeholder=${state.models?.current == null}")
+                onModelClick = {
+                    ConnLog.info("MODEL", "模型入口左区点击 sessionId=$sessionId placeholder=${state.models?.current == null}")
                     showModelSheet = true
+                },
+                onEffortClick = {
+                    ConnLog.info("MODEL", "模型入口右区点击 sessionId=$sessionId")
+                    showEffortSheet = true
                 },
                 modifier = Modifier.weight(1f),
             )
@@ -258,6 +261,17 @@ internal fun ConversationComposer(
             onDismiss = { showModelSheet = false },
         )
     }
+    if (showEffortSheet) {
+        EffortSelectSheet(
+            models = state.models,
+            onSelect = { provider, model, effort ->
+                ConnLog.info("MODEL", "强度切换提交 sessionId=$sessionId provider=$provider model=$model effort=$effort")
+                client.setModel(sessionId, provider, model, effort)
+                showEffortSheet = false
+            },
+            onDismiss = { showEffortSheet = false },
+        )
+    }
     if (showContextDetail) {
         ContextDetailDialog(
             usage = state.contextUsage,
@@ -312,34 +326,96 @@ internal fun ComposerEntryChip(label: String, onClick: () -> Unit, modifier: Mod
     }
 }
 
-/** 操作条① 模型入口：模型显示名（可截断）+ 推理强度（固定恒显，不被挤压）+ 切换指示，≥40dp 触达。
- * [readOnly]（子会话）：只展示继承自主会话的模型，不可点开切换（不显示 ▾、clickable 置 disabled）。 */
+/** 操作条① 模型入口：主会话拆成左区（模型显示名 → 模型面板）+ 右区（推理强度 → 强度面板）两个独立点击区，
+ * 视觉仍是一条胶囊（区隔竖线 + 各自按压反馈）；[readOnly]（子会话）保持现状整块只读（不分区、不可点）。
+ * 左区模型名过长截断、右区强度恒显；右区仅当当前模型有 reasoning.efforts 档位时存在，否则整块只显模型名。 */
 @Composable
-internal fun ModelEntry(parts: ModelEntryParts, readOnly: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ModelEntry(
+    parts: ModelEntryParts,
+    readOnly: Boolean,
+    onModelClick: () -> Unit,
+    onEffortClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
-        modifier = modifier.height(40.dp).clickable(enabled = !readOnly, onClick = onClick),
+        modifier = modifier.height(40.dp),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
     ) {
-        Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                parts.name,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                // 模型名占剩余空间、可截断；强度与「▾」固定恒显，不再出现「· Max」被挤成三个点。
-                modifier = Modifier.weight(1f),
-            )
-            if (parts.effort != null) {
-                Spacer(Modifier.width(4.dp))
+        if (readOnly) {
+            // 子会话：整块只读展示（现状不变），不显示 ▾、不可点
+            Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "· ${parts.effort}",
+                    parts.name,
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                if (parts.effort != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "· ${parts.effort}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
             }
-            if (!readOnly) {
+        } else if (parts.hasEffortOptions) {
+            // 主会话 + 有强度档位：左区模型名 + 右区强度名，两个独立点击区，区隔竖线分界
+            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.weight(1f).fillMaxHeight()
+                        .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
+                        .clickable(onClick = onModelClick)
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        parts.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Box(
+                    Modifier.width(1.dp).height(20.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                )
+                Row(
+                    Modifier.fillMaxHeight()
+                        .clip(RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp))
+                        .clickable(onClick = onEffortClick)
+                        .padding(start = 8.dp, end = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "· ${parts.effort ?: MODEL_ENTRY_EFFORT_PLACEHOLDER}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("▾", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            // 主会话 + 无强度档位：整块只显模型名（可点开模型面板），右端保留 ▾ 提示可切换
+            Row(
+                Modifier.fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onModelClick)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    parts.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
                 Spacer(Modifier.width(4.dp))
                 Text("▾", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -458,7 +534,8 @@ private fun SkillRow(skill: SkillWire) {
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 }
 
-/** 模型选择弹窗：provider 分组 → 模型 → reasoning effort 档位（移动端半屏 Sheet）。 */
+/** 模型选择面板：列 groups[].models[]（名称 + 说明 + 当前高亮），点某模型即选该模型默认档并收起（不再进强度二级导航）。
+ * 移动端半屏 Sheet；每次选择直接 [onSelect]（已接 client.setModel），无保存/二次确认。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ModelSelectSheet(
@@ -467,8 +544,6 @@ internal fun ModelSelectSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // null = 目录层；非 null = 已选中带 effort 的模型，进入 effort 二级选择
-    var picked by remember { mutableStateOf<Pair<ModelProviderGroupWire, ModelCatalogModelWire>?>(null) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -482,68 +557,92 @@ internal fun ModelSelectSheet(
             val failures = models?.failures ?: emptyList()
             val current = models?.current
 
-            if (picked == null) {
-                Text("选择模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                if (groups.isEmpty() && failures.isEmpty()) {
-                    Text("暂无可用模型目录（桌面端未上报或加载中）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    groups.forEach { group ->
-                        Text(
-                            group.name,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
-                        )
-                        group.models.forEach { m ->
-                            ModelOptionRow(
-                                name = m.name,
-                                description = m.description,
-                                selected = current != null && current.provider == group.id && current.model == m.id,
-                                onClick = {
-                                    if (m.reasoning?.efforts?.isNotEmpty() == true) {
-                                        picked = group to m
-                                    } else {
-                                        onSelect(group.id, m.id, null)
-                                    }
-                                },
-                            )
-                        }
-                    }
-                    failures.forEach { f ->
-                        Text(
-                            "⚠ ${f.name}：${f.message}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(top = 6.dp),
+            Text("选择模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            if (groups.isEmpty() && failures.isEmpty()) {
+                Text("暂无可用模型目录（桌面端未上报或加载中）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                groups.forEach { group ->
+                    Text(
+                        group.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                    )
+                    group.models.forEach { m ->
+                        ModelOptionRow(
+                            name = m.name,
+                            description = m.description,
+                            selected = current != null && current.provider == group.id && current.model == m.id,
+                            onClick = { onSelect(group.id, m.id, null) },
                         )
                     }
                 }
-            } else {
-                val (group, model) = picked!!
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { picked = null }) { Text("‹ 返回") }
+                failures.forEach { f ->
                     Text(
-                        "${model.name} · 推理档位",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
+                        "⚠ ${f.name}：${f.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+/** 推理强度选择面板：对当前模型列 reasoning.efforts[]（名称 + 说明 + 当前高亮 + 默认档标记），
+ * 点某档直接 set_model 收起；底部「不指定（用默认档）」→ onSelect(provider, model, null)。移动端半屏 Sheet。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun EffortSelectSheet(
+    models: SessionModelsWire?,
+    onSelect: (provider: String, model: String, reasoningEffort: String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val currentRef = currentModelRef(models)
+    val options = currentModelEffortOptions(models)
+    val current = models?.current
+    val modelName = currentRef?.model?.name
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).verticalScroll(rememberScrollState()).padding(bottom = 28.dp),
+        ) {
+            Text("推理强度", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (modelName != null) {
                 Spacer(Modifier.height(6.dp))
-                val efforts = model.reasoning?.efforts ?: emptyList()
-                val defaultEffort = model.reasoning?.defaultEffort
-                efforts.forEach { e ->
+                Text(
+                    modelName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            if (currentRef == null || options == null) {
+                Text("当前无模型或无可选强度档位", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                options.efforts.forEach { e ->
                     ModelOptionRow(
-                        name = e.name + if (e.id == defaultEffort) "（默认）" else "",
+                        name = e.name + if (e.id == options.defaultEffort) "（默认）" else "",
                         description = e.description,
                         selected = current != null && current.reasoningEffort == e.id,
-                        onClick = { onSelect(group.id, model.id, e.id) },
+                        onClick = { onSelect(currentRef.provider, currentRef.model.id, e.id) },
                     )
                 }
-                TextButton(onClick = { onSelect(group.id, model.id, null) }) { Text("不指定（用默认档）") }
+                ModelOptionRow(
+                    name = "不指定（用默认档）",
+                    description = "按模型默认档位推理",
+                    selected = current != null && current.reasoningEffort == null,
+                    onClick = { onSelect(currentRef.provider, currentRef.model.id, null) },
+                )
             }
         }
     }
