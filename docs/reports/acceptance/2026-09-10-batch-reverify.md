@@ -299,3 +299,29 @@ keepawake 已恢复（timeout=300000、stayon=0、备份=无）；crash buffer �
 
 - 提问通知（presence=BACKGROUND/OTHER_SESSION）也随弹窗同时触发，通知 + 弹窗双通道。
 - 后台脚本 `/tmp/answer-question.sh`：轮询 dump → 点选首个选项 → 点「提交」，可复用于后续审批/提问回归。
+
+## 上下文入口在子代理加载即展示（bridge 修复）
+
+> 用户反馈：子代理会话加载时上下文入口（占用环）不出现，要客户端发消息后才出现，且不同子代理表现不一致。
+
+### 根因（诊断）
+
+- 上下文占用（`contextPressure`：contextWindow + usedTokens）是**事件驱动**：只在投影变更（模型跑过/发消息）后才写入投影。
+- 订阅（subscribe）时 bridge 用 `contextUsageWireOf` 读投影：无 contextPressure → `percent=undefined` → 客户端 `ContextRing` 按「无数据不渲染」隐藏占用环。
+- 因此「发消息后才出现」——发消息触发投影变更，才有 contextPressure。
+
+### 修复（dsh-remote-control-bridge）
+
+- `src/core.ts` 新增 `contextUsageWithDefault(sessionId, base)`：当 `base.percent === undefined` 时，用「继承模型」的静态 `contextWindow`（`llm.resolveModelInfo().context.contextWindow`）补 `contextWindow` + `percent=0`，让会话加载即展示占用环；拿不到容量则保持原样（不伪造）。
+- 订阅（live 分支 + 冷会话分支）的 `context_usage` 推送改用 `contextUsageWithDefault(...).then(send)`。
+- typecheck / build / lint:p0 全绿；bridge 热重载已生效（/remote/hot reloads 14→21，lastError=null）。
+
+### 复验（真机）
+
+| 子代理 | 状态 | 上下文环（加载即显） |
+|--------|------|----------------------|
+| 真机验收全流程 | 运行中 | 59% ✅ |
+| 输入区操作条PRD与技术调研 | 运行中 | 67% ✅ |
+| 架构优化与App.kt拆分 | 空闲（冷会话） | 25% ✅ |
+
+截图：29-context-on-load.jpg。三例均在**未发消息**情况下加载即显示占用环。
